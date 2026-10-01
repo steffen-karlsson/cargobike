@@ -170,7 +170,6 @@ async fn create_release(
         }
         Err(error) => return Err(auth_to_api(&error)),
     };
-    let _ = app;
 
     let id = Uuid::now_v7();
     let now = sqlx::types::time::OffsetDateTime::now_utc();
@@ -187,8 +186,12 @@ async fn create_release(
         "spec": {
             "application": application,
             "version": version,
-            "source": source_ref(&state, &application),
-            "template": template_ref(&state, &application),
+            "source": {
+                "provider": app.source.provider,
+                "id": app.source.id,
+                "path": app.source.path.as_deref(),
+            },
+            "template": app.template,
         },
         "status": {
             "phase": "Pending",
@@ -216,14 +219,6 @@ async fn create_release(
         axum::Json(document),
     )
         .into_response())
-}
-
-fn source_ref(_state: &AppState, application: &str) -> serde_json::Value {
-    serde_json::json!({ "application": application })
-}
-
-fn template_ref(_state: &AppState, application: &str) -> String {
-    format!("service@1 (registry-pending: {application})")
 }
 
 fn format_rfc3339(at: sqlx::types::time::OffsetDateTime) -> String {

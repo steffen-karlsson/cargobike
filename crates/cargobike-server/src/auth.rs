@@ -297,10 +297,18 @@ impl AuthState {
                 .and_then(|skew| humantime::parse_duration(skew).ok())
                 .map(|skew| skew.as_secs())
                 .unwrap_or(60); // F-77's documented default skew is 60s
-            let Ok(decoded) = jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation)
-            else {
-                expired = true; // an ExpiredSignature anywhere in the chain surfaces 401 token-expired
-                continue;
+            let decoded = match jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation)
+            {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    // Only a strictly expired token surfaces `TokenExpired`;
+                    // bad signature/audience stay `InvalidToken` (§10.2).
+                    tracing::warn!(entry = %entry.name, ?error, "failed to decode");
+                    if *error.kind() == jsonwebtoken::errors::ErrorKind::ExpiredSignature {
+                        expired = true;
+                    }
+                    continue;
+                }
             };
             let claims = decoded.claims;
             // F-79's matching; F-80's unconstrained guard double-checks the

@@ -30,6 +30,7 @@ globset = "0.4"
 strum = { version = "0.27", features = ["derive"] }
 async-trait = "0.1"
 tracing = "0.1"
+base64 = "0.22"
 secrecy = { version = "0.10", features = ["serde"] }
 bytes = "1"
 tokio-util = "0.7"
@@ -43,7 +44,7 @@ shellexpand = "3"
 humantime = "2"
 humantime-serde = "1"
 serde_yaml_ng = "0.10"
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 argon2 = "0.5"
 moka = { version = "0.12", features = ["sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
