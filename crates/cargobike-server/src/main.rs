@@ -29,6 +29,15 @@ pub struct ServerArgs {
 fn main() {
     // Pre-logging bootstrap only: no tracing yet, so fallback writes go to
     // stderr by hand. Everything else logs (F-87/F-140).
+    let mut args: Vec<String> = std::env::args().collect();
+    if args
+        .get(1)
+        .map(|command| command == "hash-api-key")
+        .unwrap_or(false)
+    {
+        let _ = args.remove(1);
+        std::process::exit(hash_api_key());
+    }
     let args = ServerArgs::parse();
     #[allow(clippy::expect_used)]
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -36,6 +45,39 @@ fn main() {
         .build()
         .expect("tokio runtime must build");
     runtime.block_on(run(args));
+}
+
+/// §9.3: reads a plaintext key on stdin (never argv) and prints an
+/// argon2id hash for the `auth.api_keys[].hash` field of the config.
+#[allow(clippy::print_stderr, clippy::print_stdout, unused_imports)]
+fn hash_api_key() -> i32 {
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    use rand_core::RngCore as _;
+    use std::io::Read as _;
+    let mut buffer = String::new();
+    std::io::stdin().read_line(&mut buffer).unwrap_or_default();
+    let presented = buffer.trim();
+    if presented.is_empty() {
+        eprintln!("cargobike-server hash-api-key: a key is required on stdin");
+        return 2;
+    }
+    let mut random = [0_u8; 16];
+    rand_core::OsRng.fill_bytes(&mut random);
+    let salt = match SaltString::encode_b64(&random) {
+        Ok(salt) => salt,
+        Err(error) => {
+            eprintln!("cargobike-server hash-api-key: {error}");
+            return 2;
+        }
+    };
+    match argon2::Argon2::default().hash_password(presented.as_bytes(), &salt) {
+        Ok(hash) => println!("{hash}"),
+        Err(error) => {
+            eprintln!("cargobike-server hash-api-key: {error}");
+            return 2;
+        }
+    }
+    0
 }
 
 async fn run(args: ServerArgs) {
