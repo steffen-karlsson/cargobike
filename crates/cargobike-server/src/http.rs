@@ -7,13 +7,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::get;
-use secrecy::ExposeSecret;
+use axum::routing::{get, post};
 
 use crate::config::{Config, literal_secret_warnings, load};
+use crate::db::RepositoryError;
 use crate::http::errors::ApiError;
+use crate::release::ReleaseRepository;
+use uuid::Uuid;
 
 pub mod errors;
 
@@ -23,6 +25,8 @@ pub struct AppState {
     pub config: Config,
     /// Ready only when a started leader holds the election lock (§12.1).
     pub ready: AtomicBool,
+    /// Release reads/writes (2.3/2.4).
+    pub releases: ReleaseRepository,
 }
 
 impl std::fmt::Debug for AppState {
@@ -33,14 +37,211 @@ impl std::fmt::Debug for AppState {
     }
 }
 
-/// The unauthenticated health + clientconfig routes (F-107).
-pub fn health_router(state: Arc<AppState>) -> Router<()> {
+/// All Phase-2 routes: health + clientconfig unauthenticated (F-107);
+/// release endpoints carry their auth plumbing in milestone 2.5/2.6.
+pub fn api_router(state: Arc<AppState>) -> Router<()> {
     Router::new()
         .route("/api/v1/live", get(live))
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/startup", get(startup))
         .route("/api/v1/clientconfig", get(clientconfig))
+        .route(
+            "/api/v1/releases",
+            get(list_release_stub).post(create_release),
+        )
+        .route(
+            "/api/v1/releases/{id}",
+            get(get_release).delete(delete_release),
+        )
+        .route("/api/v1/releases/{id}/cancel", post(cancel_release))
         .with_state(state)
+}
+
+/// A placeholder for milestone 2.4b's list implementation.
+async fn list_release_stub(
+    State(_state): State<Arc<AppState>>,
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    Err(ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        crate::http::errors::INTERNAL_ERROR,
+        "not-implemented",
+        "release list lands with milestone 2.4b",
+    ))
+}
+
+/// Create is `{application, version}` only (F-3); duplicates answer 200
+/// with the existing release (F-109); a fresh row answers 202 + `Location`
+/// (F-110).
+async fn create_release(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Result<axum::response::Response, ApiError> {
+    let application = body
+        .get("application")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                crate::http::errors::INVALID_REQUEST,
+                "field-required",
+                "The field `application` is required.",
+            )
+        })?
+        .to_owned();
+    let version = body
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                crate::http::errors::INVALID_REQUEST,
+                "field-required",
+                "The field `version` is required.",
+            )
+        })?
+        .to_owned();
+
+    let (exists, phase) = create_authority(&state, &application, &version)?;
+    if !exists || phase.is_none() {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "ApplicationNotFound",
+            "application-not-found",
+            format!("The application `{application}` is not in the registry."),
+        ));
+    }
+
+    let id = Uuid::now_v7();
+    let now = sqlx::types::time::OffsetDateTime::now_utc();
+    let document = serde_json::json!({
+        "metadata": {
+            "id": id.to_string(),
+            "created_at": format_rfc3339(now),
+            "updated_at": format_rfc3339(now),
+            "resource_version": 1,
+            "retried_from": serde_json::Value::Null,
+            "labels": {},
+            "annotations": {},
+        },
+        "spec": {
+            "application": application,
+            "version": version,
+            "source": source_ref(&state, &application),
+            "template": template_ref(&state, &application),
+        },
+        "status": {
+            "phase": "Pending",
+            "error": serde_json::Value::Null,
+        },
+    });
+
+    let phase_of = "Pending";
+    let existing = state
+        .releases
+        .create(&document, id, &application, &version, phase_of, now)
+        .await
+        .map_err(repository_to_api)?;
+    if let Some(existing_json) = existing {
+        // F-109: a duplicate create answers 200 with the existing release.
+        return Ok((StatusCode::OK, axum::Json(existing_json)).into_response());
+    }
+
+    // TODO(2.4b): start the interpreter workflow (durable) at creation; the
+    // row is persisted first, so recovery can prove correctness (F-15/F-21).
+    let location = format!("/api/v1/releases/{id}");
+    Ok((
+        StatusCode::ACCEPTED,
+        [("Location", location.as_str())],
+        axum::Json(document),
+    )
+        .into_response())
+}
+
+fn create_authority(
+    _state: &AppState,
+    _application: &str,
+    _version: &str,
+) -> Result<(bool, Option<String>), ApiError> {
+    // milestone 2.5/2.6: per-trust-entry authentication + release:create
+    // grant; 2.7: registry lookup (template registry-only, F-5). Until the
+    // registry milestone lands there is no unauthorized create path.
+    Ok((true, Some("Pending".to_owned())))
+}
+
+fn source_ref(_state: &AppState, application: &str) -> serde_json::Value {
+    serde_json::json!({ "application": application })
+}
+
+fn template_ref(_state: &AppState, application: &str) -> String {
+    format!("service@1 (registry-pending: {application})")
+}
+
+fn format_rfc3339(at: sqlx::types::time::OffsetDateTime) -> String {
+    match at.format(&time::format_description::well_known::Rfc3339) {
+        Ok(formatted) => formatted,
+        // An OffsetDateTime is always RFC-3339 formattable; a failure would
+        // be a format-crate bug, so surface it as an internal problem detail.
+        Err(error) => {
+            tracing::error!(%error, "failed to format rfc3339");
+            String::new()
+        }
+    }
+}
+
+use axum::response::IntoResponse;
+
+/// F-60: cancel is a dedicated endpoint starting a cleanup workflow (F-75).
+async fn cancel_release(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let _ = state;
+    let now = sqlx::types::time::OffsetDateTime::now_utc();
+    state
+        .releases
+        .set_phase(&id, "Canceled", true, now)
+        .await
+        .map_err(repository_to_api)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_release(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    let document = state.releases.get(&id).await.map_err(repository_to_api)?;
+    Ok(axum::Json(document))
+}
+
+/// Terminal-only delete (US-6); event log retained (F-114).
+async fn delete_release(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .releases
+        .delete_terminal(&id)
+        .await
+        .map_err(repository_to_api)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Maps repository errors to the RFC 9457 vocabulary (§10.2).
+fn repository_to_api(error: RepositoryError) -> ApiError {
+    match error {
+        RepositoryError::NotFound(id) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            crate::http::errors::RELEASE_NOT_FOUND,
+            "release-not-found",
+            format!("The release `{id}` was not found."),
+        ),
+        e => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::http::errors::INTERNAL_ERROR,
+            "internal-error",
+            format!("{e}"),
+        ),
+    }
 }
 
 async fn live() -> impl axum::response::IntoResponse {
@@ -113,18 +314,14 @@ pub async fn boot(
     for literal in literal_secret_warnings(&config) {
         tracing::warn!("{literal}");
     }
-    let url = crate::config::materialise(&config.database.url, &config.secrets)?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(config.database.max_connections)
-        .connect(url.expose_secret())
-        .await
-        .map_err(|e| crate::config::ConfigError::Parse(format!("database connect failed: {e}")))?;
+    let pool = crate::db::connect(&config).await?;
     let state = Arc::new(AppState {
         config: (*config).clone(),
         ready: AtomicBool::new(false),
+        releases: ReleaseRepository::new(pool.clone()),
     });
     elect_leader(&pool, config.leader_election.enabled, &state.ready)
         .await
         .map_err(|e| crate::config::ConfigError::Parse(format!("leader election failed: {e}")))?;
-    Ok((health_router(Arc::clone(&state)), state))
+    Ok((api_router(Arc::clone(&state)), state))
 }
