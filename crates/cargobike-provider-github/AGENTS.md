@@ -62,7 +62,8 @@ cargo test -p cargobike-provider-github
 
 All must be true:
 
-1. `make lint`, `make test`, `make build` pass; webhook tests still green.
+1. All four gates pass: `make lint`, `make test`, `make build`,
+   `make docs-check` — webhook tests stay green.
 2. No `unwrap`/`expect` in non-test code (workspace lints deny them); octocrab
    failures map to `ProviderError` with the request-failure mapping kept
    consistent (`NotFound` for HTTP 404, `Request` otherwise).

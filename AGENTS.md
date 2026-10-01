@@ -60,12 +60,13 @@ cited throughout the code.
   a pass when reviewing.
 - The crash-injection harness runs under `--features cargobike-engine/crash-hooks`
   (the CI test job does exactly this; T1).
-- Before any commit, run the three gates:
+- Before any commit, run the four gates:
 
 ```bash
-make lint    # fmt --check + clippy -D warnings
-make test    # all tests
-make build   # workspace compiles
+make lint        # fmt --check + clippy -D warnings
+make test        # all tests
+make build       # workspace compiles
+make docs-check  # crate README/AGENTS currency for the changes at hand
 ```
 
 If any fails, fix before committing; never commit failing code (PRD §20.2).
@@ -99,17 +100,23 @@ Every commit keeps the documentation truthful:
    evaluation criteria; the root pair is updated whenever a crate's rules
    change in a way that has repo-wide relevance (e.g. a new pre-commit gate).
 
+This rule is enforced mechanically: `make docs-check`
+(`scripts/docs-check.sh`) fails when a changeset modifies files under
+`crates/<crate>/` without touching that crate's `README.md` or `AGENTS.md`.
+Root-level changes print a review note instead of failing; the reviewer
+criterion below covers the semantic side that a diff check cannot judge.
+
 ## How to contribute
 
 - **Conventional commits (PRD §20.1)**: `<type>(<scope>): <description>`;
   type `feat` or `fix` (code), `chore`/`docs` for supporting work by
   established precedent; scope = crate name, `all`, or `ci`. One cohesive
   change per commit — split cross-cutting work.
-- **Pre-commit gates** (§20.2): `make lint && make test && make build` must
-  pass with zero issues.
+- **Pre-commit gates** (§20.2): `make lint && make test && make build &&
+  make docs-check` must pass with zero issues.
 - **Contribution evaluation criteria** — a reviewer (human or agent) checks,
   before a commit lands:
-  1. The three gates pass (see above) — including the DB-backed integrations
+  1. All four gates pass (see above) — including the DB-backed integrations
      when a database is available.
   2. The change maps to a PRD requirement or documents a deliberate
      deviation; scenarios added/changed have tests named after them.

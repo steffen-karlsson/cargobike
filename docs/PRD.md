@@ -2470,16 +2470,26 @@ post-v1.
 
 ### 20.2 Pre-commit Checks
 
-Before committing, all three must pass with zero issues:
+Before committing, all four must pass with zero issues:
 
 ```bash
-make lint   # clippy + fmt-check, no warnings
-make test   # all tests pass
-make build  # workspace compiles
+make lint        # clippy + fmt-check, no warnings
+make test        # all tests pass
+make build       # workspace compiles
+make docs-check  # crate README/AGENTS currency for the changes at hand
 ```
 
+`docs-check` enforces the standing documentation rule: a changeset that
+modifies files under `crates/<crate>/` must also touch that crate's
+`README.md` or `AGENTS.md`, since crate documentation (features, bug
+fixes, usage examples, process/contributing rules) ships with the change
+that makes it stale. Root-level files are checked leniently: a change there
+without a root README/AGENTS touch prints a reviewer note but does not fail
+the gate. The full-text definition of the rule lives at the top of
+`AGENTS.md`.
+
 If any check fails, fix the issue before committing. Do not commit code
-that fails lint, tests, or build.
+that fails lint, tests, build, or the documentation gate.
 
 ### 20.3 Code Quality
 

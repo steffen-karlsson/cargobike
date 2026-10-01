@@ -73,8 +73,9 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
 
 All must be true:
 
-1. `make lint`, `make test`, `make build` pass; server integration tests run
-   (or skip explicitly with a documented reason).
+1. All four gates pass: `make lint`, `make test`, `make build`,
+   `make docs-check` — server integration tests run (or skip
+   explicitly with a documented reason).
 2. The verbatim documented-config test still passes (F-32/T5a).
 3. No secret value can reach a log, an error message or a problem document —
    check `Debug` impls, redaction layers, and the sensitive-header list.

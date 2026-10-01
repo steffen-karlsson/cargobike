@@ -66,8 +66,9 @@ project-wide rules live in the root [`AGENTS.md`](../../AGENTS.md).
 
 All must be true:
 
-1. `make lint` (fmt + clippy -D warnings), `make test`, `make build` pass.
-2. New engine logic has in-module unit tests; crash-harness-affected changes
+1. All four gates pass: `make lint`, `make test`, `make build`,
+   `make docs-check`.
+2. New engine logic has scenario-named tests; crash-harness-affected changes
    re-run `cargo test -p cargobike-engine --features crash-hooks --test
    crash_harness` with Postgres available.
 3. Steps added to the interpreter are idempotent with the A1 strategy stated

@@ -48,8 +48,9 @@ Crate-specific how-to; project-wide rules in the root
 
 All must be true:
 
-1. `make lint`, `make test`, `make build` pass; `wasm-tools validate` (once
-   wired) passes on the WIT.
+1. All four gates pass: `make lint`, `make test`, `make build`,
+   `make docs-check`; `wasm-tools validate` (once wired)
+   passes on the WIT.
 2. Guest bindings generation is reproducible from the committed WIT.
 3. No host capability leaks (no std::env/std::fs access surfaced to guests).
 4. Interface changes carry version bumps where breaking; old versions stay.

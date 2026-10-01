@@ -1,4 +1,4 @@
-.PHONY: build build-release test lint fmt fmt-check clippy coverage audit ci clean
+.PHONY: build build-release test lint fmt fmt-check clippy coverage audit docs-check ci clean
 
 build:
 	cargo build
@@ -10,6 +10,9 @@ test:
 	cargo test --all-targets
 
 lint: fmt-check clippy
+
+docs-check:
+	./scripts/docs-check.sh
 
 fmt:
 	cargo fmt
@@ -26,7 +29,7 @@ coverage:
 audit:
 	cargo audit
 
-ci: fmt-check clippy test audit
+ci: fmt-check clippy docs-check test audit
 
 clean:
 	cargo clean

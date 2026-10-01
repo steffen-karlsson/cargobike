@@ -50,8 +50,8 @@ Crate-specific how-to; project-wide rules in the root
 
 All must be true:
 
-1. `make lint`, `make test`, `make build` pass.
-2. Round-trip tests pass for every new/changed DTO; fixtures match the PRD's
+1. All four gates pass: `make lint`, `make test`, `make build`,
+   `make docs-check`.2. Round-trip tests pass for every new/changed DTO; fixtures match the PRD's
    §12 examples.
 3. No leaked implementation details in public fields (no SQL/UI leakage;
    timestamps typed via `time`).

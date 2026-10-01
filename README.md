@@ -95,6 +95,8 @@ Currently mid-implementation against the PRD's phased plan:
 ## Contributing
 
 Start with the root [`AGENTS.md`](AGENTS.md): commit conventions, pre-commit
-gates (`make lint`, `make test`, `make build`), and the evaluation criteria
+gates (`make lint`, `make test`, `make build`, `make docs-check` — the last
+one enforces keeping crate `README.md`/`AGENTS.md` current in the same
+changeset as any crate change), and the evaluation criteria
 applied before a commit lands. Each crate's own `AGENTS.md` adds its
 specific rules. License: dual MIT/Apache-2.0.

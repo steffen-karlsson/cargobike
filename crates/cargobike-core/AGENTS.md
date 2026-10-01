@@ -60,8 +60,8 @@ cargo build -p cargobike-core --target wasm32-wasip2
 
 All must be true:
 
-1. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` pass
-   for the workspace (`make lint`).
+1. The four gates pass for the workspace: `make lint`, `make test`,
+   `make build`, `make docs-check`.
 2. `cargo test -p cargobike-core` passes; new logic has scenario-named tests.
 3. `cargo build -p cargobike-core --target wasm32-wasip2` still succeeds.
 4. No new dependencies beyond the PRD Appendix A.1/A.6/A.7 list; nothing

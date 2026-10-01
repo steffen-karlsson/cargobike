@@ -64,8 +64,9 @@ cargo test -p cargobike-cli
 
 All must be true:
 
-1. `make lint`, `make test`, `make build` pass (`cargo test -p cargobike-cli`
-   green incl. `tests/cli_server.rs` wiremock suite).
+1. All four gates pass: `make lint`, `make test`, `make build`,
+   `make docs-check` — including the cli wiremock suite
+   (`tests/cli_server.rs`).
 2. Output rendering honours the resolved format (currently violated by the
    `-o` bug tracked in the audit — do not add new render sites that hardcode a
    format; fix through `Resolved`).
