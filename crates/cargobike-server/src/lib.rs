@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod http;
 pub mod release;
+pub mod validation;
 
 pub use config::Config;
 pub use http::boot;

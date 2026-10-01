@@ -364,6 +364,10 @@ pub async fn boot(
     for literal in literal_secret_warnings(&config) {
         tracing::warn!("{literal}");
     }
+    // 2.7: semantic validation before anything else starts half-authorised.
+    if let Err(error) = crate::validation::validate(&config) {
+        return Err(crate::config::ConfigError::Parse(error.to_string()));
+    }
     let pool = crate::db::connect(&config).await?;
     let auth = Arc::new(crate::auth::AuthState::new(Arc::clone(&config))?);
     let state = Arc::new(AppState {
