@@ -36,7 +36,7 @@ impl From<serde_yaml_ng::Error> for ValidationError {
 /// Validates the whole config (semantic layer). Template files load from
 /// `templates.directory` (a missing directory with no applications is not
 /// an error; with applications it is).
-pub fn validate(config: &Arc<crate::config::Config>) -> Result<(), ValidationError> {
+pub fn validate(config: &crate::config::Config) -> Result<(), ValidationError> {
     check_oidc_entries(config)?;
     check_api_keys(config)?;
     check_releaser_references(config)?;
@@ -46,7 +46,7 @@ pub fn validate(config: &Arc<crate::config::Config>) -> Result<(), ValidationErr
 }
 
 /// F-80: claim constraints are mandatory unless `allow_unconstrained`.
-fn check_oidc_entries(config: &Arc<crate::config::Config>) -> Result<(), ValidationError> {
+fn check_oidc_entries(config: &crate::config::Config) -> Result<(), ValidationError> {
     for entry in &config.auth.oidc {
         if entry.claims.is_empty() && !entry.allow_unconstrained {
             return Err(ValidationError::Rule(format!(
@@ -80,7 +80,7 @@ fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError>
 
 /// F-99a: `releasers` selectors reference existing entries and those
 /// entries must grant `release:create`.
-fn check_releaser_references(config: &Arc<crate::config::Config>) -> Result<(), ValidationError> {
+fn check_releaser_references(config: &crate::config::Config) -> Result<(), ValidationError> {
     let oidc_names: BTreeMap<&str, &crate::config::OidcEntry> = config
         .auth
         .oidc
@@ -159,10 +159,8 @@ fn ref_may_match_tag(claim_glob: &str, tag_format: &str) -> bool {
 /// `wait: approval` step; F-99b: `api_key` approvers refuse unless
 /// `allow_machine_approvers: true`; selectors must exist and grant the
 /// right request.
-fn check_apply_policy_invariants(
-    config: &Arc<crate::config::Config>,
-) -> Result<(), ValidationError> {
-    let templates = load_templates(config)?;
+fn check_apply_policy_invariants(config: &crate::config::Config) -> Result<(), ValidationError> {
+    let templates = load_templates(&Arc::new(config.clone()))?;
     let repositories = &config.applications;
     for app in repositories {
         for (env_name, env) in &app.environments {
@@ -287,7 +285,7 @@ fn template_has_approval_step(template: &PipelineTemplate, environment: &str) ->
 
 /// F-95/F-147: versioning scheme is one of the kebab values and the
 /// format strings use their documented placeholders.
-fn check_versioning(config: &Arc<crate::config::Config>) -> Result<(), ValidationError> {
+fn check_versioning(config: &crate::config::Config) -> Result<(), ValidationError> {
     for app in &config.applications {
         let scheme_ok = ["semver", "calver", "opaque"]
             .iter()
@@ -351,7 +349,7 @@ fn find_brace(rest: &[u8]) -> Option<usize> {
 }
 
 /// §4.13a: `extends` names an existing group.
-fn check_group_references(config: &Arc<crate::config::Config>) -> Result<(), ValidationError> {
+fn check_group_references(config: &crate::config::Config) -> Result<(), ValidationError> {
     let groups: std::collections::HashSet<&str> = config
         .application_groups
         .iter()

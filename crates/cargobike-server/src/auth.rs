@@ -136,10 +136,11 @@ fn verify_api_keys<'a>(
 }
 
 /// The auth context the middleware consults (F-77: JWKS cached, refetch
-/// on unknown `kid` is rate-limited by the moka TTL window).
+/// on unknown `kid` is rate-limited by the moka TTL window). Trust
+/// entries come from the shared watch, so SIGHUP reloads reach auth too.
 pub struct AuthState {
-    /// The server config snapshot.
-    pub config: Arc<crate::config::Config>,
+    /// The shared config source (F-129: hot reload swaps this).
+    config: tokio::sync::watch::Receiver<Arc<crate::config::Config>>,
     /// The localhost bootstrap key, when provided (F-86).
     bootstrap: Option<secrecy::SecretString>,
     /// Cached JWKS documents keyed by URL (F-77).
@@ -153,8 +154,11 @@ pub const BOOTSTRAP_ENV: &str = "CARGOBIKE_SERVER_BOOTSTRAP_API_KEY";
 pub const BOOTSTRAP_ENV_FILE: &str = "CARGOBIKE_SERVER_BOOTSTRAP_API_KEY_FILE";
 
 impl AuthState {
-    /// Builds auth state, taking the bootstrap key from the environment.
-    pub fn new(config: Arc<crate::config::Config>) -> Result<Self, crate::config::ConfigError> {
+    /// Builds auth state over the shared config watch, with the bootstrap
+    /// key taken from the environment.
+    pub fn new(
+        config: tokio::sync::watch::Receiver<Arc<crate::config::Config>>,
+    ) -> Result<Self, crate::config::ConfigError> {
         let explicit = std::env::var(BOOTSTRAP_ENV).ok().filter(|v| !v.is_empty());
         let from_file = std::env::var(BOOTSTRAP_ENV_FILE)
             .ok()
@@ -186,6 +190,11 @@ impl AuthState {
                     crate::config::ConfigError::Parse(format!("http client: {error}"))
                 })?,
         })
+    }
+
+    /// The config as of now (cheap Arc clone; updated on every SIGHUP swap).
+    pub fn config(&self) -> Arc<crate::config::Config> {
+        self.config.borrow().clone()
     }
 
     /// The JWKS document for an entry, cached by URL (F-77's `jwks_url`
@@ -220,7 +229,8 @@ impl AuthState {
         presented: &str,
         peer: Option<std::net::IpAddr>,
     ) -> Result<AuthedCaller, AuthError> {
-        if let Some(key) = verify_api_keys(&self.config.auth.api_keys, presented) {
+        let config = self.config();
+        if let Some(key) = verify_api_keys(&config.auth.api_keys, presented) {
             return Ok(AuthedCaller {
                 origin: key.name.clone(),
                 issuer: "api-key".to_owned(),
@@ -254,7 +264,7 @@ impl AuthState {
     async fn decode_oidc(&self, token: &str) -> Result<AuthedCaller, AuthError> {
         let header = jsonwebtoken::decode_header(token).map_err(|_| AuthError::InvalidToken)?;
         let mut expired = false;
-        for entry in &self.config.auth.oidc {
+        for entry in &self.config().auth.oidc {
             let matches_algorithm = entry
                 .algorithms
                 .as_ref()

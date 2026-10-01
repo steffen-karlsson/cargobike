@@ -21,14 +21,16 @@ pub mod errors;
 
 /// Shared server state.
 pub struct AppState {
-    /// The loaded config (hot-reload later swaps this under a RwLock).
-    pub config: Config,
+    /// The current config; a SIGHUP reload swaps this (F-129).
+    pub config: tokio::sync::watch::Receiver<Arc<Config>>,
     /// Ready only when a started leader holds the election lock (§12.1).
     pub ready: AtomicBool,
     /// Release reads/writes (2.3/2.4).
     pub releases: ReleaseRepository,
     /// Auth context (2.5/2.6).
     pub auth: Arc<crate::auth::AuthState>,
+    /// The config file the reload task re-reads (F-129).
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -39,14 +41,16 @@ impl std::fmt::Debug for AppState {
     }
 }
 
-/// All Phase-2 routes: health + clientconfig unauthenticated (F-107);
+/// All Phase-2 routes: health + clientconfig unauthenticated (F-107),
 /// release endpoints carry their auth plumbing in milestone 2.5/2.6.
 pub fn api_router(state: Arc<AppState>) -> Router<()> {
-    Router::new()
+    let unauthenticated = Router::new()
         .route("/api/v1/live", get(live))
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/startup", get(startup))
         .route("/api/v1/clientconfig", get(clientconfig))
+        .with_state(Arc::clone(&state));
+    let protected = Router::new()
         .route("/api/v1/releases", get(list_releases).post(create_release))
         .route(
             "/api/v1/releases/{id}",
@@ -55,10 +59,11 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
         .route("/api/v1/releases/{id}/cancel", post(cancel_release))
         .route("/api/v1/whoami", get(whoami))
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            Arc::clone(&state),
             crate::auth::require_auth,
         ))
-        .with_state(state)
+        .with_state(state);
+    unauthenticated.merge(protected)
 }
 
 /// Lists releases (§5.3): filters + the latest cursor (F-101).
@@ -153,10 +158,11 @@ async fn create_release(
         })?
         .to_owned();
 
-    let app = match crate::auth::authorize_create(&state.config, &caller, &application) {
+    let config = state.config.borrow().clone();
+    let app = match crate::auth::authorize_create(&config, &caller, &application) {
         Ok(app) => app,
         Err(crate::auth::AuthError::ForbiddenResource) => {
-            return match state.config.application(&application) {
+            return match state.config.borrow().application(&application) {
                 Some(_) => Err(ApiError::forbidden(
                     "The caller is not authorized to release this application.",
                 )),
@@ -309,15 +315,14 @@ async fn startup() -> impl axum::response::IntoResponse {
 async fn clientconfig(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
-    let issuers: Vec<String> = state
-        .config
+    let config = state.config.borrow().clone();
+    let issuers: Vec<String> = config
         .auth
         .oidc
         .iter()
         .map(|entry| entry.issuer.clone())
         .collect();
-    let audiences: Vec<String> = state
-        .config
+    let audiences: Vec<String> = config
         .auth
         .oidc
         .iter()
@@ -364,17 +369,55 @@ pub async fn boot(
         return Err(crate::config::ConfigError::Parse(error.to_string()));
     }
     let pool = crate::db::connect(&config).await?;
-    let auth = Arc::new(crate::auth::AuthState::new(Arc::clone(&config))?);
+    let (config_tx, config_rx) = tokio::sync::watch::channel(Arc::clone(&config));
+    let auth = Arc::new(crate::auth::AuthState::new(config_rx.clone())?);
     let state = Arc::new(AppState {
-        config: (*config).clone(),
+        config: config_rx,
         ready: AtomicBool::new(false),
         releases: ReleaseRepository::new(pool.clone()),
         auth,
+        config_path: config_path.map(|path| path.to_path_buf()),
     });
+    spawn_sighup_reload(Arc::clone(&state), config_tx);
     elect_leader(&pool, config.leader_election.enabled, &state.ready)
         .await
         .map_err(|e| crate::config::ConfigError::Parse(format!("leader election failed: {e}")))?;
     Ok((api_router(Arc::clone(&state)), state))
+}
+
+/// F-129's SIGHUP hot reload: re-load, re-validate, then swap the config
+/// the whole server reads from. A broken reload logs and keeps the
+/// previous config (in-flight releases are pinned by F-6/F-16 anyway).
+fn spawn_sighup_reload(
+    state: Arc<AppState>,
+    sender: tokio::sync::watch::Sender<Arc<crate::config::Config>>,
+) {
+    tokio::spawn(async move {
+        let Ok(mut signals) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        else {
+            return; // not a unix host: reload by restart (F-132's Recreate)
+        };
+        while signals.recv().await.is_some() {
+            let path = state.config_path.clone().unwrap_or_else(|| {
+                std::path::PathBuf::from("/etc/cargobike/config.yaml") // F-124's default
+            });
+            match crate::config::load(Some(&path)) {
+                Ok(fresh) => match crate::validation::validate(&fresh) {
+                    Ok(()) => {
+                        tracing::info!(reload = "sighup", "config reloaded");
+                        let _ = sender.send(Arc::new(fresh));
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "reload refused: keeping the current config")
+                    }
+                },
+                Err(error) => {
+                    tracing::error!(%error, "reload failed to load: keeping the current config")
+                }
+            }
+        }
+    });
 }
 
 /// F-106: the resolved identity + grants (§9.6 summary in JSON).
