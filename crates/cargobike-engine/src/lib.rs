@@ -5,6 +5,7 @@
 //! Depends on `cargobike-core` only (PRD §11.2): no axum, no api crate.
 
 pub mod expr;
+pub mod signals;
 pub mod steps;
 pub mod template;
 
