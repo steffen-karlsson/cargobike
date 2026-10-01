@@ -17,6 +17,10 @@ pub fn milestone_maybe(environment: &str, step_id: &str) {
     if target == milestone {
         // stderr text of the record (the driver's kill detection).
         eprintln!("CB_CRASHED_AT={milestone}");
+        // Settle: the previous steps' record-writes may still be
+        // committing; exit only after a grace so the recovery's
+        // replay reads every recorded result (the flake's census).
+        std::thread::sleep(std::time::Duration::from_secs(2));
         std::process::exit(9);
     }
 }

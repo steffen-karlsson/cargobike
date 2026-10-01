@@ -89,6 +89,9 @@ environments:
         database_url: String,
     ) -> anyhow::Result<()> {
         let config = dbos::Config {
+            // The executor id stays shared ('local', the default): the
+            // recovery's re-enqueue adopts PENDING rows by executor id,
+            // so the recovering process must own the killed one's rows.
             app_version: Some(format!("{app}-1")),
             ..dbos::Config::new(app.clone(), database_url.clone())
         };
