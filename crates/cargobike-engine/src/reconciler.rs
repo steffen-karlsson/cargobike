@@ -260,6 +260,11 @@ fn reconciler_send_form(
         Signal::MergeComplete {
             merged,
             by_way_of: format!("reconciler/cr-{}", row.cr_number),
+            // F-62's re-verify needs the identity; the sweep's
+            // observation provides the number (the head SHA arrives
+            // via the provider re-verify).
+            number: row.cr_number as u64,
+            head_sha: None,
         },
     )
 }

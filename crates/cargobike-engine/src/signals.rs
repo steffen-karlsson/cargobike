@@ -60,6 +60,11 @@ pub enum Signal {
         merged: bool,
         /// The delivery that carries it (audit trail).
         by_way_of: String,
+        /// The CR number observed (F-62's re-verify consults it).
+        number: u64,
+        /// The CR's head SHA at observation (the on_modified detector,
+        /// F-62); the provider re-verify refreshes it when absent.
+        head_sha: Option<String>,
     },
     /// An approval `approve`/`reject` (F-59/F-96).
     ApprovalSubmitted {

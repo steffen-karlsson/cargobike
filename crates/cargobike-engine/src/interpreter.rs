@@ -238,6 +238,7 @@ async fn run_step(
                 snapshot,
                 environment,
                 step_id.as_str(),
+                context,
                 services,
                 *timeout,
                 *on_timeout,
@@ -260,49 +261,249 @@ async fn run_step(
     }
 }
 
-/// `wait: merge`'s enclosure (F-62): recv → merged → verified.
+/// The F-62 verify decision, computed inside a durable step (a replay
+/// re-reads the recorded decision without re-querying the provider, so
+/// the wait's loop branch sequence stays replay-deterministic).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum MergeVerify {
+    /// CR merged, head SHA unchanged, content verified.
+    Verified,
+    /// The provider still reports the CR open (a raced signal).
+    NotYet,
+    /// The CR reached the closed state without merging.
+    CrClosed,
+    /// The CR's head SHA moved (a fix-up commit or an update_branch).
+    Modified,
+}
+
+/// The wall clock in epoch millis (the wait's anchor input; the value
+/// itself is durably recorded on first evaluation).
+fn now_unix_millis() -> u64 {
+    use std::time::UNIX_EPOCH;
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+/// `wait: merge`'s enclosure (F-62): durable anchor -> recv -> recorded
+/// provider re-verify; open CRs keep waiting under the recorded
+/// deadline; closed-without-merge is terminal; `on_modified` decides
+/// the head-SHA move.
 #[allow(clippy::too_many_arguments)]
 async fn wait_merge(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
     step_id: &str,
+    context: &crate::expr::ExprContext,
     services: &InterpreterServices,
     timeout: Duration,
     on_timeout: OnTimeout,
-    _on_modified: OnModified,
+    on_modified: OnModified,
 ) -> StepFlow {
     let topic = merge_topic(&environment.name, step_id);
-    let taken = dbos::recv::<Signal, InterpreterError>(Some(topic.as_str()), timeout).await;
-    let received = match taken {
-        Ok(value) => value,
-        Err(_engine_failure) => return StepFlow::Error(InterpreterError::MergeTimeout),
-    };
-    let Some(received) = received else {
-        // F-34's deadline semantics.
-        return match on_timeout {
-            OnTimeout::Fail => StepFlow::Error(InterpreterError::MergeTimeout),
-            OnTimeout::Cancel => StepFlow::Error(InterpreterError::Cancelled),
-        };
-    };
-    match received {
-        Signal::MergeComplete { merged: false, .. } => {
-            // Closed without merge is terminal (`ApprovalRejected`; F-62).
-            StepFlow::Error(InterpreterError::ApprovalRejected)
+    let anchor_span = format!("merge/anchor/{step_id}");
+    let anchor = match dbos::step_with::<Result<u64, ()>, InterpreterError, _, _>(
+        anchor_span.as_str(),
+        dbos::StepOptions::default(),
+        || async { dbos::Result::Ok(Ok(now_unix_millis())) },
+    )
+    .await
+    {
+        // The recorded anchor (the workflow's original start).
+        Ok(Ok(anchor)) => anchor,
+        Ok(Err(_)) => {
+            return StepFlow::Error(InterpreterError::Step(
+                cargobike_core::step::StepError::Transient("the anchor step failed".to_owned()),
+            ));
         }
-        Signal::MergeComplete { merged: true, .. } => {
-            match verify_merged(snapshot, environment, services).await {
-                Ok(()) => StepFlow::Continue,
-                Err(failure) => StepFlow::Error(failure),
+        Err(engine_failure) => {
+            return StepFlow::Error(InterpreterError::Step(
+                cargobike_core::step::StepError::Transient(engine_failure.to_string()),
+            ));
+        }
+    };
+    let total = timeout.as_millis() as u64;
+    // The deadline's verdict, wanted per iteration as the wall clock
+    // moves.
+    loop {
+        let elapsed = now_unix_millis().saturating_sub(anchor);
+        if elapsed >= total {
+            return match on_timeout {
+                OnTimeout::Fail => StepFlow::Error(InterpreterError::MergeTimeout),
+                OnTimeout::Cancel => StepFlow::Error(InterpreterError::Cancelled),
+            };
+        }
+        let taken = dbos::recv::<Signal, InterpreterError>(
+            Some(topic.as_str()),
+            Duration::from_millis(total - elapsed),
+        )
+        .await;
+        let received = match taken {
+            Ok(received) => received,
+            // An engine-level failure is transient: the next retry
+            // redoes the wait with the same recorded facts (F-35).
+            Err(_) => {
+                return StepFlow::Error(InterpreterError::Step(
+                    cargobike_core::step::StepError::Transient(
+                        "the durable receive failed".to_owned(),
+                    ),
+                ));
             }
+        };
+        let Some(Signal::MergeComplete {
+            merged,
+            number,
+            head_sha,
+            ..
+        }) = received
+        else {
+            return match received {
+                Some(Signal::MergeComplete { merged: false, .. }) => {
+                    StepFlow::Error(InterpreterError::ApprovalRejected)
+                }
+                _ => wrong_signal(),
+            };
+        };
+        if !merged {
+            // Closed without merge is terminal (`ApprovalRejected`, F-62).
+            return StepFlow::Error(InterpreterError::ApprovalRejected);
         }
-        // The merge topic carries merges only; anything else is a bug.
-        Signal::ApprovalSubmitted { .. } | Signal::LeaseReleased { .. } => wrong_signal(),
+
+        // The CR's head SHA as the change-request step recorded it (the
+        // replay rebuilds this context identically: the dispatch of the
+        // CR step precedes the wait).
+        let cr_step_head = environment
+            .steps
+            .iter()
+            .find(|step| uses_change_request(step))
+            .and_then(|step| context_peek(context, step.id.as_str()));
+
+        // The verify runs as its own durable step: replay re-reads the
+        // recorded decision (no re-query), so the loop's branch shapes
+        // stay deterministic.
+        let verify_name = format!("merge/verify/{step_id}");
+        let providers = services.providers.clone();
+        let repo = snapshot.repo_of(&environment.name);
+        let edits = snapshot.edits_of(&environment.name);
+        let version = snapshot.release.version.clone();
+        let outcome = dbos::step_with::<Result<MergeVerify, ()>, InterpreterError, _, _>(
+            verify_name.as_str(),
+            dbos::StepOptions::default(),
+            move || {
+                let providers = providers.clone();
+                let repo = repo.clone();
+                let edits = edits.clone();
+                let version = version.clone();
+                let observed_head = head_sha.clone();
+                let original_head = cr_step_head.clone();
+                async move {
+                    let decision = verify_merged_facts(
+                        &providers,
+                        repo.as_ref(),
+                        &edits,
+                        &version,
+                        number,
+                        observed_head,
+                        original_head,
+                    )
+                    .await;
+                    dbos::Result::Ok(Ok(decision))
+                }
+            },
+        )
+        .await;
+        let decision = match outcome {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(())) | Err(_) => {
+                // The provider refused during the verify: transient.
+                return StepFlow::Error(InterpreterError::Step(
+                    cargobike_core::step::StepError::Transient(
+                        "the merge verification could not read the provider".to_owned(),
+                    ),
+                ));
+            }
+        };
+        match decision {
+            MergeVerify::Verified => return StepFlow::Continue,
+            MergeVerify::NotYet => continue,
+            MergeVerify::CrClosed => return StepFlow::Error(InterpreterError::ApprovalRejected),
+            MergeVerify::Modified => match on_modified {
+                OnModified::Accept => return StepFlow::Continue,
+                OnModified::Fail => {
+                    return StepFlow::Error(InterpreterError::ChangeRequestModified);
+                }
+            },
+        }
     }
 }
 
-/// `wait: approval` (F-59/F-96): an approval submission advances; a
-/// rejection fails immediately; nothing by the deadline ⇒ the F-34
-/// outcomes.
+/// Whether a resolved step is the env's change-request step (the
+/// head-SHA reference F-62's on_modified compares against).
+fn uses_change_request(step: &ResolvedStep) -> bool {
+    matches!(&step.body, crate::template::StepBody::Action { uses, .. } if uses.starts_with("builtin/change-request"))
+}
+
+/// The recorded outputs an earlier step left in the environment's
+/// expression context (`steps.<id>.outputs.<field>`, F-28).
+fn context_peek(context: &crate::expr::ExprContext, step_id: &str) -> Option<String> {
+    context
+        .steps
+        .get(step_id)
+        .and_then(|recorded| recorded.pointer("/outputs/head_sha"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// The F-62 facts game: provider state -> head-SHA policy -> content
+/// presence, one decision per invocation.
+async fn verify_merged_facts(
+    providers: &cargobike_core::registry::ProviderRegistry,
+    repo: Option<&cargobike_core::model::RepoRef>,
+    edits: &[cargobike_core::provider::Edit],
+    version: &str,
+    number: u64,
+    head_sha_at_signal: Option<String>,
+    original_head_sha: Option<String>,
+) -> MergeVerify {
+    use cargobike_core::model::{CrState, RepoRef};
+
+    let fallback = RepoRef::new("github", "0");
+    let repo = repo.unwrap_or(&fallback);
+    let Ok(provider) = providers.resolve(repo) else {
+        return MergeVerify::NotYet; // unavailable: wait again (F-55)
+    };
+    let Ok(change_request) = Provider::get_change_request(&*provider, repo, number).await else {
+        return MergeVerify::NotYet; // unavailable this cycle: wait again
+    };
+    match change_request.state {
+        CrState::Open => MergeVerify::NotYet,
+        CrState::Closed => MergeVerify::CrClosed,
+        CrState::Merged => {
+            // The head-SHA move: the ORIGINAL head (recorded at the CR's
+            // opening) vs the merge's head (the re-verify's own read).
+            if let (Some(original), Some(current)) =
+                (&original_head_sha, Some(&change_request.head_sha))
+            {
+                if original != current {
+                    return MergeVerify::Modified;
+                }
+            }
+            // Consulted at signal time too: a webhook's head_sha高于the
+            // recorded original says the fix-up happened before merge.
+            if let (Some(original), Some(observed)) = (&original_head_sha, &head_sha_at_signal) {
+                if original != observed {
+                    return MergeVerify::Modified;
+                }
+            }
+            match verify_content(provider.as_ref(), repo, edits, version).await {
+                Ok(()) => MergeVerify::Verified,
+                Err(_) => MergeVerify::Modified,
+            }
+        }
+    }
+}
 async fn wait_approval(
     environment: &ResolvedEnvironment,
     step_id: &str,
@@ -342,32 +543,18 @@ fn wrong_signal() -> StepFlow {
 /// Content verification (F-62's merged case): the CR's target files on
 /// the base branch carry the intended values at the intended pointers.
 /// A mismatch becomes `ChangeRequestModified` (F-62's fail).
-async fn verify_merged(
-    snapshot: &ReleaseSnapshot,
-    environment: &ResolvedEnvironment,
-    services: &InterpreterServices,
-) -> Result<(), InterpreterError> {
-    let Some(repo) = snapshot.repo_of(&environment.name) else {
-        return Err(InterpreterError::Step(
-            cargobike_core::step::StepError::Failed {
-                code: cargobike_core::error::STEP_FAILED.to_owned(),
-                message: "the environment's edits have no target repo (F-32a)".to_owned(),
-            },
-        ));
-    };
-    let provider = services
-        .providers
-        .resolve(&repo)
-        .map_err(failure_from_library)?;
-    let base = Provider::default_branch(&*provider, &repo)
-        .await
-        .map_err(failure_from_provider)?;
-    let edits = snapshot.edits_of(&environment.name);
-    let version = snapshot.release.version.clone();
-    for edit in &edits {
-        let contents = Provider::read_file(&*provider, &repo, edit.file.as_str(), base.as_str())
-            .await
-            .map_err(failure_from_provider)?;
+async fn verify_content(
+    provider: &(dyn cargobike_core::provider::Provider + 'static),
+    repo: &cargobike_core::model::RepoRef,
+    edits: &[cargobike_core::provider::Edit],
+    version: &str,
+) -> Result<(), cargobike_core::provider::ProviderError> {
+    use cargobike_core::provider::ProviderError;
+    let base = provider.default_branch(repo).await?;
+    for edit in edits {
+        let contents = provider
+            .read_file(repo, edit.file.as_str(), base.as_str())
+            .await?;
         // F-41's format inference by extension when the edit didn't
         // declare; the parse is a CONTRACT ERROR (never honoured as
         // empty — a malformed base document cannot decide).
@@ -376,36 +563,28 @@ async fn verify_merged(
             .unwrap_or_else(|| cargobike_core::edits::format_for_path(edit.file.as_str()));
         let document =
             cargobike_core::edits::parse_document(&contents, format).map_err(|failure| {
-                InterpreterError::Step(cargobike_core::step::StepError::Failed {
-                    code: cargobike_core::error::STEP_FAILED.to_owned(),
-                    message: format!("merged base file `{}` did not parse: {failure}", edit.file),
-                })
+                ProviderError::Request(format!(
+                    "the merged base file `{}` did not parse: {failure}",
+                    edit.file
+                ))
             })?;
         // F-147: absent or explicit-null values mean the release version;
         // shared with the apply path so both ends agree.
-        let desired =
-            cargobike_core::edits::desired_value(edit, &serde_json::Value::String(version.clone()));
+        let desired = cargobike_core::edits::desired_value(
+            edit,
+            &serde_json::Value::String(version.to_owned()),
+        );
         match get_by_dot(&document, edit.field.as_str()) {
-            Some(field) if field == &desired => {}
-            _ => return Err(InterpreterError::ChangeRequestModified),
+            Some(found) if found == &desired => {}
+            _ => {
+                return Err(ProviderError::Request(format!(
+                    "the merged file `{}` does not carry the intended `{}`",
+                    edit.file, edit.field
+                )));
+            }
         }
     }
     Ok(())
-}
-
-/// A provider error via a wrapper into the interpreter's envelope.
-fn failure_from_provider(failure: cargobike_core::provider::ProviderError) -> InterpreterError {
-    InterpreterError::Step(cargobike_core::step::StepError::Failed {
-        code: cargobike_core::error::STEP_FAILED.to_owned(),
-        message: failure.to_string(),
-    })
-}
-
-fn failure_from_library(failure: cargobike_core::error::LibraryError) -> InterpreterError {
-    InterpreterError::Step(cargobike_core::step::StepError::Failed {
-        code: cargobike_core::error::STEP_FAILED.to_owned(),
-        message: failure.to_string(),
-    })
 }
 
 /// Reads a dot-notation path into the document tree (F-41's field walk);
