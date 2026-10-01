@@ -140,7 +140,7 @@ async fn clean_target(release_id: &str, target: &CleanupTarget, services: &Clean
     // 3: settle the lease.
     let lease_outcome = match &target.superseded_by {
         Some(superseded_by) => {
-            // : the atomic hand-off to the replacing release.
+            // the atomic hand-off to the replacing release.
             match uuid::Uuid::try_parse(superseded_by) {
                 Ok(new_holder) => match uuid::Uuid::try_parse(release_id) {
                     Ok(old_holder) => services

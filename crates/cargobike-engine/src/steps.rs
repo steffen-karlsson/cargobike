@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_honours_name_and_version_f35() {
+    fn test_resolve_honours_name_and_version() {
         let registry = registry();
         assert!(registry.resolve("builtin/dummy@1").is_ok());
         let error: StepRegistryError = match registry.resolve("builtin/dummy@2") {
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unregistered_uses_rejects_at_compile_time_f35() {
+    fn test_unregistered_uses_rejects_at_compile_time() {
         let template = r#"
 name: x
 version: "1"

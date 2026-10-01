@@ -42,7 +42,7 @@ impl StepType for CommitFiles {
         let provider = provider_from_ctx(ctx, &repo)?;
         let branch = crate::names::branch_name(release, env);
 
-        // : create the branch once; a recovered attempt finds its SHA.
+        // create the branch once; a recovered attempt finds its SHA.
         let branch_tip = match provider.branch_sha(&repo, &branch).await {
             Ok(sha) => sha,
             Err(ProviderError::NotFound(_)) => {
@@ -123,7 +123,7 @@ impl StepType for ChangeRequest {
             .unwrap_or("Automated release change request.")
             .to_owned();
         let labels = param_labels(params);
-        // : find by head branch first.
+        // find by head branch first.
         let found = provider
             .find_change_request_by_head(&repo, head)
             .await

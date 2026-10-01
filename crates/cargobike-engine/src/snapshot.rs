@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// `release.{id, application, version}` context and branch names).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseIdentity {
-    /// The release ID (UUIDv7 text; ).
+    /// The release ID (UUIDv7 text;).
     pub id: String,
     /// The application name.
     pub application: String,
@@ -37,7 +37,7 @@ pub struct ReleaseSnapshot {
     pub inputs: BTreeMap<String, serde_json::Value>,
     /// Step-type versions the release pins .
     pub step_type_versions: BTreeMap<String, String>,
-    /// Content hash over template + inputs (the canonical, ).
+    /// Content hash over template + inputs (the canonical).
     pub content_hash: String,
 }
 

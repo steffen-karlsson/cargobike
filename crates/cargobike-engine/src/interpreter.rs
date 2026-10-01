@@ -6,7 +6,7 @@
 //! . Wait steps are interpreter-native: `recv` over the signal
 //! topics and a provider re-verification for merges. One
 //! argument only — the snapshot (the spike's confirmed shape); the
-//! closure must not capture the instance (the spike doc ).
+//! closure must not capture the instance (the spike doc).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,7 +56,7 @@ pub struct EnvironmentOutcome {
 }
 
 /// Everything the interpreter runs against, part of the registered
-/// closure (the executor snapshots the registry at launch, ).
+/// closure (the executor snapshots the registry at launch).
 pub struct InterpreterServices {
     /// Step types installed (the registry).
     pub steps: Arc<StepRegistry>,
@@ -77,7 +77,7 @@ impl InterpreterServices {
             providers: (*self.providers).clone(),
             http: Arc::clone(&self.http),
             credentials: Arc::clone(&self.credentials),
-            // : `release_id/environment/step_id` is the idempotency input.
+            // `release_id/environment/step_id` is the idempotency input.
             idempotency_key: format!("{release_id}/{environment}/{step_id}"),
             cancel_token: cargobike_core::step::CancelToken::new(),
             log: Span::current(),
@@ -85,7 +85,7 @@ impl InterpreterServices {
     }
 }
 
-/// Registers the interpreter; registration only works BEFORE `launch()`
+/// Registers the interpreter; registration only works BEFORE `launch`
 /// (; the spike's registry snapshot applies).
 pub fn register_interpreter(
     instance: &dbos::DBOS,
@@ -156,7 +156,7 @@ async fn run_environment(
         match run_step(snapshot, environment, step, &mut context, services).await {
             StepFlow::Continue => {}
             StepFlow::Skip => {
-                // : the lease releases on skip, waking the queue.
+                // the lease releases on skip, waking the queue.
                 if let Err(release_failure) =
                     crate::concurrency::release_lease(&services.leases, snapshot, environment).await
                 {
@@ -170,13 +170,13 @@ async fn run_environment(
                 return finished(environment, EnvironmentPhase::Skipped, None);
             }
             StepFlow::Error(failure) => {
-                // : a failed environment KEEPS the lease for the fork
+                // a failed environment KEEPS the lease for the fork
                 // resume; the supersede chain releases it server-side.
                 return error_to_outcome(environment, failure);
             }
         }
     }
-    // : the lease releases on complete, waking the queue.
+    // the lease releases on complete, waking the queue.
     if let Err(release_failure) =
         crate::concurrency::release_lease(&services.leases, snapshot, environment).await
     {
@@ -390,7 +390,7 @@ async fn wait_merge(
             };
         };
         if !merged {
-            // Closed without merge is terminal (`ApprovalRejected`, ).
+            // Closed without merge is terminal (`ApprovalRejected`).
             return StepFlow::Error(InterpreterError::ApprovalRejected);
         }
 
@@ -469,7 +469,7 @@ fn uses_change_request(step: &ResolvedStep) -> bool {
 }
 
 /// The recorded outputs an earlier step left in the environment's
-/// expression context (`steps.<id>.outputs.<field>`, ).
+/// expression context (`steps.<id>.outputs.<field>`).
 fn context_peek(context: &crate::expr::ExprContext, step_id: &str) -> Option<String> {
     context
         .steps
@@ -591,7 +591,7 @@ async fn verify_content(
                     edit.file
                 ))
             })?;
-        // : absent or explicit-null values mean the release version;
+        // absent or explicit-null values mean the release version;
         // shared with the apply path so both ends agree.
         let desired = cargobike_core::edits::desired_value(
             edit,
@@ -704,7 +704,7 @@ async fn dispatch_action(
             ));
         }
     };
-    // : action steps run inside `dbos::step` — the checkpoint makes
+    // action steps run inside `dbos::step` — the checkpoint makes
     // the run exactly-once per attempt (the replays skip the body) and the
     // template's retry policy maps onto `StepOptions` .
     let options = step_options(step);
@@ -751,7 +751,7 @@ async fn dispatch_action(
     match inner {
         Ok(execution_result) => match execution_result {
             Ok(StepOutput::Continue(outputs)) => {
-                // : the recorded outputs (`steps.<id>.outputs.*`) are
+                // the recorded outputs (`steps.<id>.outputs.*`) are
                 // durable WITH the step's checkpoint — the context only
                 // gains them after the run.
                 context

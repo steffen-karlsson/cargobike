@@ -3,7 +3,7 @@
 //! Gates and `${{ ... }}` parameter expressions evaluate against one
 //! documented context (theirs note): `release.{id, application, version}`,
 //! `env.{name, inputs}`, `inputs`, and `steps.<id>.outputs`. Pure
-//! functions only — the registrar refuses `now()`-style impurity by
+//! functions only — the registrar refuses `now`-style impurity by
 //! construction of what it registers .
 
 use semver::Version as SemVerVersion;
@@ -99,8 +99,8 @@ impl ExprContext {
     /// Builds the environment the Program evaluates against .
     pub fn cel_context(&self) -> cel::Context<'static> {
         let mut context = cel::Context::empty();
-        // `now()`-style impurity is not registered (the promise);
-        // Context::empty() keeps the pure core's functions only.
+        // `now`-style impurity is not registered (the promise);
+        // Context::empty keeps the pure core's functions only.
         for (name, value) in self.variables() {
             context.add_variable(name, value);
         }
@@ -129,7 +129,7 @@ impl ExprContext {
             }
         });
         // The documented gates address the semver result as
-        // `semver(the v).prerelease()` — CEL resolves `.prerelease()` as a
+        // `semver(the v).prerelease` — CEL resolves `.prerelease` as a
         // method whose receiver arrives via the magic `This` wrapper.
         for field in ["major", "minor", "patch", "prerelease"] {
             context.add_function(field, move |receiver: cel::extractors::This<cel::Value>| {

@@ -100,7 +100,7 @@ pub struct ResolvedEnvironment {
     pub concurrency: Option<cargobike_core::template::ConcurrencyPolicy>,
     /// Expanded, resolved steps.
     pub steps: Vec<ResolvedStep>,
-    /// Per-environment inputs the release's provision stamps (     /// `repo` and `edits` are the well-known entries; the registry may
+    /// Per-environment inputs the release's provision stamps ( /// `repo` and `edits` are the well-known entries; the registry may
     /// also add generic ones — the interpreter reads them via env.inputs).
     #[serde(default)]
     pub env_inputs: std::collections::BTreeMap<String, serde_json::Value>,
@@ -111,13 +111,13 @@ pub struct ResolvedEnvironment {
 pub struct CompiledTemplate {
     /// Template name.
     pub name: String,
-    /// Template version (the snapshotted; ).
+    /// Template version (the snapshotted;).
     pub version: String,
     /// Application-wide inputs the registry supplies .
     pub inputs: std::collections::BTreeMap<String, cargobike_core::template::InputSpec>,
     /// Per-environment inputs the registry supplies .
     pub environment_inputs: std::collections::BTreeMap<String, cargobike_core::template::InputSpec>,
-    /// Environments in declaration order (the gates reference names; ).
+    /// Environments in declaration order (the gates reference names;).
     pub environments: Vec<ResolvedEnvironment>,
 }
 
@@ -228,7 +228,7 @@ fn validate(template: &PipelineTemplate, scheme: &VersionScheme) -> Result<(), T
             )));
         }
     }
-    // : `include:` at the top level references a named group; groups
+    // `include:` at the top level references a named group; groups
     // resolve inline (the single level) — cycles have no place to hide.
     let groups: std::collections::HashMap<&str, &cargobike_core::template::StepGroup> = template
         .step_groups
@@ -258,7 +258,7 @@ fn validate(template: &PipelineTemplate, scheme: &VersionScheme) -> Result<(), T
             }
         }
     }
-    // : gate functions that belong to specific version schemes.
+    // gate functions that belong to specific version schemes.
     for environment in &template.environments {
         validate_gate(
             scheme,
@@ -458,7 +458,7 @@ fn parse_duration(text: &str) -> Result<StdDuration, TemplateError> {
     })
 }
 
-/// : uniqueness after `include` expansion — declared and auto ids both.
+/// uniqueness after `include` expansion — declared and auto ids both.
 fn ensure_unique(steps: &[ResolvedStep]) -> Result<(), TemplateError> {
     let mut seen = std::collections::HashSet::new();
     for step in steps {
@@ -599,7 +599,7 @@ environments:
     }
 
     #[test]
-    fn test_semver_gates_refuse_non_semver_schemes_f27a() {
+    fn test_semver_gates_refuse_non_semver_schemes() {
         let source = r#"
 name: x
 version: "1"
@@ -623,7 +623,7 @@ environments:
     }
 
     #[test]
-    fn test_include_of_unknown_group_and_nested_include_refused_f32b() {
+    fn test_include_of_unknown_group_and_nested_include_refused() {
         let source = r#"
 name: x
 version: "1"

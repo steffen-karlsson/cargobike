@@ -3,8 +3,18 @@
 //! test kills it at a milestone and the respawn recovers.
 //!
 //! Usage: cargo run --features crash-hooks --bin engine-harness \
-//!          -- <app-name> <scratch-dir> <release-id>
+//!          -- <app-name> <scratch-dir> <release-id> <start|hold> [actions|waits]
 //! Env: CB_HARNESS_DB_URL (the fixture Postgres), CB_CRASH_AT.
+//!
+//! (Test tooling: stdout/stderr reporting and panic-on-impossible state
+//! are the contract, so the panic/print lints stay off here.)
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 
 #[cfg(not(feature = "crash-hooks"))]
 fn main() -> anyhow::Result<()> {
@@ -52,6 +62,45 @@ environments:
     steps: [include: deploy]
 "#;
 
+    /// The waits variant: actions, then the durable merge wait — a
+    /// recovery crossing into `wait: merge` replays the recorded steps
+    /// and blocks on the topic (the probes drive it).
+    pub const WAIT_TEMPLATE: &str = r#"
+name: harness
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+step_groups:
+  - name: deploy
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+      - id: cr
+        uses: builtin/change-request@1
+        with:
+          branch: ${{ steps.edit.outputs.branch }}
+      - wait: merge
+        timeout: 7d
+        on_modified: fail
+        on_timeout: fail
+environments:
+  - name: stage
+    steps: [include: deploy]
+"#;
+
+    /// The template selection argument: `actions` (the default shape) or
+    /// `waits` (the merge-wait variant; the deadline is the template's
+    /// own).
+    pub fn template_for(kind: Option<&str>) -> anyhow::Result<&'static str> {
+        match kind.unwrap_or("actions") {
+            "actions" => Ok(TEMPLATE),
+            "waits" => Ok(WAIT_TEMPLATE),
+            other => Err(anyhow::anyhow!("unknown template kind `{other}`")),
+        }
+    }
+
     pub fn run() -> anyhow::Result<()> {
         let args: Vec<String> = std::env::args().collect();
         let app = args
@@ -76,7 +125,15 @@ environments:
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(boot(app, scratch, release_id, mode, database_url))
+        let template_kind = args.get(5).cloned();
+        runtime.block_on(boot(
+            app,
+            scratch,
+            release_id,
+            mode,
+            template_kind.as_deref(),
+            database_url,
+        ))
     }
 
     /// One DBOS boot + one interpreter start; the process holds until the
@@ -86,6 +143,7 @@ environments:
         scratch: String,
         release_id: String,
         mode: String,
+        template_kind: Option<&str>,
         database_url: String,
     ) -> anyhow::Result<()> {
         let config = dbos::Config {
@@ -139,8 +197,9 @@ environments:
 
         // The snapshot: the compiled template with the mock repo + edits
         // stamped into its one environment (the provision).
-        let mut compiled = cargobike_engine::template::compile(TEMPLATE, &VersionScheme::Semver)
-            .map_err(|error| anyhow::anyhow!("template: {error}"))?;
+        let mut compiled =
+            cargobike_engine::template::compile(template_for(template_kind)?, &VersionScheme::Semver)
+                .map_err(|error| anyhow::anyhow!("template: {error}"))?;
         let mut env_inputs = std::collections::BTreeMap::new();
         env_inputs.insert(
             "repo".to_owned(),

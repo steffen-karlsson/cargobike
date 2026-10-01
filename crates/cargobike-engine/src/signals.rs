@@ -3,7 +3,7 @@
 //! Topics so different waits cannot receive each other's messages;
 //! idempotency keys so redelivered webhooks or a retried reconciler send
 //! no duplicate signal; `Forks::Skip` chosen and documented (the
-//! spike report docs/spike-dbos.md ).
+//! spike report docs/spike-dbos.md).
 //!
 //! Envelope + errors: the interpreter's durable error type implements
 //! the crate's `DurableError` (a blanket impl covers serde + Error types).
@@ -63,7 +63,7 @@ pub enum Signal {
         /// The CR number observed (the re-verify consults it).
         number: u64,
         /// The CR's head SHA at observation (the on_modified detector,
-        /// ); the provider re-verify refreshes it when absent.
+        ///); the provider re-verify refreshes it when absent.
         head_sha: Option<String>,
     },
     /// An approval `approve`/`reject` .
@@ -98,7 +98,7 @@ pub enum InterpreterError {
     /// The `wait: approval` waiter timed out (`ApprovalTimeout`).
     #[error("failed to receive an approval in time")]
     ApprovalTimeout,
-    /// CR closed without merge (`ApprovalRejected`, terminal; ).
+    /// CR closed without merge (`ApprovalRejected`, terminal;).
     #[error("the change request was closed without merging")]
     ApprovalRejected,
     /// CR head changed under `on_modified: fail` (`ChangeRequestModified`).
@@ -140,7 +140,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn test_topics_are_scoped_so_waits_cannot_confuse_sends_f20a() {
+    fn test_topics_are_scoped_so_waits_cannot_confuse_sends() {
         assert_eq!(
             merge_topic("production", "merge-0"),
             "merge/production/merge-0"
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_keys_derive_per_source_event_f20a() {
+    fn test_signal_keys_derive_per_source_event() {
         assert_eq!(
             merge_signal_key("github", "delivery-1"),
             "github/delivery/delivery-1"

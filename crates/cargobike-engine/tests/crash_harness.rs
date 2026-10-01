@@ -4,8 +4,11 @@
 //!
 //! Requires `--features crash-hooks` (the milestone hooks + the mock
 //! provider) and `CARGOBIKE_TEST_DATABASE_URL`; skips cleanly otherwise.
+//!
+//! (Test code: asserts and reports, so the panic/print lints stay off.)
 
 #![cfg(feature = "crash-hooks")]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::print_stderr)]
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -142,7 +145,7 @@ fn assert_convergence(scratch: &std::path::Path, milestone: &str) {
         .and_then(serde_json::Value::as_object)
         .expect("files map");
     assert!(
-        files.keys().any(|key| key.ends_with("image.tag")),
+        files.keys().any(|key| key.ends_with("manifest.yaml")),
         "the committed edit result is absent after {milestone}: {state:?}"
     );
 }

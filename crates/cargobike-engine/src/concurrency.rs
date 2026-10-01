@@ -3,8 +3,8 @@
 //!
 //! - no row / already held ⇒ proceed (a no-op);
 //! - held by another: `supersede` transfers the lease atomically — but
-//!   never a higher version (the guard orders by the scheme, with the
-//!   creation-time fallback for `opaque`);
+//! never a higher version (the guard orders by the scheme, with the
+//! creation-time fallback for `opaque`);
 //! - `queue` blocks on the `lease/{environment}` signal;
 //! - `reject` fails with `ConcurrencyRejected`.
 //!
