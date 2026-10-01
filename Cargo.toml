@@ -9,9 +9,6 @@ members = [
     "crates/cargobike-extension-sdk",
     "crates/cargobike-provider-github",
 ]
-# Spikes are throwaway prototypes with their own dependency set.
-exclude = ["spikes"]
-
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

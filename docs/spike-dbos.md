@@ -1,11 +1,18 @@
 # DBOS Transact (Rust) SDK Spike — Findings (PRD task 1.1)
 
 **Crate**: `dbos` 0.5.0 (MIT, released 2026-09-09). **Toolchain**: Rust 1.98.1.
-**Spike**: `spikes/dbos-spike/` (outside the workspace, `cargo test -p dbos-spike`
-from its own directory); sequential one-test driver boots its own Postgres.
 
-All five experiments pass. Mismatch between PRD assumptions and the real
-API surfaced the items noted below; nothing invalidates the Phase 3 design.
+**Status, retired**: the spike crate existed only to answer DBOS API
+questions before the engine was written; after 3.15 the findings live in
+`cargobike-engine` itself and the convergence claims are re-proved
+daily by the T1 crash harness (`crates/cargobike-engine/tests/
+crash_harness.rs` — the E3/E5 kill-and-recover pattern against the real
+interpreter). The crate and its CI job were removed; this document keeps
+the reported facts (the `app_version` global-registry quirk found again
+independent during the harness work is already under §2's recovery row).
+
+All five experiments passed. Mismatch between PRD assumptions and the real
+API surfaced the items noted below; nothing invalidated the Phase 3 design.
 
 ## 1. Verified API surface (engine plan ↔ real signatures)
 

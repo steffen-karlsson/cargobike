@@ -84,15 +84,3 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: build
         run: cargo build --workspace
-
-  spike:
-    # PRD task 1.1's runtime verification, repeatable in CI only (docker).
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: dbos spike
-        working-directory: spikes/dbos-spike
-        run: cargo test
