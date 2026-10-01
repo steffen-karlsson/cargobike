@@ -39,7 +39,7 @@ pub struct ContextConfig {
 }
 
 /// The user-facing output default (`table|json|yaml`).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFormat {
     /// Human tables (the default).
@@ -334,28 +334,27 @@ defaults:
             "current_context: production\ncontexts:\n  - name: production\n    url: https://cargobike.example.com\n    auth:\n      type: api-key\n      api_key: { file: /tmp/key }\n",
         )
         .expect("parses");
-        let resolved = resolve(&config, None, None, false, None).expect("resolves");
+        let resolved = resolve(&config, None, false, None).expect("resolves");
         assert_eq!(resolved.url, "https://cargobike.example.com");
         assert!(matches!(resolved.auth, AuthConfig::ApiKey { .. }));
         // Flag over context (F-145).
         let resolved = resolve(
             &config,
             Some("http://localhost:8080".to_owned()),
-            None,
             false,
             None,
         )
         .expect("resolves");
         assert_eq!(resolved.url, "http://localhost:8080");
         // No context + no env + not Actions => refuses to guess.
-        let resolved = resolve(&ConfigFile::default(), None, None, false, None);
+        let resolved = resolve(&ConfigFile::default(), None, false, None);
         assert!(resolved.is_err());
         // The refusal rule applies to context urls too.
         let hostile = parse(
             "contexts:\n  - name: prod\n    url: http://cargobike.example.com\n    auth: {type: none}\n",
         )
         .expect("parses");
-        let resolved = resolve(&hostile, None, None, false, None);
+        let resolved = resolve(&hostile, None, false, None);
         assert!(resolved.is_err(), "remote http refuses without the flag");
     }
 
@@ -390,14 +389,10 @@ pub struct Resolved {
 pub fn resolve(
     config: &ConfigFile,
     flag_url: Option<String>,
-    env_url: Option<String>,
     allow_http: bool,
     selected: Option<String>,
 ) -> Result<Resolved, ConfigError> {
     if let Some(text) = flag_url {
-        return resolved_from(text, None, config, allow_http);
-    }
-    if let Some(text) = env_url {
         return resolved_from(text, None, config, allow_http);
     }
     let context_name = selected

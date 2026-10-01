@@ -369,11 +369,17 @@ name = "cargobike-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "humantime",
  "pretty_assertions",
+ "reqwest",
+ "secrecy",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "thiserror",
+ "tokio",
  "url",
+ "uuid",
 ]
 
 [[package]]

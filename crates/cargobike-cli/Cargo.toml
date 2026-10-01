@@ -12,9 +12,15 @@ workspace = true
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env"] }
+humantime.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls", "json"] }
+secrecy.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml_ng.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url = "2.5.8"
 
 [dev-dependencies]
