@@ -16,7 +16,7 @@ use cargobike_core::provider::Provider as _ProviderContract;
 use cargobike_core::registry::ProviderRegistry;
 use uuid::Uuid;
 
-use crate::signals::{InterpreterError, Signal, merge_signal_key, merge_topic};
+use crate::signals::{InterpreterError, Signal, merge_topic};
 
 /// The registered reconciler workflow name (F-68's durable loop).
 pub const RECONCILE_WORKFLOW: &str = "cargobike.reconcile.v1";
@@ -88,13 +88,29 @@ impl PendingReleaseSource for InMemoryPendingReleaseSource {
     async fn pending_approval_ids(
         &self,
         batch_size: u32,
-        _cursor: Option<Uuid>,
+        cursor: Option<Uuid>,
     ) -> Result<Vec<Uuid>, String> {
         let read = self.existing_id_set.read();
         let Ok(set) = read else {
             return Err("the fixture set is poisoned".to_owned());
         };
-        Ok(set.iter().copied().take(batch_size as usize).collect())
+        // Newest-first with the cursor skip (the live seam's ordering;
+        // the fixture simply must terminate its pagination).
+        let mut ids: Vec<Uuid> = set.iter().copied().collect();
+        ids.sort();
+        ids.reverse();
+        let start = cursor
+            .map(|latest| {
+                ids.iter()
+                    .take_while(|candidate| *candidate >= &latest)
+                    .count()
+            })
+            .unwrap_or(0);
+        Ok(ids
+            .into_iter()
+            .skip(start)
+            .take(batch_size as usize)
+            .collect())
     }
 }
 
@@ -231,8 +247,11 @@ fn reconciler_send_form(
     let key = crate::signals::merge_signal_key(
         &row.provider,
         &format!(
-            "reconcile/{}/{}/{}",
-            row.release_id, row.environment, row.cr_number
+            "reconcile/{}/{}/{}/{}",
+            row.release_id,
+            row.environment,
+            row.cr_number,
+            if merged { "merged" } else { "closed" }
         ),
     );
     (
@@ -245,55 +264,10 @@ fn reconciler_send_form(
     )
 }
 
-/// The signal the reconciler emits for a CR state (F-67/F-20a). The
-/// topic's `step_id` is the release's current approval wait; the
-/// idempotency key derives from the CR state itself, so a re-observed
-/// merged CR cannot send twice.
-pub fn reconcile_signal(
-    provider: &str,
-    release_id: &str,
-    environment: &str,
-    step_id: &str,
-    cr_number: u64,
-    merged: bool,
-) -> (String, &'static str, Signal, String) {
-    let topic_line = merge_topic(environment, step_id);
-    let key = merge_signal_key(
-        provider,
-        &format!(
-            "reconcile/{release_id}/{environment}/{cr_number}/{}",
-            if merged { "merged" } else { "closed" }
-        ),
-    );
-    (
-        key,
-        Box::leak(topic_line.clone().into_boxed_str()),
-        Signal::MergeComplete {
-            merged,
-            by_way_of: format!("reconciler/{cr_number}"),
-        },
-        topic_line,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-
-    #[test]
-    fn test_reconcile_signal_addresses_the_release_attempt() {
-        let (key, _topic_leak, signal, topic_value) =
-            reconcile_signal("github", "rel-1", "production", "merge-0", 42, true);
-        assert_eq!(key, "github/delivery/reconcile/rel-1/production/42/merged");
-        assert_eq!(topic_value, "merge/production/merge-0");
-        let _ = _topic_leak;
-        assert!(matches!(signal, Signal::MergeComplete { merged: true, .. }));
-        // A re-observed merged CR: the SAME key (dedupe, F-20a).
-        let (key_again, _, _, _) =
-            reconcile_signal("github", "rel-1", "production", "merge-0", 42, true);
-        assert_eq!(key, key_again);
-    }
 
     #[test]
     fn test_humantime_serde_roundtrips_the_config_forms() {

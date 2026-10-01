@@ -21,10 +21,6 @@ use crate::leases::{LeaseAttempt, LeaseRepository, LeaseTransfer};
 use crate::signals::InterpreterError;
 use crate::snapshot::ReleaseSnapshot;
 
-/// F-70..F-74's default when the config omits the policy: `supersede`
-/// (release trains: the newest release wins). Documented in F-31.
-pub const DEFAULT_POLICY: Option<cargobike_core::template::ConcurrencyPolicy> = None;
-
 /// The decision the interpreter asks the environment to take.
 #[derive(Clone, Debug)]
 pub enum LeaseDecision {
