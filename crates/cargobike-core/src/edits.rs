@@ -15,9 +15,7 @@ pub fn apply_to_document(
 ) -> Result<Vec<u8>, EditError> {
     match format {
         EditFormat::Json => {
-            // (F-147: no value → the release version; the caller supplies it)
-            let mut document = serde_json::from_slice::<serde_json::Value>(base)
-                .map_err(|failure| EditError::InvalidDocument(format!("json: {failure}")))?;
+            let mut document = parse_document(base, format)?;
             for edit in edits {
                 let value = desired_value(edit, default_value);
                 set_json(&mut document, edit.field.as_str(), &value)?;
@@ -26,8 +24,7 @@ pub fn apply_to_document(
                 .map_err(|failure| EditError::InvalidDocument(format!("json: {failure}")))
         }
         EditFormat::Yaml => {
-            let mut document = serde_yaml_ng::from_slice::<serde_json::Value>(base)
-                .map_err(|failure| EditError::InvalidDocument(format!("yaml: {failure}")))?;
+            let mut document = parse_document(base, format)?;
             for edit in edits {
                 let value = desired_value(edit, default_value);
                 set_json(&mut document, edit.field.as_str(), &value)?;
@@ -64,11 +61,30 @@ pub fn format_for_path(file: &str) -> EditFormat {
 }
 
 /// The edit's desired value: absent OR explicit null reads the
-/// release version (F-147's default), anything else wins.
-fn desired_value(edit: &Edit, default_value: &serde_json::Value) -> serde_json::Value {
+/// release version (F-147's default), anything else wins. The merge
+/// verifier shares this so both ends agree.
+pub fn desired_value(edit: &Edit, default_value: &serde_json::Value) -> serde_json::Value {
     match &edit.value {
         None | Some(serde_json::Value::Null) => default_value.clone(),
         Some(value) => value.clone(),
+    }
+}
+
+/// Parses a document in the edit's format (the merge verifier's read
+/// side of [`apply_to_document`]); failures are contract errors, never
+/// honoured as empty.
+pub fn parse_document(base: &[u8], format: EditFormat) -> Result<serde_json::Value, EditError> {
+    match format {
+        EditFormat::Json => serde_json::from_slice(base)
+            .map_err(|failure| EditError::InvalidDocument(format!("json: {failure}"))),
+        EditFormat::Yaml => serde_yaml_ng::from_slice(base)
+            .map_err(|failure| EditError::InvalidDocument(format!("yaml: {failure}"))),
+        EditFormat::Toml => {
+            let text = std::str::from_utf8(base)
+                .map_err(|_| EditError::InvalidDocument("toml: utf8".to_owned()))?;
+            toml::from_str(text)
+                .map_err(|failure| EditError::InvalidDocument(format!("toml: {failure}")))
+        }
     }
 }
 

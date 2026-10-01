@@ -363,26 +363,28 @@ async fn verify_merged(
         .await
         .map_err(failure_from_provider)?;
     let edits = snapshot.edits_of(&environment.name);
-    let version = snapshot_release_version(snapshot);
+    let version = snapshot.release.version.clone();
     for edit in &edits {
         let contents = Provider::read_file(&*provider, &repo, edit.file.as_str(), base.as_str())
             .await
             .map_err(failure_from_provider)?;
-        let text =
-            String::from_utf8(contents).map_err(|_| InterpreterError::ChangeRequestModified)?;
-        let document: serde_json::Value = match edit
+        // F-41's format inference by extension when the edit didn't
+        // declare; the parse is a CONTRACT ERROR (never honoured as
+        // empty — a malformed base document cannot decide).
+        let format = edit
             .format
-            .unwrap_or(cargobike_core::provider::EditFormat::Yaml)
-        {
-            cargobike_core::provider::EditFormat::Json => {
-                serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
-            }
-            _ => serde_yaml_ng::from_str(&text).unwrap_or(serde_json::Value::Null),
-        };
-        let desired = edit
-            .value
-            .clone()
-            .unwrap_or(serde_json::Value::String(version.clone()));
+            .unwrap_or_else(|| cargobike_core::edits::format_for_path(edit.file.as_str()));
+        let document =
+            cargobike_core::edits::parse_document(&contents, format).map_err(|failure| {
+                InterpreterError::Step(cargobike_core::step::StepError::Failed {
+                    code: cargobike_core::error::STEP_FAILED.to_owned(),
+                    message: format!("merged base file `{}` did not parse: {failure}", edit.file),
+                })
+            })?;
+        // F-147: absent or explicit-null values mean the release version;
+        // shared with the apply path so both ends agree.
+        let desired =
+            cargobike_core::edits::desired_value(edit, &serde_json::Value::String(version.clone()));
         match get_by_dot(&document, edit.field.as_str()) {
             Some(field) if field == &desired => {}
             _ => return Err(InterpreterError::ChangeRequestModified),
@@ -404,12 +406,6 @@ fn failure_from_library(failure: cargobike_core::error::LibraryError) -> Interpr
         code: cargobike_core::error::STEP_FAILED.to_owned(),
         message: failure.to_string(),
     })
-}
-
-/// The version string in an environment (F-8's own vocabulary).
-fn snapshot_release_version(snapshot: &ReleaseSnapshot) -> String {
-    let _ = snapshot;
-    String::new()
 }
 
 /// Reads a dot-notation path into the document tree (F-41's field walk);
