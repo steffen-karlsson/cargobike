@@ -56,10 +56,14 @@ impl MockState {
             .unwrap_or_default()
     }
 
-    /// Writes the state file.
+    /// Writes the state file atomically (temp + rename): a killed
+    /// process mid-write must never leave a torn file that reads back
+    /// as empty defaults.
     pub fn save(&self, path: &PathBuf) {
         let contents = serde_json::to_string_pretty(self).expect("state serialises");
-        std::fs::write(path, contents).expect("state write");
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, contents).expect("state temp write");
+        std::fs::rename(&temporary, path).expect("state rename");
     }
 
     /// The state file path for a scratch dir.
