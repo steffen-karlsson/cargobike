@@ -79,6 +79,14 @@ impl ResolvedStep {
             _ => None,
         }
     }
+
+    /// One attempt's body bound (F-35's per-step `timeout`).
+    pub fn action_kind_timeout(&self) -> Option<StdDuration> {
+        match &self.body {
+            StepBody::Action { timeout, .. } => *timeout,
+            _ => None,
+        }
+    }
 }
 
 /// One environment's resolved step sequence.

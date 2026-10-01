@@ -737,8 +737,12 @@ async fn dispatch_action(
 /// Maps the template's retry policy to `StepOptions` (F-35; total
 /// attempts is `max_attempts`).
 fn step_options(step: &ResolvedStep) -> dbos::StepOptions<InterpreterError> {
+    let attempt_bound = step.action_kind_timeout();
     let Some(policy) = &step.body_retry_policy() else {
-        return dbos::StepOptions::default();
+        return dbos::StepOptions {
+            timeout: attempt_bound,
+            ..dbos::StepOptions::default()
+        };
     };
     let attempts = policy.attempts.max(1);
     let interval = policy
@@ -746,9 +750,39 @@ fn step_options(step: &ResolvedStep) -> dbos::StepOptions<InterpreterError> {
         .as_deref()
         .and_then(|text| humantime::parse_duration(text).ok())
         .unwrap_or(Duration::from_secs(1));
+    let default = dbos::StepOptions::<InterpreterError>::default();
+    // F-35's backoff: `fixed` stays at the interval; `exponential` grows by
+    // the default rate (2.0) within `max_delay`.
+    let (backoff_rate, max_interval) = match policy.backoff {
+        cargobike_core::template::Backoff::Fixed => (1.0, default.max_interval),
+        cargobike_core::template::Backoff::Exponential => (
+            default.backoff_rate,
+            policy
+                .max_delay
+                .as_deref()
+                .and_then(|text| humantime::parse_duration(text).ok())
+                .unwrap_or(default.max_interval),
+        ),
+    };
     dbos::StepOptions {
         max_attempts: attempts,
         interval,
+        backoff_rate,
+        max_interval,
+        timeout: attempt_bound,
+        // The Transient contract: machinery wobble retries, permanent
+        // template/step failures do not (F-35, §6.7).
+        should_retry: Some(std::sync::Arc::new(
+            |failure: &dbos::Error<InterpreterError>| {
+                matches!(
+                    failure,
+                    dbos::Error::StepTimeout { .. }
+                        | dbos::Error::Application(InterpreterError::Step(
+                            cargobike_core::step::StepError::Transient(_)
+                        ))
+                )
+            },
+        )),
         ..dbos::StepOptions::default()
     }
 }
