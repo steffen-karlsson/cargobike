@@ -949,6 +949,31 @@ pub enum ConfigError {
 /// The env-var prefix and curated-key mapping .
 pub const ENV_PREFIX: &str = "CARGOBIKE_SERVER_";
 
+/// Parses a binary size like `512KiB`, `1MiB`, `25MiB` (R4's unit
+/// grammar) into bytes; plain integers are bytes.
+pub fn parse_size(text: &str) -> Option<u64> {
+    let trimmed = text.trim().to_ascii_lowercase();
+    let (digits, multiplier) = if let Some(before) = trimmed.strip_suffix("kib") {
+        (before, 1024_u64)
+    } else if let Some(before) = trimmed.strip_suffix("mib") {
+        (before, 1024_u64 * 1024)
+    } else if let Some(before) = trimmed.strip_suffix("gib") {
+        (before, 1024_u64 * 1024 * 1024)
+    } else if let Some(before) = trimmed.strip_suffix("kb") {
+        (before, 1000_u64)
+    } else if let Some(before) = trimmed.strip_suffix("mb") {
+        (before, 1_000_000_u64)
+    } else if let Some(before) = trimmed.strip_suffix("gb") {
+        (before, 1_000_000_000_u64)
+    } else {
+        (trimmed.as_str(), 1_u64)
+    };
+    let bare = digits.trim().trim_end_matches('b').trim();
+    bare.parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(multiplier))
+}
+
 /// Curated env-var overrides (the scalars only; a published list, not
 /// an automatic `__` mapping). Values map the config path; a `*_FILE`
 /// path is read, not substituted.

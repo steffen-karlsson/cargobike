@@ -62,8 +62,58 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
             Arc::clone(&state),
             crate::auth::require_auth,
         ))
-        .with_state(state);
-    unauthenticated.merge(protected)
+        .with_state(Arc::clone(&state));
+    let body_limit = crate::config::parse_size(&state.config.borrow().limits.api.max_body_size)
+        .unwrap_or(1024 * 1024);
+    unauthenticated
+        .merge(protected)
+        // The 2.1 surface: trace, panic containment per RFC 9457, body
+        // limit, sensitive headers (never traced/logged).
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer::new(
+            sensitive_headers(),
+        ))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(body_limit as usize))
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(PanicProblem))
+}
+
+/// Headers the trace layer never puts in spans (the token values).
+fn sensitive_headers() -> Vec<axum::http::HeaderName> {
+    vec![
+        axum::http::HeaderName::from_static("authorization"),
+        axum::http::HeaderName::from_static("cookie"),
+        axum::http::HeaderName::from_static("if-match"),
+    ]
+}
+
+/// A handler's panic becomes the RFC 9457 internal problem; the panic's
+/// own text stays out of the response.
+#[derive(Clone, Default)]
+struct PanicProblem;
+
+impl tower_http::catch_panic::ResponseForPanic for PanicProblem {
+    type ResponseBody = axum::body::Body;
+
+    fn response_for_panic(
+        &mut self,
+        panic: std::boxed::Box<dyn std::any::Any + Send>,
+    ) -> axum::response::Response<Self::ResponseBody> {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse as _;
+        tracing::error!(
+            ?panic,
+            "a handler panicked; the request answers as an internal problem"
+        );
+        let body = serde_json::json!({
+            "type": "https://cargobike.dev/errors/internal-error",
+            "title": "Internal Server Error",
+            "status": 500,
+            "detail": "Internal request handling failed.",
+            "instance": "",
+            "code": "InternalError",
+        });
+        (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(body)).into_response()
+    }
 }
 
 /// Lists releases : filters + the latest cursor .
