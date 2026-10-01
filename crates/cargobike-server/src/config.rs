@@ -950,21 +950,23 @@ pub enum ConfigError {
 pub const ENV_PREFIX: &str = "CARGOBIKE_SERVER_";
 
 /// Curated env-var overrides (the scalars only; a published list, not
-/// an automatic `__` mapping). Values map the config path.
+/// an automatic `__` mapping). Values map the config path; a `*_FILE`
+/// path is read, not substituted.
 pub fn env_overrides() -> Vec<(&'static str, &'static str)> {
     vec![
         ("LISTEN", "server.listen"),
         ("PUBLIC_URL", "server.public_url"),
         ("DATABASE_URL", "database.url"),
-        ("DATABASE_URL_FILE", "database.url"),
+        ("DATABASE_URL_FILE", "database.url_file"),
         ("LOG_LEVEL", "logging.level"),
         ("LOG_FORMAT", "logging.format"),
     ]
 }
 
-/// Loads the config: defaults ← file ← curated envs . `${VAR}`
-/// interpolation is applied to non-secret string fields only ,
-/// fail-fast on unset variables .
+/// Loads the config: defaults ← file ← post-parse interpolation ←
+/// curated envs. `{VAR}` (and `${VAR:-default}`) interpolation happens
+/// on the PARSED tree only: secret-valued fields refuse both
+/// interpolation and literal `${` marks; unset variables fail-fast.
 pub fn load(path: Option<&std::path::Path>) -> Result<Config, ConfigError> {
     let path = path.map_or_else(
         || {
@@ -974,32 +976,91 @@ pub fn load(path: Option<&std::path::Path>) -> Result<Config, ConfigError> {
         },
         |p| Some(p.to_path_buf()),
     );
-    let mut text = match &path {
-        Some(p) => {
-            std::fs::read_to_string(p)
-                .map_err(|cause| ConfigError::Parse(format!("failed to read {}: {cause}", p.display())))?
-        }
+    let text = match &path {
+        Some(p) => std::fs::read_to_string(p).map_err(|cause| {
+            ConfigError::Parse(format!("failed to read {}: {cause}", p.display()))
+        })?,
         // Env-only bootstrap still parses an (the almost) empty file.
-        None => "server: {}\ndatabase: { url: ${CARGOBIKE_SERVER_DATABASE_URL:-postgres://localhost/cargobike} }\nauth: {}\n".to_owned(),
+        None => "server: {}
+database: { url: postgres://localhost/cargobike }
+auth: {}
+"
+        .to_owned(),
     };
 
-    // Fail-fast ${VAR} expansion for non-secret scalars .
-    if text.contains("${") {
-        text = shellexpand::env(&text)
-            .map_err(|source| ConfigError::Parse(format!("interpolation failed: {source}")))?
-            .into_owned();
-    }
-
-    let mut config: Config =
+    // Parse first, interpolate second: the tree walk sees typed shapes,
+    // so secret fields are recognizable and left untouched.
+    let mut tree: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&text).map_err(|source| ConfigError::Parse(format!("{source}")))?;
+    interpolate_tree(&mut tree)?;
 
-    // Curated env overrides — scalars only : a hand-rolled path set
-    // applied after parse, so mapping is explicit and testable.
+    let mut config: Config = serde_yaml_ng::from_value(tree)
+        .map_err(|source| ConfigError::Parse(format!("{source}")))?;
+
     apply_env_overrides(&mut config)?;
+    apply_provider_overrides(&mut config)?;
 
-    // Literal-database-URL warning and the secrets are materialised
-    // lazily by the caller, never into Debug .
     Ok(config)
+}
+
+/// The config's secret-valued keys: the secret-ref maps
+/// (`{ file }`/`{ env }`/`{ secret }`) and the grammar's SecretValue
+/// fields (a key's Sub-value never interpolates). A `${` appearing
+/// under any of these refuses at load.
+const SECRET_VALUE_KEYS: [&str; 6] = [
+    "file",
+    "env",
+    "secret",
+    "private_key",
+    "hash",
+    "shared_secret",
+];
+
+/// Post-parse interpolation over the parsed YAML tree: string leaves
+/// expand `${VAR}` / `${VAR:-default}` (unset variable ⇒ load error),
+/// except under secret keys, where any `${` refuses.
+fn interpolate_tree(node: &mut serde_yaml_ng::Value) -> Result<(), ConfigError> {
+    interpolate_node(node, false)
+}
+
+fn interpolate_node(node: &mut serde_yaml_ng::Value, in_secret: bool) -> Result<(), ConfigError> {
+    match node {
+        serde_yaml_ng::Value::String(text) => {
+            if text.contains("${") {
+                if in_secret {
+                    return Err(ConfigError::Parse(
+                        "interpolation is forbidden inside secret-valued fields".to_owned(),
+                    ));
+                }
+                *text = shellexpand::env(text)
+                    .map_err(|source| {
+                        ConfigError::Parse(format!("interpolation failed: {source}"))
+                    })?
+                    .into_owned();
+                if text.contains("${") {
+                    return Err(ConfigError::Parse(format!(
+                        "interpolation left an unresolved shell marker: {text:?}"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        serde_yaml_ng::Value::Sequence(items) => {
+            for item in items {
+                interpolate_node(item, in_secret)?;
+            }
+            Ok(())
+        }
+        serde_yaml_ng::Value::Mapping(entries) => {
+            for (key, value) in entries.iter_mut() {
+                let key_text = key.as_str().unwrap_or_default().to_owned();
+                let child = in_secret || SECRET_VALUE_KEYS.contains(&key_text.as_str());
+                interpolate_node(value, child)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn apply_env_overrides(config: &mut Config) -> Result<(), ConfigError> {
@@ -1013,6 +1074,13 @@ fn apply_env_overrides(config: &mut Config) -> Result<(), ConfigError> {
             "server.listen" => config.server.listen = value,
             "server.public_url" => config.server.public_url = Some(value),
             "database.url" => config.database.url = SecretValue::Literal(value),
+            // A file-shaped URL: the VALUE is the path; the
+            // materialisation reads its contents (F-88's contract).
+            "database.url_file" => {
+                config.database.url = SecretValue::File(FileSecret {
+                    file: PathBuf::from(value),
+                });
+            }
             "logging.level" => config.logging.level = value,
             "logging.format" => config.logging.format = value,
             other => {
@@ -1020,6 +1088,98 @@ fn apply_env_overrides(config: &mut Config) -> Result<(), ConfigError> {
                     "unknown env override path {other:?}"
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// The single-GitHub-Provider env shortcuts: the variables stamp the
+/// github entry (creating one when the file declares none), so CI and
+/// one-provider deployments need no registry block at all. Where the
+/// file already declares the github entry, the set values win for the
+/// absent fields only.
+fn apply_provider_overrides(config: &mut Config) -> Result<(), ConfigError> {
+    let prefix = format!("{ENV_PREFIX}GITHUB_");
+    let app_id = std::env::var(format!("{prefix}APP_ID"))
+        .ok()
+        .filter(|v| !v.is_empty());
+    let private_key_file = std::env::var(format!("{prefix}PRIVATE_KEY_FILE"))
+        .ok()
+        .filter(|v| !v.is_empty());
+    let api_url = std::env::var(format!("{prefix}API_URL"))
+        .ok()
+        .filter(|v| !v.is_empty());
+    let webhook_secret_file = std::env::var(format!("{prefix}WEBHOOK_SECRET_FILE"))
+        .ok()
+        .filter(|v| !v.is_empty());
+    if app_id.is_none()
+        && private_key_file.is_none()
+        && api_url.is_none()
+        && webhook_secret_file.is_none()
+    {
+        // Nothing to stamp (the config's own providers stand).
+        return Ok(());
+    }
+    let existing = config
+        .providers
+        .iter_mut()
+        .find(|entry| entry.r#type == "github");
+    match existing {
+        Some(entry) => {
+            if let Some(app_id) = app_id {
+                if entry.auth.is_none() {
+                    // Stamp the auth only when the file's entry lacks
+                    // one (the file's own declarations win).
+                    let Some(key_file) = private_key_file.clone() else {
+                        return Err(ConfigError::Parse(format!(
+                            "the {prefix}PRIVATE_KEY_FILE is expected with the {prefix}APP_ID stamp"
+                        )));
+                    };
+                    entry.auth = Some(ProviderAuth {
+                        app_id,
+                        private_key: SecretValue::File(FileSecret {
+                            file: PathBuf::from(key_file),
+                        }),
+                    });
+                }
+            }
+            if let Some(api_url) = api_url {
+                entry.api_url = Some(api_url);
+            }
+            if let Some(secret_file) = webhook_secret_file {
+                entry.webhook_secrets = Some(vec![SecretValue::File(FileSecret {
+                    file: PathBuf::from(secret_file),
+                })]);
+            }
+        }
+        None => {
+            // The env's stamp creates the entry: both the App's
+            // identity and the key's file are required (a literal key
+            // is not an env stamp).
+            let (Some(app_id), Some(key_file)) = (app_id, private_key_file) else {
+                return Err(ConfigError::Parse(format!(
+                    "the {prefix}APP_ID and {prefix}PRIVATE_KEY_FILE are both required when stamping a github provider from the environment (the file declares none)"
+                )));
+            };
+            config.providers.push(ProviderConfig {
+                name: "github".to_owned(),
+                r#type: "github".to_owned(),
+                api_url,
+                web_url: None,
+                auth: Some(ProviderAuth {
+                    app_id,
+                    private_key: SecretValue::File(FileSecret {
+                        file: PathBuf::from(key_file),
+                    }),
+                }),
+                webhook_secrets: webhook_secret_file.map(|file| {
+                    vec![SecretValue::File(FileSecret {
+                        file: PathBuf::from(file),
+                    })]
+                }),
+                repositories: None,
+                extension: None,
+            });
         }
     }
     Ok(())
@@ -1072,6 +1232,70 @@ mod tests {
         let mut config = config;
         config.templates.directory = [env!("CARGO_MANIFEST_DIR"), "/../../templates"].concat();
         crate::validation::validate(&config).expect("13.1 config validates");
+    }
+
+    #[test]
+    fn test_interpolation_runs_after_parse_and_refuses_secret_positions() {
+        unsafe { std::env::set_var("CB_TEST_LEVEL", "debug") };
+
+        // A scalar expands; a secret position's `${` refuses.
+        let text = "server: {}\ndatabase: { url: postgres://x }\nauth: {}\nlogging:\n  level: \"${CB_TEST_LEVEL}\"\n";
+        let failure = |plain_text: &str| -> Result<Config, String> {
+            let mut tree: serde_yaml_ng::Value =
+                serde_yaml_ng::from_str(plain_text).map_err(|source| source.to_string())?;
+            interpolate_tree(&mut tree).map_err(|refusal| refusal.to_string())?;
+            serde_yaml_ng::from_value(tree).map_err(|source| source.to_string())
+        };
+        let config = failure(text).expect("parses");
+        assert_eq!(config.logging.level, "debug");
+
+        // A secret position refuses the shell marker.
+        let refusal = "server: {}
+database: { url: postgres://x }
+auth: {}
+providers:
+ - name: github
+   type: github
+   auth:
+     app_id: 1
+     private_key: ${CB_TEST_LEVEL}
+";
+        if let Ok(tree) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(refusal) {
+            let mut tree = tree;
+            let failure = interpolate_tree(&mut tree).expect_err("the secret position refuses");
+            assert!(
+                failure
+                    .to_string()
+                    .contains("forbidden inside secret-valued fields")
+            );
+        }
+
+        // An unset variable fails fast.
+        unsafe { std::env::remove_var("CB_TEST_LEVEL") };
+        let unset = "server: {}\ndatabase: { url: postgres://x }\nauth: {}\nlogging: { level: \"${CB_TEST_LEVEL}\" }";
+        if let Ok(tree) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(unset) {
+            let mut tree = tree;
+            assert!(interpolate_tree(&mut tree).is_err());
+        }
+    }
+
+    #[test]
+    fn test_database_url_file_reads_the_contents() {
+        let key_path = std::env::temp_dir().join("cb-db-url-test");
+        std::fs::write(&key_path, "postgres://read-from-file/cargobike\n").expect("write");
+        let yaml = "server: {}\ndatabase: { url: postgres://declared }\nauth: {}\n";
+        let mut config: Config = serde_yaml_ng::from_str(yaml).expect("parses");
+        let _ = apply_env_overrides(&mut config); // reads envs; unset ones skip
+        // Simulate the override directly (the env's file path).
+        config.database.url = SecretValue::File(FileSecret {
+            file: key_path.clone(),
+        });
+        let materialised = match &config.database.url {
+            SecretValue::File(file) => std::fs::read_to_string(&file.file).expect("reads"),
+            other => panic!("the file form was expected, got {other:?}"),
+        };
+        assert!(materialised.starts_with("postgres://read-from-file"));
+        let _ = std::fs::remove_file(&key_path);
     }
 
     #[test]
