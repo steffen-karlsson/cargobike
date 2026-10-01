@@ -106,11 +106,7 @@ impl Client {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-        let is_problem = body
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|kind| kind.starts_with("about:blank#"));
-        if status.as_u16() >= 400 || is_problem {
+        if status.as_u16() >= 400 {
             let title = body
                 .get("title")
                 .and_then(serde_json::Value::as_str)

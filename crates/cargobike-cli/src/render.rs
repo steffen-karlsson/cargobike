@@ -1,5 +1,7 @@
 //! The output rendering (§9.2's table|json|yaml): one canonical pass
-//! per format, so CLI outputs stay greppable and script-parsable.
+//! per format, so CLI outputs stay greppable and script-parsable. The
+//! rows read F-1's real homes: `metadata.id`, `spec.application`,
+//! `spec.version`, `status.phase`.
 
 use crate::config::OutputFormat;
 
@@ -21,18 +23,18 @@ fn row_of(document: &serde_json::Value) -> Option<[String; 4]> {
     let id = metadata.get("id").and_then(serde_json::Value::as_str)?;
     Some([
         id.to_owned(),
-        metadata
-            .get("application")
+        document
+            .pointer("/spec/application")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        metadata
-            .get("version")
+        document
+            .pointer("/spec/version")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        metadata
-            .get("phase")
+        document
+            .pointer("/status/phase")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned(),
@@ -70,9 +72,10 @@ mod tests {
     #[test]
     fn test_table_lists_the_metadata_quartet() {
         let body = json!({ "items": [
-            { "metadata": { "id": "0192-1", "application": "web", "version": "1.2.3", "phase": "PendingApproval",
-                    "terminal": false } },
-            { "metadata": { "id": "0192-2", "application": "web", "version": "1.3.0", "phase": "Completed" } },
+            { "metadata": { "id": "0192-1" }, "spec": { "application": "web", "version": "1.2.3" },
+              "status": { "phase": "PendingApproval" } },
+            { "metadata": { "id": "0192-2" }, "spec": { "application": "web", "version": "1.3.0" },
+              "status": { "phase": "Completed" } },
         ]});
         let rendered = documents(OutputFormat::Table, &body).expect("renders");
         assert_eq!(
@@ -83,7 +86,11 @@ mod tests {
 
     #[test]
     fn test_single_documents_render_without_items() {
-        let body = json!({ "metadata": { "id": "0192-3", "application": "api", "version": "2.0.0", "phase": "Running" } });
+        let body = json!({
+            "metadata": { "id": "0192-3" },
+            "spec": { "application": "api", "version": "2.0.0" },
+            "status": { "phase": "Running" },
+        });
         assert_eq!(
             documents(OutputFormat::Table, &body).expect("renders"),
             "0192-3\tapi\t2.0.0\tRunning\n"

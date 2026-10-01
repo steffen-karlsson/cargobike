@@ -24,7 +24,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url = "2.5.8"
 
 [dev-dependencies]
+assert_cmd = "2.2.2"
 pretty_assertions.workspace = true
+wiremock = "0.6.5"
 
 [[bin]]
 name = "cargobike"
