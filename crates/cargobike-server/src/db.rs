@@ -1,5 +1,5 @@
 //! Database access: the pool, migrations (2.3) and the release
-//! repository (.., ).
+//! repository (..).
 
 use sqlx::PgPool;
 

@@ -47,7 +47,7 @@ fn main() {
     runtime.block_on(run(args));
 }
 
-/// : reads a plaintext key on stdin (the never argv) and prints an
+/// reads a plaintext key on stdin (the never argv) and prints an
 /// argon2id hash for the `auth.api_keys[].hash` field of the config.
 #[allow(clippy::print_stderr, clippy::print_stdout, unused_imports)]
 fn hash_api_key() -> i32 {

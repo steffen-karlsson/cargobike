@@ -1,5 +1,5 @@
 //! Registry and trust validation at load (,
-//! , ).
+//! ).
 //!
 //! Pure checks over the loaded config: boot refuses a semantically broken
 //! registry instead of starting half-authorised. Template files are read
@@ -45,7 +45,7 @@ pub fn validate(config: &crate::config::Config) -> Result<(), ValidationError> {
     check_group_references(config)
 }
 
-/// : claim constraints are mandatory unless `allow_unconstrained`.
+/// claim constraints are mandatory unless `allow_unconstrained`.
 fn check_oidc_entries(config: &crate::config::Config) -> Result<(), ValidationError> {
     for entry in &config.auth.oidc {
         if entry.claims.is_empty() && !entry.allow_unconstrained {
@@ -58,7 +58,7 @@ fn check_oidc_entries(config: &crate::config::Config) -> Result<(), ValidationEr
     Ok(())
 }
 
-/// : a named API key must be unique and present a hash.
+/// a named API key must be unique and present a hash.
 fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError> {
     let mut named: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for entry in &config.auth.api_keys {
@@ -78,7 +78,7 @@ fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError>
     Ok(())
 }
 
-/// : `releasers` selectors reference existing entries and those
+/// `releasers` selectors reference existing entries and those
 /// entries must grant `release:create`.
 fn check_releaser_references(config: &crate::config::Config) -> Result<(), ValidationError> {
     let oidc_names: BTreeMap<&str, &crate::config::OidcEntry> = config
@@ -163,7 +163,7 @@ fn ref_may_match_tag(claim_glob: &str, tag_format: &str) -> bool {
     tag_ref_prefix.starts_with(claim_prefix)
 }
 
-/// : every environment with an `approval` block must have a template
+/// every environment with an `approval` block must have a template
 /// `wait: approval` step; : `api_key` approvers refuse unless
 /// `allow_machine_approvers: true`; selectors must exist and grant the
 /// right request.
@@ -289,7 +289,7 @@ fn template_has_approval_step(template: &PipelineTemplate, environment: &str) ->
         .any(|step| step.wait == Some(WaitKind::Approval))
 }
 
-/// /: versioning scheme is one of the kebab values and the
+/// versioning scheme is one of the kebab values and the
 /// format strings use their documented placeholders.
 fn check_versioning(config: &crate::config::Config) -> Result<(), ValidationError> {
     for app in &config.applications {
@@ -354,7 +354,7 @@ fn find_brace(rest: &[u8]) -> Option<usize> {
     rest.iter().position(|c| *c == b'{')
 }
 
-/// : `extends` names an existing group.
+/// `extends` names an existing group.
 fn check_group_references(config: &crate::config::Config) -> Result<(), ValidationError> {
     let groups: std::collections::HashSet<&str> = config
         .application_groups
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unconstrained_oidc_entries_are_refused_f80() {
+    fn test_unconstrained_oidc_entries_are_refused() {
         let config = config(
             "server: {}\ndatabase: { url: postgres://x }\nauth:\n  oidc:\n    - name: open\n      issuer: https://issuer\n      audience: cargobike\n      grants: [release:create]\n",
         );
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn test_releaser_without_release_create_grant_is_refused_f99a() {
+    fn test_releaser_without_release_create_grant_is_refused() {
         let config = config(
             "server: {}\ndatabase: { url: postgres://x }\nauth:\n  oidc:\n    - name: gha\n      issuer: https://issuer\n      audience: cargobike\n      claims:\n        repository_owner_id: \"1\"\n      grants: [release:read]\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    releasers:\n      - oidc: gha\n    environments: {}\n",
         );
@@ -415,10 +415,10 @@ mod tests {
     }
 
     #[test]
-    fn test_api_key_approvers_refuse_machines_by_default_f99b() {
+    fn test_api_key_approvers_refuse_machines_by_default() {
         // The template invariant first requires a wait-approval
         // step, so the refusal needs a REAL template at a temp
-        // directory; validate() walks the whole surface.
+        // directory; validate walks the whole surface.
         let directory = std::env::temp_dir().join("cb-validation-f99b");
         let _ = std::fs::create_dir_all(&directory);
         let template_path = directory.join("service.yaml");
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tag_format_placeholder_violation_is_refused_f147() {
+    fn test_tag_format_placeholder_violation_is_refused() {
         let config = config(
             "server: {}\ndatabase: { url: postgres://x }\nauth: {}\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    versioning: { scheme: semver, tag_format: \"v{release}\" }\n    environments: {}\n",
         );

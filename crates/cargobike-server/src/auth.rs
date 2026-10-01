@@ -68,7 +68,7 @@ pub struct AuthedCaller {
     pub grants: Vec<String>,
     /// `repository_id` claim when the token carried one .
     pub repository_id: Option<String>,
-    /// Bootstrap-key caller (the never network-legal, ).
+    /// Bootstrap-key caller (the never network-legal).
     pub bootstrap: bool,
 }
 
@@ -230,7 +230,7 @@ impl AuthState {
         );
         Ok(Self {
             config,
-            // : hash AT startup; the plaintext does not survive past
+            // hash AT startup; the plaintext does not survive past
             // this line (the argon2 PHC string is the kept form).
             bootstrap: plaintext.map(|plaintext| {
                 use argon2::password_hash::{PasswordHasher, SaltString};
@@ -308,7 +308,7 @@ impl AuthState {
         }
         if let Some(bootstrap_hash) = &self.bootstrap {
             let is_local = peer.map(|ip| ip.is_loopback()).unwrap_or(false);
-            // : the bootstrap key was hashed at startup; the verify
+            // the bootstrap key was hashed at startup; the verify
             // is the same argon2 path, constant against key material.
             if is_local && verify_password_at_rest(bootstrap_hash, presented) {
                 return Ok(AuthedCaller {

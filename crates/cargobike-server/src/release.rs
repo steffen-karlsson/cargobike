@@ -1,6 +1,6 @@
 //! Release service: idempotent create, list with cursor
 //! pagination , get, cancel and terminal-only delete
-//! under optimistic concurrency (If-Match / resource_version, ).
+//! under optimistic concurrency (If-Match / resource_version).
 
 use sqlx::PgPool;
 use uuid::Uuid;

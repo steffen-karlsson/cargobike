@@ -12,7 +12,7 @@ use std::sync::Arc;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
-/// The whole server config (the top-level sections, ).
+/// The whole server config (the top-level sections).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -32,7 +32,7 @@ pub struct Config {
     /// Git providers (the github + extension-served).
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
-    /// Sidecar extensions (the transport + channel auth; ).
+    /// Sidecar extensions (the transport + channel auth;).
     #[serde(default)]
     pub extensions: Vec<ExtensionConfig>,
     /// Pipeline templates directory.
@@ -62,7 +62,7 @@ pub struct Config {
     /// The application registry (; the security core).
     #[serde(default)]
     pub applications: Vec<ApplicationEntry>,
-    /// Application groups for monorepo discovery ().
+    /// Application groups for monorepo discovery .
     #[serde(default)]
     pub application_groups: Vec<ApplicationGroupEntry>,
 }
@@ -177,7 +177,7 @@ pub struct OidcEntry {
     /// Unconstrained entries are refused without this .
     #[serde(default)]
     pub allow_unconstrained: bool,
-    /// nbf/iat skew allowance (the default 60s; ).
+    /// nbf/iat skew allowance (the default 60s;).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock_skew: Option<String>,
     /// JWKS override for issuers without usable discovery .
@@ -290,7 +290,7 @@ impl SecretValue {
         }
     }
 
-    /// Whether the value is a literal (the startup warning; ).
+    /// Whether the value is a literal (the startup warning;).
     pub fn is_literal(&self) -> bool {
         matches!(self, SecretValue::Literal(_))
     }
@@ -366,7 +366,7 @@ pub struct ProviderConfig {
     pub name: String,
     /// `github` or `extension` .
     pub r#type: String,
-    /// For `type: github`: API base (GitHub Enterprise Server support, ).
+    /// For `type: github`: API base (GitHub Enterprise Server support).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
     /// For `type: github`: the web UI base for CR links.
@@ -519,9 +519,9 @@ impl Default for ReconcilerSection {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RetentionSection {
-    /// Event-log retention (the default 365d, ).
+    /// Event-log retention (the default 365d).
     pub events: String,
-    /// Raw webhook payloads (the personal data; default 30d, ).
+    /// Raw webhook payloads (the personal data; default 30d).
     pub webhook_payloads: String,
     /// Optional automatic deletion of terminal releases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -653,7 +653,7 @@ pub struct ApplicationEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
     /// Where the version comes from; `source` replaces as a whole on
-    /// `extends` ().
+    /// `extends` .
     pub source: HashMapEntrySource,
     /// Registry-only template reference .
     pub template: String,
@@ -666,7 +666,7 @@ pub struct ApplicationEntry {
     /// Who may release: principal selectors , single-direction.
     #[serde(default)]
     pub releasers: Vec<PrincipalSelector>,
-    /// Group inheritance (). An app of this name must have been
+    /// Group inheritance . An app of this name must have been
     /// discovered by the group or validation fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
@@ -681,7 +681,7 @@ pub struct ApplicationEntry {
     pub environments: BTreeMap<String, EnvironmentEntry>,
 }
 
-/// A principal selector: `oidc: <name>` or `api_key: <name>` (the a, ).
+/// A principal selector: `oidc: <name>` or `api_key: <name>` (the a).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum PrincipalSelector {
@@ -703,7 +703,7 @@ pub struct HashMapEntrySource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Group-source owner id — present only on group `source` blocks;
-    /// per-app `source` replaces the whole object ().
+    /// per-app `source` replaces the whole object .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<String>,
 }
@@ -747,7 +747,7 @@ pub struct TriggerEntry {
     /// Refuse unprotected tags unless explicitly allowed .
     #[serde(default = "default_true")]
     pub require_tag_protection: bool,
-    /// Optional sender constraints (the principal selectors; ).
+    /// Optional sender constraints (the principal selectors;).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub senders: Option<Vec<PrincipalSelector>>,
 }
@@ -776,13 +776,13 @@ pub struct EnvironmentEntry {
     /// File edits — well-known `env.inputs.edits` .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edits: Option<Vec<EditEntry>>,
-    /// Concurrency policy (the registry-only per ).
+    /// Concurrency policy (the registry-only per).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<ConcurrencyValue>,
-    /// : fail closed when capability is available.
+    /// fail closed when capability is available.
     #[serde(default = "default_true")]
     pub require_branch_protection: bool,
-    /// : explicit bypass mechanism for template direct commits.
+    /// explicit bypass mechanism for template direct commits.
     #[serde(default)]
     pub allow_direct_commit: bool,
     /// Custom CR title/body/labels/draft .
@@ -806,12 +806,12 @@ pub struct EnvironmentEntry {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditEntry {
-    /// Repository-relative file; `{application}` placeholders allowed ().
+    /// Repository-relative file; `{application}` placeholders allowed .
     pub file: String,
     /// Inferred from extension when omitted .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
-    /// Dot-notation field path (`image.tag`, ).
+    /// Dot-notation field path (`image.tag`).
     pub field: String,
     /// Optional value; defaults to the release version .
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -873,7 +873,7 @@ impl Default for ApprovalPolicy {
     }
 }
 
-/// One application group ().
+/// One application group .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationGroupEntry {
@@ -884,13 +884,13 @@ pub struct ApplicationGroupEntry {
     /// Versioning defaults .
     #[serde(default)]
     pub versioning: VersioningEntry,
-    /// Group triggers inherited by discovered apps ().
+    /// Group triggers inherited by discovered apps .
     #[serde(default)]
     pub triggers: Vec<TriggerEntry>,
     /// Who may release discovered apps.
     #[serde(default)]
     pub releasers: Vec<PrincipalSelector>,
-    /// The org the group releases from (`owner_id`; ).
+    /// The org the group releases from (`owner_id`;).
     pub source: HashMapEntrySource,
     /// Discovery configuration.
     pub discovery: DiscoveryEntry,
@@ -898,7 +898,7 @@ pub struct ApplicationGroupEntry {
     pub environments: BTreeMap<String, EnvironmentEntry>,
 }
 
-/// Discovery configuration (, ).
+/// Discovery configuration ().
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryEntry {
@@ -906,7 +906,7 @@ pub struct DiscoveryEntry {
     pub repo: HashMapEntrySource,
     /// Match pattern with `{application}` and `{environment}` captures.
     pub match_: String,
-    /// Branch scanned (the default: repository default branch); protect it ().
+    /// Branch scanned (the default: repository default branch); protect it .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_: Option<String>,
     /// Rescan interval (the default 10m).
@@ -949,7 +949,7 @@ pub enum ConfigError {
 /// The env-var prefix and curated-key mapping .
 pub const ENV_PREFIX: &str = "CARGOBIKE_SERVER_";
 
-/// Parses a binary size like `512KiB`, `1MiB`, `25MiB` (R4's unit
+/// Parses a binary size like `512KiB`, `1MiB`, `25MiB` ('s unit
 /// grammar) into bytes; plain integers are bytes.
 pub fn parse_size(text: &str) -> Option<u64> {
     let trimmed = text.trim().to_ascii_lowercase();
@@ -1100,7 +1100,7 @@ fn apply_env_overrides(config: &mut Config) -> Result<(), ConfigError> {
             "server.public_url" => config.server.public_url = Some(value),
             "database.url" => config.database.url = SecretValue::Literal(value),
             // A file-shaped URL: the VALUE is the path; the
-            // materialisation reads its contents (F-88's contract).
+            // materialisation reads its contents ('s contract).
             "database.url_file" => {
                 config.database.url = SecretValue::File(FileSecret {
                     file: PathBuf::from(value),
@@ -1210,7 +1210,7 @@ fn apply_provider_overrides(config: &mut Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Warnings the loader reports (the startup noise, not errors; ).
+/// Warnings the loader reports (the startup noise, not errors;).
 pub fn literal_secret_warnings(config: &Config) -> Vec<&'static str> {
     let mut out = Vec::new();
     if config.database.url.is_literal() {
@@ -1302,6 +1302,23 @@ providers:
             let mut tree = tree;
             assert!(interpolate_tree(&mut tree).is_err());
         }
+    }
+
+    #[test]
+    fn test_unset_variables_take_their_documented_default() {
+        // A dedicated name: unit tests run in parallel threads, so tests
+        // must not share the ambient environment.
+        unsafe { std::env::remove_var("CB_TEST_DEFAULT_LEVEL") };
+        let text = "server: {}\ndatabase: { url: postgres://x }\nauth: {}\nlogging:\n  level: \"${CB_TEST_DEFAULT_LEVEL:-warn}\"\n";
+        let tree: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).expect("parses");
+        let mut tree = tree;
+        interpolate_tree(&mut tree).expect("the default resolves");
+        let level = tree
+            .get("logging")
+            .and_then(|logging| logging.get("level"))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .expect("the level");
+        assert_eq!(level, "warn");
     }
 
     #[test]

@@ -263,7 +263,7 @@ async fn create_release(
         .await
         .map_err(repository_to_api)?;
     if let Some(existing_json) = existing {
-        // : a duplicate create answers 200 with the existing release.
+        // a duplicate create answers 200 with the existing release.
         return Ok((StatusCode::OK, axum::Json(existing_json)).into_response());
     }
 
@@ -292,14 +292,14 @@ fn format_rfc3339(at: sqlx::types::time::OffsetDateTime) -> String {
 
 use axum::response::IntoResponse;
 
-/// : cancel is a dedicated endpoint starting a cleanup workflow .
+/// cancel is a dedicated endpoint starting a cleanup workflow .
 async fn cancel_release(
     State(state): State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    // : canceling is a grant .
+    // canceling is a grant .
     if !caller.has_grant("release:cancel") {
         return Err(ApiError::forbidden(
             "The `release:cancel` grant is required.",
@@ -358,7 +358,7 @@ async fn get_release(
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
-    // : reading is a grant too .
+    // reading is a grant too .
     if !caller.has_grant("release:read") {
         return Err(ApiError::forbidden("The `release:read` grant is required."));
     }
@@ -372,7 +372,7 @@ async fn delete_release(
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    // : deletion is a grant .
+    // deletion is a grant .
     if !caller.has_grant("release:delete") {
         return Err(ApiError::forbidden(
             "The `release:delete` grant is required.",
@@ -396,7 +396,7 @@ fn repository_to_api(error: RepositoryError) -> ApiError {
             format!("The release `{id}` was not found."),
         ),
         e => {
-            // F-103's internal hygiene: the driver's error text stays in
+            // 's internal hygiene: the driver's error text stays in
             // the server's logs; the served problem is generic.
             tracing::error!(%e, "the release repository failed");
             ApiError::new(
@@ -534,7 +534,7 @@ fn spawn_sighup_reload(
     });
 }
 
-/// : the resolved identity + grants (the summary in JSON).
+/// the resolved identity + grants (the summary in JSON).
 async fn whoami(
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
 ) -> axum::Json<serde_json::Value> {
