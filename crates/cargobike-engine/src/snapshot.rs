@@ -53,6 +53,8 @@ struct EditEntry {
 /// The Edit format by its config name (`yaml`/`json`/`toml`); the F-41
 /// inference is the provider of last resort when the name is missing.
 fn format_from_name(name: &str) -> cargobike_core::provider::EditFormat {
+    // F-41's declared name (one `format_from_name` consumer); the
+    // FILE-PATH inference lives in core::edits::format_for_path.
     match name {
         "json" => cargobike_core::provider::EditFormat::Json,
         "toml" => cargobike_core::provider::EditFormat::Toml,

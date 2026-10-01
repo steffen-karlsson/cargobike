@@ -152,13 +152,6 @@ impl VersionScheme {
             VersionScheme::Opaque => Ok(a.cmp(b)),
         }
     }
-
-    /// Whether the scheme supports a distinct prerelease component (F-27a):
-    /// only `Calver` (and `Opaque`) gate users away from
-    /// `semver(release.version).prerelease()`.
-    pub fn has_prerelease_component(&self) -> bool {
-        !matches!(self, VersionScheme::Semver)
-    }
 }
 
 fn is_printable_ascii(c: u8) -> bool {
@@ -254,18 +247,5 @@ mod tests {
     #[case::opaque_lexicographic(VersionScheme::Opaque, "1.2.3", "2.0.0")]
     fn test_ordering_follows_f72(#[case] scheme: VersionScheme, #[case] a: &str, #[case] b: &str) {
         assert_eq!(scheme.order(a, b).expect("both valid"), Ordering::Less);
-    }
-
-    #[test]
-    fn test_prerelease_component_only_in_semver_gates_f27a() {
-        assert_eq!(VersionScheme::Semver.has_prerelease_component(), false);
-        assert_eq!(
-            VersionScheme::Calver {
-                calver_format: None
-            }
-            .has_prerelease_component(),
-            true
-        );
-        assert_eq!(VersionScheme::Opaque.has_prerelease_component(), true);
     }
 }

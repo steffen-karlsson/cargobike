@@ -32,15 +32,21 @@ step_groups:
     steps:
       - id: edit
         uses: builtin/commit-files@1
-      - id: commit
-        uses: builtin/apply-commit@1
-        with:
-          branch: ${{ steps.edit.outputs.branch }}
-          sha: ${{ steps.edit.outputs.sha }}
       - id: cr
         uses: builtin/change-request@1
         with:
-          branch: ${{ steps.commit.outputs.branch }}
+          branch: ${{ steps.edit.outputs.branch }}
+      - id: notify
+        uses: builtin/http-call@1
+        with:
+          url: http://127.0.0.1:1/notify
+          body:
+            release: ${{ release.id }}
+      - id: labels
+        uses: builtin/set-labels@1
+        with:
+          cr_number: ${{ steps.cr.outputs.number }}
+          labels: [release]
 environments:
   - name: stage
     steps: [include: deploy]
@@ -159,8 +165,9 @@ environments:
             step_type_versions: {
                 let mut map = std::collections::BTreeMap::new();
                 map.insert("builtin/commit-files".to_owned(), "1".to_owned());
-                map.insert("builtin/apply-commit".to_owned(), "1".to_owned());
                 map.insert("builtin/change-request".to_owned(), "1".to_owned());
+                map.insert("builtin/http-call".to_owned(), "1".to_owned());
+                map.insert("builtin/set-labels".to_owned(), "1".to_owned());
                 map
             },
             content_hash: "t1-harness".to_owned(),

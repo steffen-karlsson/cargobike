@@ -53,6 +53,16 @@ pub fn apply_to_document(
     }
 }
 
+/// F-41's extension-based inference (yaml by default): the ONE
+/// implementation all consumers share (the verifier, the providers).
+pub fn format_for_path(file: &str) -> EditFormat {
+    match file.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("json") | Some("JSON") => EditFormat::Json,
+        Some("toml") | Some("TOML") => EditFormat::Toml,
+        _ => EditFormat::Yaml,
+    }
+}
+
 /// The edit's desired value: absent OR explicit null reads the
 /// release version (F-147's default), anything else wins.
 fn desired_value(edit: &Edit, default_value: &serde_json::Value) -> serde_json::Value {

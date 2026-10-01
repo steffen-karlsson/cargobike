@@ -449,6 +449,7 @@ fn environment_env_ref(
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
         branch_format: None,
+        release_version: snapshot.release.version.clone(),
     }
 }
 

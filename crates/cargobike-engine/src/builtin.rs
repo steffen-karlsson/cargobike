@@ -12,7 +12,7 @@ use serde_json::{Value as JsonValue, json};
 
 use cargobike_core::error::STEP_FAILED;
 use cargobike_core::model::{CrState, Release, RepoRef};
-use cargobike_core::provider::{Edit, EditFormat, Provider, ProviderError};
+use cargobike_core::provider::{Edit, Provider, ProviderError};
 use cargobike_core::step::{EnvRef, StepContext, StepError, StepOutput, StepType};
 use secrecy::ExposeSecret as _;
 
@@ -44,10 +44,8 @@ impl StepType for CommitFiles {
         let branch = crate::names::branch_name(release, env);
 
         // A1: create the branch once; a recovered attempt finds its SHA.
-        match provider.branch_sha(&repo, &branch).await {
-            Ok(sha) => Ok(StepOutput::Continue(
-                json!({ "branch": branch, "sha": sha }),
-            )),
+        let branch_tip = match provider.branch_sha(&repo, &branch).await {
+            Ok(sha) => sha,
             Err(ProviderError::NotFound(_)) => {
                 let base = provider.default_branch(&repo).await.map_err(step_failure)?;
                 let base_sha = provider
@@ -58,52 +56,32 @@ impl StepType for CommitFiles {
                     .create_branch(&repo, &branch, &base_sha)
                     .await
                     .map_err(step_failure)?;
-                Ok(StepOutput::Continue(
-                    json!({ "branch": branch, "sha": base_sha }),
-                ))
+                base_sha
             }
-            Err(other) => Err(step_failure(other)),
+            Err(other) => return Err(step_failure(other)),
+        };
+
+        // F-35's fused half: edits + commit against the branch tip we just
+        // established (A1's expected-parent; a replay run that already
+        // committed will see the committed content — the provider's no-op
+        // contract answers the same tip).
+        if env.edits.is_empty() {
+            return Ok(StepOutput::Continue(
+                json!({ "branch": branch, "sha": branch_tip }),
+            ));
         }
-    }
-}
-
-/// The edits application: provided via the provider in §6's fused path.
-/// The commit itself is part of the NEXT built-in when this one is
-/// accompanied — for v1.0 the composite commit is registered here.
-pub struct ApplyCommit;
-
-#[async_trait]
-impl StepType for ApplyCommit {
-    fn name(&self) -> &str {
-        "builtin/apply-commit"
-    }
-
-    fn version(&self) -> &str {
-        "1"
-    }
-
-    async fn execute(
-        &self,
-        ctx: &StepContext,
-        release: &Release,
-        env: &EnvRef,
-        params: &JsonValue,
-    ) -> Result<StepOutput, StepError> {
-        let repo = env.repo.clone().ok_or_else(env_ref_missing)?;
-        let provider = provider_from_ctx(ctx, &repo)?;
-        let branch = param_str(params, "branch").ok_or_else(|| param_missing("branch"))?;
-        let edits = env.edits.clone();
-        if edits.is_empty() {
-            // F-7: no changes needed ⇒ Skipped (only valid before any side effect).
-            return Ok(StepOutput::SkipEnvironment);
-        }
-        let expected_parent = param_str(params, "sha");
         let message = env
             .commit_message
             .clone()
             .unwrap_or_else(|| default_commit_message(release, env));
         let committed = provider
-            .commit_files(&repo, branch, &edits, &message, expected_parent)
+            .commit_files(
+                &repo,
+                &branch,
+                &env.edits,
+                &message,
+                Some(branch_tip.as_str()),
+            )
             .await
             .map_err(step_failure)?;
         Ok(StepOutput::Continue(json!({
@@ -289,7 +267,6 @@ impl StepType for SetLabels {
 /// Registers the four built-ins (3.3's startup install).
 pub fn register_builtins(registry: &mut crate::steps::StepRegistry) {
     registry.register(Arc::new(CommitFiles));
-    registry.register(Arc::new(ApplyCommit));
     registry.register(Arc::new(ChangeRequest));
     registry.register(Arc::new(HttpCall));
     registry.register(Arc::new(SetLabels));
@@ -388,18 +365,9 @@ fn http_failure(failure: cargobike_core::provider::HttpError) -> StepError {
 pub fn edit(file: &str, field: &str, value: JsonValue) -> Edit {
     Edit {
         file: file.to_owned(),
-        format: Some(inferred_format(file)),
+        format: Some(cargobike_core::edits::format_for_path(file)),
         field: field.to_owned(),
         value: Some(value),
-    }
-}
-
-/// F-41's extension-based inference.
-pub fn inferred_format(file: &str) -> EditFormat {
-    match file.rsplit_once('.').map(|(_, extension)| extension) {
-        Some("json") => EditFormat::Json,
-        Some("toml") => EditFormat::Toml,
-        _ => EditFormat::Yaml,
     }
 }
 

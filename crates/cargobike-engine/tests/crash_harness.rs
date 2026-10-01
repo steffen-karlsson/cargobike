@@ -11,10 +11,15 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The three built-ins the harness template mounts; a milestone is
+/// The built-ins the harness template mounts; a milestone is
 /// `after/{environment}/{step_id}` (the boundary right after the step's
 /// durable checkpoint attempt).
-const MILESTONES: [&str; 3] = ["after/stage/edit", "after/stage/commit", "after/stage/cr"];
+const MILESTONES: [&str; 4] = [
+    "after/stage/edit",
+    "after/stage/cr",
+    "after/stage/notify",
+    "after/stage/labels",
+];
 
 fn fixture_database_url() -> Option<String> {
     match std::env::var("CARGOBIKE_TEST_DATABASE_URL")

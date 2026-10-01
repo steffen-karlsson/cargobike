@@ -136,6 +136,10 @@ pub struct EnvRef {
     pub commit_message: Option<String>,
     /// The engine's branch format, stamped by the provisioner (A1).
     pub branch_format: Option<String>,
+    /// The release's version string (F-147's edit default: an edit
+    /// without an explicit value writes the version; providers can't
+    /// know it otherwise).
+    pub release_version: String,
 }
 
 impl EnvRef {
@@ -148,6 +152,7 @@ impl EnvRef {
             edits: Vec::new(),
             commit_message: None,
             branch_format: None,
+            release_version: String::new(),
         }
     }
 }
