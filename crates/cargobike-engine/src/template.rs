@@ -71,6 +71,14 @@ impl ResolvedStep {
             _ => serde_json::Value::Null,
         }
     }
+
+    /// The retry policy an action step carries (F-35).
+    pub fn body_retry_policy(&self) -> Option<cargobike_core::template::RetryPolicy> {
+        match &self.body {
+            StepBody::Action { retry, .. } => retry.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// One environment's resolved step sequence.

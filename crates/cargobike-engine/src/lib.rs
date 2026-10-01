@@ -8,6 +8,7 @@ pub mod builtin;
 pub mod cleanup;
 pub mod concurrency;
 pub mod correlation;
+pub mod crash;
 pub mod expr;
 pub mod interpreter;
 pub mod leases;

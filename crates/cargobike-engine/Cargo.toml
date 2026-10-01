@@ -30,6 +30,9 @@ secrecy = { workspace = true }
 
 semver = { workspace = true }
 
+[features]
+t1-crash-hooks = []
+
 [dev-dependencies]
 rstest = { workspace = true }
 pretty_assertions = { workspace = true }

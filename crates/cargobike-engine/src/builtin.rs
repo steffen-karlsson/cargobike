@@ -402,3 +402,16 @@ pub fn inferred_format(file: &str) -> EditFormat {
         _ => EditFormat::Yaml,
     }
 }
+
+/// The interpreter's unified run of one action step invocation.
+pub async fn execute_step_run(
+    action: &Arc<dyn StepType>,
+    step_context: &StepContext,
+    release_view: &Release,
+    environment_view: &EnvRef,
+    params: &JsonValue,
+) -> Result<StepOutput, StepError> {
+    action
+        .execute(step_context, release_view, environment_view, params)
+        .await
+}

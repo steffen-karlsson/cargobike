@@ -474,7 +474,6 @@ async fn dispatch_action(
             ));
         }
     };
-    let step_context = services.step_context(&snapshot.release.id, &environment.name, &step.id);
     let release_view = snapshot.read_release();
     // F-32a's provisioned view: repo/edits/commit_message from env inputs.
     let environment_view = environment_env_ref(snapshot, environment);
@@ -491,18 +490,81 @@ async fn dispatch_action(
             ));
         }
     };
-    let output = action
-        .execute(&step_context, &release_view, &environment_view, &with)
-        .await;
-    match output {
-        Ok(StepOutput::Continue(_)) => StepFlow::Continue,
-        Ok(StepOutput::SkipEnvironment) => StepFlow::Skip,
-        Ok(StepOutput::Stop(reason)) => StepFlow::Error(InterpreterError::Step(
-            cargobike_core::step::StepError::Failed {
-                code: cargobike_core::error::STEP_FAILED.to_owned(),
-                message: reason,
-            },
-        )),
-        Err(error) => StepFlow::Error(InterpreterError::Step(error)),
+    // F-33: action steps run inside `dbos::step` — the checkpoint makes
+    // the run exactly-once per attempt (replays skip the body) and the
+    // template's retry policy maps onto `StepOptions` (F-35).
+    let options = step_options(step);
+    let ran = dbos::step_with::<
+        Result<StepOutput, cargobike_core::step::StepError>,
+        InterpreterError,
+        _,
+        _,
+    >(
+        format!("builtin/{}/{}", environment.name, step.id).as_str(),
+        options,
+        move || {
+            // T1's kill-point: the harness exits exactly here, at the
+            // boundary, before the body runs (feature-gated hook).
+            crate::crash::milestone_maybe(environment.name.as_str(), step.id.as_str());
+            // Each attempt builds its own context; the async block owns it.
+            let owned_context =
+                services.step_context(&snapshot.release.id, &environment.name, step.id.as_str());
+            let owned_release = release_view.clone();
+            let owned_environment = environment_view.clone();
+            let owned_params = with.clone();
+            let owned_action = Arc::clone(&action);
+            async move {
+                let value = crate::builtin::execute_step_run(
+                    &owned_action,
+                    &owned_context,
+                    &owned_release,
+                    &owned_environment,
+                    &owned_params,
+                )
+                .await;
+                dbos::Result::Ok(value)
+            }
+        },
+    )
+    .await;
+    let inner = ran.map_err(|_engine_failure| {
+        StepFlow::Error(InterpreterError::Step(
+            cargobike_core::step::StepError::Transient(
+                "the durable step engine refused the run".to_owned(),
+            ),
+        ))
+    });
+    match inner {
+        Ok(execution_result) => match execution_result {
+            Ok(StepOutput::Continue(_)) => StepFlow::Continue,
+            Ok(StepOutput::SkipEnvironment) => StepFlow::Skip,
+            Ok(StepOutput::Stop(reason)) => StepFlow::Error(InterpreterError::Step(
+                cargobike_core::step::StepError::Failed {
+                    code: cargobike_core::error::STEP_FAILED.to_owned(),
+                    message: reason,
+                },
+            )),
+            Err(step_failure_value) => StepFlow::Error(InterpreterError::Step(step_failure_value)),
+        },
+        Err(engine_flow) => engine_flow,
+    }
+}
+
+/// Maps the template's retry policy to `StepOptions` (F-35; total
+/// attempts is `max_attempts`).
+fn step_options(step: &ResolvedStep) -> dbos::StepOptions<InterpreterError> {
+    let Some(policy) = &step.body_retry_policy() else {
+        return dbos::StepOptions::default();
+    };
+    let attempts = policy.attempts.max(1);
+    let interval = policy
+        .initial_delay
+        .as_deref()
+        .and_then(|text| humantime::parse_duration(text).ok())
+        .unwrap_or(Duration::from_secs(1));
+    dbos::StepOptions {
+        max_attempts: attempts,
+        interval,
+        ..dbos::StepOptions::default()
     }
 }
