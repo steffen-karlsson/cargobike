@@ -34,6 +34,18 @@ secrecy = { version = "0.10", features = ["serde"] }
 bytes = "1"
 tokio-util = "0.7"
 
+# Server-side (Phase 2)
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+axum = { version = "0.8", features = ["http1", "json", "tokio", "tower-log"] }
+tower-http = { version = "0.6", features = ["trace", "catch-panic", "limit", "sensitive-headers"] }
+figment = { version = "0.10", features = ["yaml", "env"] }
+shellexpand = "3"
+humantime = "2"
+humantime-serde = "1"
+serde_yaml_ng = "0.10"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "migrate", "uuid", "time", "macros"] }
+
+
 # Shared dev-dependencies (unit tests live in #[cfg(test)] mod tests, PRD 20.4)
 rstest = "0.26"
 pretty_assertions = "1"
