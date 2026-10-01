@@ -35,14 +35,14 @@ async fn test_acquire_release_transfer_behaviour() {
     let first = Uuid::now_v7();
     assert_eq!(
         repository
-            .acquire("lease-test", "preview", first)
+            .acquire("lease-test", "preview", first, Some("1.2.3"))
             .await
             .expect("acquire"),
         LeaseAttempt::Held
     );
     assert_eq!(
         repository
-            .acquire("lease-test", "preview", first)
+            .acquire("lease-test", "preview", first, Some("1.2.4"))
             .await
             .expect("again"),
         LeaseAttempt::HeldAlready
@@ -50,18 +50,27 @@ async fn test_acquire_release_transfer_behaviour() {
     let second = Uuid::now_v7();
     assert_eq!(
         repository
-            .acquire("lease-test", "preview", second)
+            .acquire("lease-test", "preview", second, Some("1.3.0"))
             .await
             .expect("loss visible"),
         LeaseAttempt::HeldBy {
-            other_release_id: first
+            other_release_id: first,
+            other_version: Some("1.2.4".to_owned())
         }
+    );
+    // F-72's compare input is readable for the supersede guard.
+    assert_eq!(
+        repository
+            .version_of("lease-test", "preview")
+            .await
+            .expect("versions"),
+        Some("1.2.4".to_owned())
     );
 
     // F-73's atomic supersede transfer: one statement, no window.
     assert_eq!(
         repository
-            .transfer("lease-test", "preview", first, second)
+            .transfer("lease-test", "preview", first, second, Some("1.3.0"))
             .await
             .expect("transfer"),
         LeaseTransfer::Transferred
@@ -77,7 +86,7 @@ async fn test_acquire_release_transfer_behaviour() {
     // A stale transfer attempt reports the state instead of fighting.
     assert_eq!(
         repository
-            .transfer("lease-test", "preview", first, second)
+            .transfer("lease-test", "preview", first, second, Some("1.3.0"))
             .await
             .expect("stale"),
         LeaseTransfer::RestState {

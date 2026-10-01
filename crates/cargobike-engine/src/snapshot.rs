@@ -19,6 +19,9 @@ pub struct ReleaseIdentity {
     pub application: String,
     /// The opaque version string (F-4).
     pub version: String,
+    /// The release's versioning scheme (F-72's supersede guard); the
+    /// provisioner stamps it from the registry's versioning block.
+    pub version_scheme: Option<cargobike_core::version::VersionScheme>,
 }
 
 /// The canonical snapshot of a release (F-16).

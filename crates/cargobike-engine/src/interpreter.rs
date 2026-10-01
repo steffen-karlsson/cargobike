@@ -18,6 +18,7 @@ use cargobike_core::step::{HttpService, StepContext, StepOutput};
 use cargobike_core::template::{OnModified, OnTimeout};
 use tracing::Span;
 
+use crate::concurrency::LeaseDecision;
 use crate::expr::{ExprContext, eval_gate, interpolate_params};
 use crate::leases::LeaseRepository;
 
@@ -126,10 +127,40 @@ async fn run_environment(
             Ok(true) => {}
         }
     }
+    // F-70..F-74: the lease gates the environment's work.
+    match crate::concurrency::enter(&services.leases, snapshot, environment).await {
+        Ok(LeaseDecision::Proceed) => {}
+        Ok(LeaseDecision::WaitForLease) => {
+            loop {
+                // F-71's queue: the lease's release signal wakes it.
+                let taken = dbos::recv::<Signal, InterpreterError>(
+                    Some(crate::signals::lease_topic(&environment.name).as_str()),
+                    crate::concurrency::QUEUE_WAKE_TIMEOUT,
+                )
+                .await;
+                let Some(Signal::LeaseReleased { .. }) = taken.ok().flatten() else {
+                    continue;
+                };
+                match crate::concurrency::enter(&services.leases, snapshot, environment).await {
+                    Ok(LeaseDecision::Proceed) => break,
+                    Ok(LeaseDecision::WaitForLease) => continue,
+                    Err(error) => return error_to_outcome(environment, error),
+                }
+            }
+        }
+        Err(concurrency_error) => {
+            return error_to_outcome(environment, concurrency_error);
+        }
+    }
     for step in &environment.steps {
         match run_step(snapshot, environment, step, &context, services).await {
             StepFlow::Continue => {}
-            StepFlow::Skip => return finished(environment, EnvironmentPhase::Skipped, None),
+            StepFlow::Skip => {
+                // F-71: the lease releases on skip as well.
+                let _ = crate::concurrency::release_lease(&services.leases, snapshot, environment)
+                    .await;
+                return finished(environment, EnvironmentPhase::Skipped, None);
+            }
             StepFlow::Error(failure) => return error_to_outcome(environment, failure),
         }
     }

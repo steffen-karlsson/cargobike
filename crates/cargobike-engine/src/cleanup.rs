@@ -146,12 +146,13 @@ async fn clean_target(release_id: &str, target: &CleanupTarget, services: &Clean
                             &target.environment,
                             old_holder,
                             new_holder,
+                            None,
                         )
                         .await
                         .map(|transfer| match transfer {
                             LeaseTransfer::Transferred => "transferred".to_owned(),
-                            LeaseTransfer::RestState { holder } => {
-                                format!("stale (holder now {holder:?})")
+                            LeaseTransfer::RestState { holder: now_holder } => {
+                                format!("stale (holder now {now_holder:?})")
                             }
                         }),
                     Err(_) => Ok(format!("the release id `{release_id}` never parses")),
@@ -163,7 +164,13 @@ async fn clean_target(release_id: &str, target: &CleanupTarget, services: &Clean
             .leases
             .acquire_amp(&target.application, &target.environment)
             .await
-            .map(|_unused| "released".to_owned()),
+            .map(|released| {
+                if released {
+                    "released".to_owned()
+                } else {
+                    "was not held".to_owned()
+                }
+            }),
     };
     match lease_outcome {
         Ok(detail) => tracing::info!(
