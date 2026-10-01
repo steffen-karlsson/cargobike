@@ -21,7 +21,9 @@ pub struct ReleaseIdentity {
     pub version: String,
     /// The release's versioning scheme (F-72's supersede guard); the
     /// provisioner stamps it from the registry's versioning block.
-    pub version_scheme: Option<cargobike_core::version::VersionScheme>,
+    /// The scheme guards F-72's supersede; always present since the
+    /// template's versioning decides it at provision time.
+    pub version_scheme: cargobike_core::version::VersionScheme,
 }
 
 /// The canonical snapshot of a release (F-16).

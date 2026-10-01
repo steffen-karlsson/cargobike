@@ -44,7 +44,7 @@ pub async fn enter(
             message: "the snapshot's release id is not a UUID (probe)".to_owned(),
         })
     })?;
-    let scheme = snapshot.release.version_scheme.clone();
+    let scheme = &snapshot.release.version_scheme;
     match leases
         .acquire(
             application,
@@ -67,7 +67,7 @@ async fn decide_policy(
     leases: &LeaseRepository,
     snapshot: &ReleaseSnapshot,
     environment: &crate::template::ResolvedEnvironment,
-    scheme: Option<VersionScheme>,
+    scheme: &VersionScheme,
     other_release_id: uuid::Uuid,
 ) -> Result<LeaseDecision, InterpreterError> {
     use cargobike_core::template::ConcurrencyPolicy as Policy;
@@ -89,23 +89,34 @@ async fn supersede(
     leases: &LeaseRepository,
     snapshot: &ReleaseSnapshot,
     environment: &crate::template::ResolvedEnvironment,
-    scheme: Option<VersionScheme>,
+    scheme: &VersionScheme,
     other_release_id: uuid::Uuid,
 ) -> Result<LeaseDecision, InterpreterError> {
     let to_release = uuid::Uuid::try_parse(&snapshot.release.id).map_err(step_failure)?;
-    if let Some(scheme) = scheme {
-        let other_version = leases
-            .version_of(&snapshot.release.application, &environment.name)
-            .await
-            .map_err(sqlx_failure)?;
-        if let Some(other_version) = other_version {
-            match scheme.order(&other_version, &snapshot.release.version) {
-                Ok(std::cmp::Ordering::Greater) => {
-                    return Err(InterpreterError::ConcurrencyRejected); // F-72
-                }
-                Ok(_) => {}
-                Err(_) => {} // an unparsable holder: supersede wins (a corrupt row)
-            }
+    // The version-scheme guard (F-72) is fail-CLOSED: without a scheme,
+    // without a readable holder version, or with an ordering failure
+    // that is not a clear Losing, the arriving release is rejected and
+    // a human resolves.
+    let other_version = leases
+        .version_of(&snapshot.release.application, &environment.name)
+        .await
+        .map_err(sqlx_failure)?;
+    let Some(other_version) = other_version else {
+        // The holder has no version (a legacy row): reject.
+        return Err(InterpreterError::ConcurrencyRejected);
+    };
+    match scheme.order(&other_version, &snapshot.release.version) {
+        Ok(std::cmp::Ordering::Greater) => {
+            return Err(InterpreterError::ConcurrencyRejected);
+        }
+        Ok(_) => {}
+        Err(failure) => {
+            return Err(InterpreterError::Step(
+                cargobike_core::step::StepError::Failed {
+                    code: cargobike_core::error::CONCURRENCY_REJECTED.to_owned(),
+                    message: format!("the version-scheme guard refused: {failure}"),
+                },
+            ));
         }
     }
     // F-73's atomic transfer.

@@ -33,6 +33,10 @@ pub struct CleanupTarget {
     /// Under `supersede`: the new release becomes the lease's holder in
     /// the same statement (F-73); the CR comment links to it.
     pub superseded_by: Option<String>,
+    /// The replacing release's version (the transfer stamps it so the
+    /// F-72 guard stays honest for the next arrival; the supersede
+    /// flow's starter supplies it).
+    pub to_version: Option<String>,
 }
 
 /// A CR compact enough for the cleanup's argument.
@@ -146,7 +150,7 @@ async fn clean_target(release_id: &str, target: &CleanupTarget, services: &Clean
                             &target.environment,
                             old_holder,
                             new_holder,
-                            None,
+                            target.to_version.as_deref(),
                         )
                         .await
                         .map(|transfer| match transfer {
@@ -160,17 +164,20 @@ async fn clean_target(release_id: &str, target: &CleanupTarget, services: &Clean
                 Err(_) => Ok(format!("the supersede id `{superseded_by}` never parses")),
             }
         }
-        None => services
-            .leases
-            .acquire_amp(&target.application, &target.environment)
-            .await
-            .map(|released| {
-                if released {
-                    "released".to_owned()
-                } else {
-                    "was not held".to_owned()
-                }
-            }),
+        None => match uuid::Uuid::try_parse(release_id) {
+            Ok(holder) => services
+                .leases
+                .release(&target.application, &target.environment, holder)
+                .await
+                .map(|released| {
+                    if released {
+                        "released".to_owned()
+                    } else {
+                        "was not held".to_owned()
+                    }
+                }),
+            Err(_) => Ok(format!("the release id `{release_id}` never parses")),
+        },
     };
     match lease_outcome {
         Ok(detail) => tracing::info!(
@@ -195,20 +202,3 @@ fn log_outcome(release_id: &str, environment: &str, action: &str, outcome: Resul
 }
 
 type _Failure = cargobike_core::provider::ProviderError;
-
-/// The leases' release-form helper the cleanup needs (holder-guarded).
-impl crate::leases::LeaseRepository {
-    /// Releases only when `holder` holds it; the cleanup's `None`
-    /// supersede path fulfils the holder from the release_id.
-    pub async fn acquire_amp(
-        &self,
-        application: &str,
-        environment: &str,
-    ) -> Result<bool, sqlx::Error> {
-        let holder = self.holder(application, environment).await?;
-        match holder {
-            Some(holder) => self.release(application, environment, holder).await,
-            None => Ok(false),
-        }
-    }
-}
