@@ -104,7 +104,8 @@ pub type Value = serde_json::Value;
 pub type StepFailureReason = String;
 
 /// Errors a step body reports to the interpreter.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "failure")]
 pub enum StepError {
     /// The step failed transiently; `StepOptions` retries apply (F-35).
     #[error("step failed transiently: {0}")]

@@ -13,7 +13,7 @@ use cargobike_core::version::VersionScheme;
 
 /// Durations are humantime strings in the source; the resolved form
 /// carries parsed values.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StepBody {
     /// An action step (`uses: builtin/commit-files@1`).
     Action {
@@ -52,7 +52,7 @@ pub enum StepBody {
 
 /// One fully-resolved step: the ID that signal topics and approvals
 /// address (F-20a, F-59) plus its body.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedStep {
     /// Final ID: user-declared or auto-generated (`merge-0`), unique
     /// within the environment after `include` expansion (F-34, C17).
@@ -64,7 +64,7 @@ pub struct ResolvedStep {
 }
 
 /// One environment's resolved step sequence.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedEnvironment {
     /// Environment name, referenced by gates and registry environments.
     pub name: String,
@@ -74,10 +74,15 @@ pub struct ResolvedEnvironment {
     pub concurrency: Option<cargobike_core::template::ConcurrencyPolicy>,
     /// Expanded, resolved steps.
     pub steps: Vec<ResolvedStep>,
+    /// Per-environment inputs the release's provision stamps (F-32a:
+    /// `repo` and `edits` are the well-known entries; the registry may
+    /// also add generic ones — the interpreter reads them via env.inputs).
+    #[serde(default)]
+    pub env_inputs: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// The canonical, validated template (the F-16 snapshot's template half).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CompiledTemplate {
     /// Template name.
     pub name: String,
@@ -306,6 +311,7 @@ fn resolve(template: PipelineTemplate) -> Result<CompiledTemplate, TemplateError
             when: environment.when.clone(),
             concurrency: environment.concurrency,
             steps,
+            env_inputs: std::collections::BTreeMap::new(),
         });
     }
     Ok(CompiledTemplate {

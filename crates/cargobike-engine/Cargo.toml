@@ -16,14 +16,20 @@ humantime = { workspace = true }
 serde_yaml_ng = "0.10"
 time = { workspace = true }
 cel = { workspace = true }
+dbos = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+strum = { workspace = true }
+tracing = { workspace = true }
+globset = { workspace = true }
+regex = "1"
 sqlx = { workspace = true }
 uuid = { workspace = true }
 secrecy = { workspace = true }
-async-trait = { workspace = true }
 semver = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
 rstest = { workspace = true }
 pretty_assertions = { workspace = true }
 

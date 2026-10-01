@@ -81,10 +81,11 @@ pub enum Signal {
 
 /// Typed errors — never logged secrets; the F-8 vocabulary rides in
 /// `Error.code` fields and the API lifts it into problem documents.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum InterpreterError {
     /// A step failed non-transiently (F-8's `StepFailed`).
-    #[error("step failed: {0}")]
+    #[error("step failed: {0:?}")]
     Step(cargobike_core::step::StepError),
     /// The `wait: merge` consumer timed out (`MergeTimeout`).
     #[error("failed to observe the merge in time")]
