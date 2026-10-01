@@ -37,6 +37,9 @@ pub enum RepositoryError {
     /// Optimistic-concurrency mismatch (If-Match).
     #[error("failed to update release: resource version mismatch")]
     ResourceVersionMismatch,
+    /// A state transition the store refuses (terminal re-phase).
+    #[error("failed to update release: the release is already terminal")]
+    Conflict,
     /// Anything else (→ 500 InternalError).
     #[error("failed to access the database: {0}")]
     Internal(String),

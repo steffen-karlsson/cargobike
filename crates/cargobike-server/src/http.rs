@@ -117,10 +117,11 @@ async fn list_releases(
         )
         .await
         .map_err(repository_to_api)?;
+    let looked = items;
     Ok(axum::Json(serde_json::json!({
-        "items": items,
+        "items": looked,
         "cursor": cursor,
-        "has_more": cursor.is_some() && usize::try_from(limit).is_ok(),
+        "has_more": cursor.is_some(),
     })))
 }
 
@@ -245,6 +246,7 @@ use axum::response::IntoResponse;
 async fn cancel_release(
     State(state): State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     // : canceling is a grant .
@@ -253,13 +255,52 @@ async fn cancel_release(
             "The `release:cancel` grant is required.",
         ));
     }
+    // The If-Match guard: a supplied header pins the resource_version
+    // (ETag's value with quotes tolerated).
+    let match_text = headers_if_match(&headers);
+    let expected_version = if match_text.is_empty() {
+        None
+    } else {
+        let unquoted = match_text
+            .trim()
+            .trim_start_matches('"')
+            .trim_end_matches('"');
+        match unquoted.parse::<u64>() {
+            Ok(version) => Some(version),
+            Err(_) => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    crate::http::errors::INVALID_REQUEST,
+                    "field-invalid",
+                    "The If-Match header must carry the resource version (an ETag number).",
+                ));
+            }
+        }
+    };
     let now = sqlx::types::time::OffsetDateTime::now_utc();
-    state
+    match state
         .releases
-        .set_phase(&id, "Canceled", true, now)
+        .set_phase(&id, "Canceled", true, now, expected_version)
         .await
-        .map_err(repository_to_api)?;
-    Ok(StatusCode::NO_CONTENT)
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(RepositoryError::Conflict) => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            crate::http::errors::STATE_CONFLICT,
+            "state-conflict",
+            "The release is already terminal; cancel only applies to in-flight releases.",
+        )),
+        Err(other) => Err(repository_to_api(other)),
+    }
+}
+
+/// The If-Match header's value (empty ⇒ an unconditional transition).
+fn headers_if_match(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get("if-match")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
 }
 
 async fn get_release(
@@ -304,12 +345,17 @@ fn repository_to_api(error: RepositoryError) -> ApiError {
             "release-not-found",
             format!("The release `{id}` was not found."),
         ),
-        e => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            crate::http::errors::INTERNAL_ERROR,
-            "internal-error",
-            format!("{e}"),
-        ),
+        e => {
+            // F-103's internal hygiene: the driver's error text stays in
+            // the server's logs; the served problem is generic.
+            tracing::error!(%e, "the release repository failed");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::http::errors::INTERNAL_ERROR,
+                "internal-error",
+                "The release store failed; the server's log has the detail.",
+            )
+        }
     }
 }
 

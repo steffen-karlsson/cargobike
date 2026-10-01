@@ -105,28 +105,44 @@ impl ReleaseRepository {
             .ok_or_else(|| RepositoryError::NotFound(id.to_string()))
     }
 
-    /// Updates the phase (the cancel; ); honours resource_version when given.
+    /// Updates the phase (the cancel). Safety rails: a mismatched
+    /// `resource_version` (the If-Match guard) refuses, and a terminal
+    /// release never re-phases.
     pub async fn set_phase(
         &self,
         id: &Uuid,
         phase: &str,
         terminal: bool,
         when: sqlx::types::time::OffsetDateTime,
+        expected_version: Option<u64>,
     ) -> Result<(), RepositoryError> {
         let result = sqlx::query(
             "UPDATE releases SET phase = $2, terminal = $3, \
              resource_version = resource_version + 1, updated_at = $4 \
-             WHERE id = $1",
+             WHERE id = $1 \
+               AND NOT terminal \
+               AND ($5::bigint IS NULL OR resource_version = $5::bigint)",
         )
         .bind(id)
         .bind(phase)
         .bind(terminal)
         .bind(when)
+        .bind(expected_version.map(|v| v as i64))
         .execute(&self.pool)
         .await
         .map_err(|error| RepositoryError::Internal(error.to_string()))?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryError::NotFound(id.to_string()));
+            let existing =
+                sqlx::query_as::<_, (bool,)>("SELECT terminal FROM releases WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|error| RepositoryError::Internal(error.to_string()))?;
+            return match existing {
+                Some((true,)) => Err(RepositoryError::Conflict),
+                Some((false,)) => Err(RepositoryError::ResourceVersionMismatch),
+                None => Err(RepositoryError::NotFound(id.to_string())),
+            };
         }
         Ok(())
     }
@@ -166,6 +182,9 @@ impl ReleaseRepository {
                AND ($6::uuid IS NULL OR id > $6::uuid) \
                ORDER BY id DESC LIMIT $7";
 
+        // Look-ahead: one extra row decides `has_more` (the cursor is
+        // a real sentinel, not just 'a page was returned'); published
+        // items snap to the requested limit.
         let rows = sqlx::query_as::<_, Row>(sql)
             .bind(application)
             .bind(phase)
@@ -173,15 +192,24 @@ impl ReleaseRepository {
             .bind(since)
             .bind(after)
             .bind(before)
-            .bind(limit as i64)
+            .bind((limit as i64) + 1)
             .fetch_all(&self.pool)
             .await
             .map_err(|error| RepositoryError::Internal(error.to_string()))?;
+        let has_more = rows.len() as u32 > limit;
+        let mut rows = rows;
+        if has_more {
+            rows.truncate(limit as usize);
+        }
         let items: Vec<serde_json::Value> = rows.into_iter().map(|row| row.into_json()).collect();
-        let cursor = items
-            .last()
-            .and_then(|doc| doc["metadata"]["id"].as_str())
-            .and_then(|v| Uuid::parse_str(v).ok());
+        let cursor = if has_more {
+            items
+                .last()
+                .and_then(|doc| doc["metadata"]["id"].as_str())
+                .and_then(|v| Uuid::parse_str(v).ok())
+        } else {
+            None
+        };
         Ok((items, cursor))
     }
 
