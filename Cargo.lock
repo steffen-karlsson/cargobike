@@ -429,6 +429,8 @@ dependencies = [
  "cargobike-core",
  "hex",
  "hmac 0.12.1",
+ "http",
+ "jsonwebtoken",
  "octocrab",
  "secrecy",
  "serde",
