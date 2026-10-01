@@ -1,5 +1,5 @@
-//! The server state, health surfaces (§12.1, US-12) and the leader
-//! election gate (F-131's minimal v1: try-advisory at boot; the
+//! The server state, health surfaces and the leader
+//! election gate (the minimal v1: try-advisory at boot; the
 //! exit-process fence follows in 2.8b).
 
 use std::sync::Arc;
@@ -21,15 +21,15 @@ pub mod errors;
 
 /// Shared server state.
 pub struct AppState {
-    /// The current config; a SIGHUP reload swaps this (F-129).
+    /// The current config; a SIGHUP reload swaps this .
     pub config: tokio::sync::watch::Receiver<Arc<Config>>,
-    /// Ready only when a started leader holds the election lock (§12.1).
+    /// Ready only when a started leader holds the election lock .
     pub ready: AtomicBool,
     /// Release reads/writes (2.3/2.4).
     pub releases: ReleaseRepository,
     /// Auth context (2.5/2.6).
     pub auth: Arc<crate::auth::AuthState>,
-    /// The config file the reload task re-reads (F-129).
+    /// The config file the reload task re-reads .
     pub config_path: Option<std::path::PathBuf>,
 }
 
@@ -41,7 +41,7 @@ impl std::fmt::Debug for AppState {
     }
 }
 
-/// All Phase-2 routes: health + clientconfig unauthenticated (F-107),
+/// All Phase-2 routes: health + clientconfig unauthenticated ,
 /// release endpoints carry their auth plumbing in milestone 2.5/2.6.
 pub fn api_router(state: Arc<AppState>) -> Router<()> {
     let unauthenticated = Router::new()
@@ -66,7 +66,7 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
     unauthenticated.merge(protected)
 }
 
-/// Lists releases (§5.3): filters + the latest cursor (F-101).
+/// Lists releases : filters + the latest cursor .
 #[derive(serde::Deserialize)]
 struct ListParams {
     application: Option<String>,
@@ -103,7 +103,7 @@ async fn list_releases(
         ),
         None => None,
     };
-    let limit = params.limit.unwrap_or(50).clamp(1, 500); // F-101's documented bound
+    let limit = params.limit.unwrap_or(50).clamp(1, 500); // documented bound
     let (items, cursor) = state
         .releases
         .list(
@@ -124,15 +124,15 @@ async fn list_releases(
     })))
 }
 
-/// Create is `{application, version}` only (F-3); duplicates answer 200
-/// with the existing release (F-109); a fresh row answers 202 + `Location`
-/// (F-110).
+/// Create is `{application, version}` only ; duplicates answer 200
+/// with the existing release ; a fresh row answers 202 + `Location`
+/// .
 async fn create_release(
     State(state): State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<axum::response::Response, ApiError> {
-    let _ = &caller; // authorization below (F-99a)
+    let _ = &caller; // authorization below 
     let application = body
         .get("application")
         .and_then(serde_json::Value::as_str)
@@ -212,12 +212,12 @@ async fn create_release(
         .await
         .map_err(repository_to_api)?;
     if let Some(existing_json) = existing {
-        // F-109: a duplicate create answers 200 with the existing release.
+        // : a duplicate create answers 200 with the existing release.
         return Ok((StatusCode::OK, axum::Json(existing_json)).into_response());
     }
 
-    // TODO(2.4b): start the interpreter workflow (durable) at creation; the
-    // row is persisted first, so recovery can prove correctness (F-15/F-21).
+    // TODO(2.4b): start the interpreter workflow (the durable) at creation; the
+    // row is persisted first, so recovery can prove correctness .
     let location = format!("/api/v1/releases/{id}");
     Ok((
         StatusCode::ACCEPTED,
@@ -241,13 +241,13 @@ fn format_rfc3339(at: sqlx::types::time::OffsetDateTime) -> String {
 
 use axum::response::IntoResponse;
 
-/// F-60: cancel is a dedicated endpoint starting a cleanup workflow (F-75).
+/// : cancel is a dedicated endpoint starting a cleanup workflow .
 async fn cancel_release(
     State(state): State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    // F-99: canceling is a grant (US-5).
+    // : canceling is a grant .
     if !caller.has_grant("release:cancel") {
         return Err(ApiError::forbidden(
             "The `release:cancel` grant is required.",
@@ -267,7 +267,7 @@ async fn get_release(
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
-    // F-99: reading is a grant too (US-3).
+    // : reading is a grant too .
     if !caller.has_grant("release:read") {
         return Err(ApiError::forbidden("The `release:read` grant is required."));
     }
@@ -275,13 +275,13 @@ async fn get_release(
     Ok(axum::Json(document))
 }
 
-/// Terminal-only delete (US-6); event log retained (F-114).
+/// Terminal-only delete ; event log retained .
 async fn delete_release(
     State(state): State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    // F-99: deletion is a grant (US-6).
+    // : deletion is a grant .
     if !caller.has_grant("release:delete") {
         return Err(ApiError::forbidden(
             "The `release:delete` grant is required.",
@@ -295,7 +295,7 @@ async fn delete_release(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Maps repository errors to the RFC 9457 vocabulary (§10.2).
+/// Maps repository errors to the RFC 9457 vocabulary .
 fn repository_to_api(error: RepositoryError) -> ApiError {
     match error {
         RepositoryError::NotFound(id) => ApiError::new(
@@ -329,7 +329,7 @@ async fn startup() -> impl axum::response::IntoResponse {
     StatusCode::OK
 }
 
-/// Issuer + audience hints only (F-98's safe auto-discovery).
+/// Issuer + audience hints only (the safe auto-discovery).
 async fn clientconfig(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
@@ -351,7 +351,7 @@ async fn clientconfig(
     ))
 }
 
-/// Advisory-lock attempt for minimal leader election (F-131 v1: a standby
+/// Advisory-lock attempt for minimal leader election (the minimal v1: a standby
 /// still serves webhooks; the exit-on-lock-loss fence lands with the executor).
 pub async fn elect_leader(
     pool: &sqlx::PgPool,
@@ -373,7 +373,7 @@ pub async fn elect_leader(
 /// The Cargobike leader-election lock key.
 pub const LOCK_ID: i64 = 0x0063_6172_676f_626b; // 'cargobk'
 
-/// Boots the config (F-89/F-125) with the startup warnings, the leader
+/// Boots the config with the startup warnings, the leader
 /// gate and the router ready to serve.
 pub async fn boot(
     config_path: Option<&std::path::Path>,
@@ -403,9 +403,9 @@ pub async fn boot(
     Ok((api_router(Arc::clone(&state)), state))
 }
 
-/// F-129's SIGHUP hot reload: re-load, re-validate, then swap the config
+/// SIGHUP hot reload: re-load, re-validate, then swap the config
 /// the whole server reads from. A broken reload logs and keeps the
-/// previous config (in-flight releases are pinned by F-6/F-16 anyway).
+/// previous config (the in-flight releases are pinned by / anyway).
 fn spawn_sighup_reload(
     state: Arc<AppState>,
     sender: tokio::sync::watch::Sender<Arc<crate::config::Config>>,
@@ -414,11 +414,11 @@ fn spawn_sighup_reload(
         let Ok(mut signals) =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         else {
-            return; // not a unix host: reload by restart (F-132's Recreate)
+            return; // not a unix host: reload by restart ( Recreate)
         };
         while signals.recv().await.is_some() {
             let path = state.config_path.clone().unwrap_or_else(|| {
-                std::path::PathBuf::from("/etc/cargobike/config.yaml") // F-124's default
+                std::path::PathBuf::from("/etc/cargobike/config.yaml") // default
             });
             match crate::config::load(Some(&path)) {
                 Ok(fresh) => match crate::validation::validate(&fresh) {
@@ -438,7 +438,7 @@ fn spawn_sighup_reload(
     });
 }
 
-/// F-106: the resolved identity + grants (§9.6 summary in JSON).
+/// : the resolved identity + grants (the summary in JSON).
 async fn whoami(
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
 ) -> axum::Json<serde_json::Value> {
@@ -453,7 +453,7 @@ async fn whoami(
 }
 
 /// Maps an auth failure to the problem response when it surfaces in a
-/// handler (rather than the middleware).
+/// handler (the rather than the middleware).
 fn auth_to_api(error: &crate::auth::AuthError) -> ApiError {
     use crate::auth::AuthError;
     let (status, slug) = match error {

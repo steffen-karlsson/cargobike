@@ -1,17 +1,16 @@
-//! Concurrency (PRD 3.12 wired, F-70..F-74): per
-//! `(application, environment)` the interpreter holds the lease before
-//! stepping. The decision:
+//! Concurrency: per `(application, environment)` the interpreter holds
+//! the lease before stepping. The decision:
 //!
-//! - no row / already held ⇒ proceed (A1's no-op);
+//! - no row / already held ⇒ proceed (a no-op);
 //! - held by another: `supersede` transfers the lease atomically — but
-//!   never a higher version (F-72's guard, ordering by the scheme, with
+//!   never a higher version (the guard orders by the scheme, with the
 //!   creation-time fallback for `opaque`);
-//! - `queue` blocks on the `lease/{environment}` signal (F-71);
-//! - `reject` fails with `ConcurrencyRejected` (F-74).
+//! - `queue` blocks on the `lease/{environment}` signal;
+//! - `reject` fails with `ConcurrencyRejected`.
 //!
-//! The lease is RELEASED when the environment completes or skips (F-71's
-//! per-environment rule); failed environments keep it so a retry resumes;
-//! cancels settle it via `cargobike.cleanup.v1` (F-75).
+//! The lease is RELEASED when the environment completes or skips
+//! (the per-environment rule); failed environments keep it so a retry
+//! resumes; cancels settle it via `cargobike.cleanup.v1` .
 
 use std::time::Duration;
 
@@ -26,12 +25,12 @@ use crate::snapshot::ReleaseSnapshot;
 pub enum LeaseDecision {
     /// Hold the lease and run the environment.
     Proceed,
-    /// The policy's queue: block for the lease's signal (F-71).
+    /// The policy's queue: block for the lease's signal .
     WaitForLease,
 }
 
 /// Acquires the lease with the policy's semantics; on a `supersede`,
-/// F-72's version guard refuses higher holders. Returns the decision.
+/// version guard refuses higher holders. Returns the decision.
 pub async fn enter(
     leases: &LeaseRepository,
     snapshot: &ReleaseSnapshot,
@@ -62,7 +61,7 @@ pub async fn enter(
     }
 }
 
-/// The policy branch for a held lease (F-70's three values).
+/// The policy branch for a held lease (the three values).
 async fn decide_policy(
     leases: &LeaseRepository,
     snapshot: &ReleaseSnapshot,
@@ -82,7 +81,7 @@ async fn decide_policy(
 }
 
 /// The supersede guard: ordering via the scheme — a lower version never
-/// supersedes a higher one (F-72). `opaque` falls back to creation time:
+/// supersedes a higher one . `opaque` falls back to creation time:
 /// the lease's holder wins a release already newer-in-time, so arrival
 /// order decides (the arriving release is later ⇒ it's blocked).
 async fn supersede(
@@ -93,7 +92,7 @@ async fn supersede(
     other_release_id: uuid::Uuid,
 ) -> Result<LeaseDecision, InterpreterError> {
     let to_release = uuid::Uuid::try_parse(&snapshot.release.id).map_err(step_failure)?;
-    // The version-scheme guard (F-72) is fail-CLOSED: without a scheme,
+    // The version-scheme guard is fail-CLOSED: without a scheme,
     // without a readable holder version, or with an ordering failure
     // that is not a clear Losing, the arriving release is rejected and
     // a human resolves.
@@ -119,7 +118,7 @@ async fn supersede(
             ));
         }
     }
-    // F-73's atomic transfer.
+    // atomic transfer.
     let transfer = leases
         .transfer(
             &snapshot.release.application,
@@ -141,8 +140,8 @@ async fn supersede(
 }
 
 /// Steps the interpreter calls when the environment is terminal-ok
-/// (F-71's release the lease on complete/skip). The queue's WAKE send
-/// needs queued-environment identities (F-71's "the previous holder or
+/// (the releases the lease on complete/skip). The queue's WAKE send
+/// needs queued-environment identities ( "the previous holder or
 /// the reconciler" — the membership lives in the release store, so the
 /// wake path lands with the executor/reconciler wiring); until then the
 /// queued release's `QUEUE_WAKE_TIMEOUT` retry is the wake mechanism.
@@ -174,5 +173,5 @@ fn step_failure(_prob: uuid::Error) -> InterpreterError {
 }
 
 /// The queue's unbounded wait: on `LeaseReleased` the caller retries the
-/// acquire. Cancels reach the workflow through the cancel machinery (F-76).
+/// acquire. Cancels reach the workflow through the cancel machinery .
 pub const QUEUE_WAKE_TIMEOUT: Duration = Duration::from_secs(3600);

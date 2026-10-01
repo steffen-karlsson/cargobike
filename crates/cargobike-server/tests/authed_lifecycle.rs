@@ -1,7 +1,7 @@
-//! Authenticated release-lifecycle integration test (PRD 2.9): in-process
-//! server on an ephemeral port; API-key auth (F-85), idempotent create
-//! (F-109), the registry authorization rules (F-93/F-99a) and problem
-//! documents (F-103). Requires `CARGOBIKE_TEST_DATABASE_URL`.
+//! Authenticated release-lifecycle integration test: in-process
+//! server on an ephemeral port; API-key auth , idempotent create
+//! , the registry authorization rules and problem
+//! documents . Requires `CARGOBIKE_TEST_DATABASE_URL`.
 
 use argon2::password_hash::PasswordHasher as _;
 use std::net::SocketAddr;
@@ -25,9 +25,9 @@ async fn test_server() -> Option<String> {
     let port = listener.local_addr().expect("local addr").port();
     let presented = "cbk_test_plain_secret";
 
-    // Generate the argon2id hash the config will carry for the test key (F-85).
+    // Generate the argon2id hash the config will carry for the test key .
     // A fixed salt is fine for a test fixture; rust production hashing
-    // goes through `cargobike-server hash-api-key` (F-85/§9.3).
+    // goes through `cargobike-server hash-api-key` .
     let salt = argon2::password_hash::SaltString::encode_b64(b"cb-test-salt-16-x").expect("salt");
     let hash = argon2::Argon2::default()
         .hash_password(presented.as_bytes(), &salt)
@@ -71,7 +71,7 @@ async fn test_authed_release_lifecycle() {
     let client = reqwest::Client::new();
     let auth_header = ("Authorization", "Bearer cbk_test_plain_secret".to_owned());
 
-    // No header: 401 `MissingToken` (F-103 body).
+    // No header: 401 `MissingToken` (the no body).
     let response = client
         .post(format!("{base}/api/v1/releases"))
         .send()
@@ -118,7 +118,7 @@ async fn test_authed_release_lifecycle() {
     let id = document["metadata"]["id"].as_str().expect("id").to_owned();
     assert!(location.ends_with(&id));
 
-    // Duplicate create answers 200 with the existing release (F-109).
+    // Duplicate create answers 200 with the existing release .
     assert_eq!(
         create(&client, &version_a)
             .send()
@@ -138,7 +138,7 @@ async fn test_authed_release_lifecycle() {
         reqwest::StatusCode::ACCEPTED
     );
 
-    // whoami (F-106).
+    // whoami .
     let response = client
         .get(format!("{base}/api/v1/whoami"))
         .header(auth_header.0, auth_header.1.clone())
@@ -158,7 +158,7 @@ async fn test_authed_release_lifecycle() {
         ])
     );
 
-    // List with filters (§5.3/F-101).
+    // List with filters .
     let response = client
         .get(format!("{base}/api/v1/releases?application=my-service"))
         .header(auth_header.0, auth_header.1.clone())
@@ -181,7 +181,7 @@ async fn test_authed_release_lifecycle() {
         "the two releases of this run must be listed"
     );
 
-    // Cancel then terminal-only delete (F-60, US-6, F-103 not-found after).
+    // Cancel then terminal-only delete (, , not-found after).
     assert_eq!(
         client
             .post(format!("{base}/api/v1/releases/{id}/cancel"))

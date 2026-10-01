@@ -1,8 +1,8 @@
-//! Release error codes (F-8) and the typed library error style (§10.1).
+//! Release error codes and the typed library error style .
 //!
 //! Error codes are stable string contract values; the API surfaces them as
-//! the `code` extension member of RFC 9457 problem details (F-103). Define
-//! them once here — coded magic strings are a §20.3 constant violation.
+//! the `code` extension member of RFC 9457 problem details . Define
+//! them once here — coded magic strings are a constant violation.
 
 /// `status.error.code`: a step body failed.
 pub const STEP_FAILED: &str = "StepFailed";
@@ -10,16 +10,16 @@ pub const STEP_FAILED: &str = "StepFailed";
 pub const APPROVAL_TIMEOUT: &str = "ApprovalTimeout";
 /// `status.error.code`: a `wait: merge` step timed out (`on_timeout: fail`).
 pub const MERGE_TIMEOUT: &str = "MergeTimeout";
-/// `status.error.code`: the CR was closed without merging (F-62). Terminal.
+/// `status.error.code`: the CR was closed without merging . Terminal.
 pub const APPROVAL_REJECTED: &str = "ApprovalRejected";
-/// `status.error.code`: the version did not verify against tag/tok SHA (F-95).
+/// `status.error.code`: the version did not verify against tag/tok SHA .
 pub const VERSION_NOT_VERIFIED: &str = "VersionNotVerified";
-/// `status.error.code`: the concurrency policy refused or blocked (F-72, F-74).
+/// `status.error.code`: the concurrency policy refused or blocked .
 pub const CONCURRENCY_REJECTED: &str = "ConcurrencyRejected";
-/// `status.error.code`: CR head SHA changed under `on_modified: fail` (F-62).
+/// `status.error.code`: CR head SHA changed under `on_modified: fail` .
 pub const CHANGE_REQUEST_MODIFIED: &str = "ChangeRequestModified";
 
-/// Structured error of a failed release (F-8).
+/// Structured error of a failed release .
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReleaseError {
     /// One of the code constants in this module.
@@ -38,17 +38,17 @@ impl ReleaseError {
     }
 }
 
-/// Typed internal error used by this crate (`thiserror`, §10.1).
+/// Typed internal error used by this crate (`thiserror`, ).
 /// Message style: `failed to <action>: <cause>`.
 #[derive(Debug, thiserror::Error)]
 pub enum LibraryError {
     /// A required value was absent where it is structurally required.
     #[error("failed to build release: missing {0}")]
     Malformed(&'static str),
-    /// No provider is registered under the referenced name (F-39).
+    /// No provider is registered under the referenced name .
     #[error("failed to resolve provider: no provider named `{0}`")]
     UnknownProvider(String),
-    /// Secret-name resolution failed (F-146).
+    /// Secret-name resolution failed .
     #[error("failed to resolve secret: no secret named `{0}`")]
     UnknownSecret(String),
 }
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn test_error_codes_match_the_f8_vocabulary() {
-        // F-8 spells the vocabulary; F-34 adds MergeTimeout for wait timeouts.
+        // spells the vocabulary; adds MergeTimeout for wait timeouts.
         assert_eq!(STEP_FAILED, "StepFailed");
         assert_eq!(APPROVAL_TIMEOUT, "ApprovalTimeout");
         assert_eq!(MERGE_TIMEOUT, "MergeTimeout");

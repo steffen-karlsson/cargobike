@@ -5,8 +5,8 @@
 //! ([`template`]), the provider abstraction ([`provider`], [`registry`]),
 //! and the step-type abstraction ([`step`]).
 //!
-//! This crate must compile to `wasm32-wasip2` (PRD task T4): no tokio,
-//! sqlx, reqwest or wasmtime dependencies (PRD A.14).
+//! This crate must compile to `wasm32-wasip2`: no tokio,
+//! sqlx, reqwest or wasmtime dependencies.
 
 #![deny(clippy::all)]
 

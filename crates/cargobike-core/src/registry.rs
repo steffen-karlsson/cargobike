@@ -1,7 +1,7 @@
-//! Provider registry and credential store (F-39, F-146).
+//! Provider registry and credential store .
 //!
 //! Both live here so steps can receive them without pulling an I/O
-//! crate into `cargobike-core` (A.14). The server constructs them; steps
+//! crate into `cargobike-core` . The server constructs them; steps
 //! consume them.
 
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use crate::model::RepoRef;
 
 pub type RegistryResult<T> = Result<T, LibraryError>;
 
-/// Resolve providers by `RepoRef.provider` name (F-39).
+/// Resolve providers by `RepoRef.provider` name .
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
     providers: BTreeMap<String, Arc<dyn crate::provider::Provider>>,
@@ -28,12 +28,12 @@ impl ProviderRegistry {
     }
 
     /// Registers a provider under its config name; a later insert replaces
-    /// an earlier one with the same name (config warn: duplicate names error).
+    /// an earlier one with the same name (the config warn: duplicate names error).
     pub fn insert(&mut self, name: &str, provider: Arc<dyn crate::provider::Provider>) {
         self.providers.insert(name.to_owned(), provider);
     }
 
-    /// Resolves the provider named by `repo.provider` (F-39).
+    /// Resolves the provider named by `repo.provider` .
     pub fn resolve(&self, repo: &RepoRef) -> RegistryResult<Arc<dyn crate::provider::Provider>> {
         self.providers
             .get(&repo.provider)
@@ -52,10 +52,10 @@ impl ProviderRegistry {
     }
 }
 
-/// Resolves named secrets (`{ secret: <name> }`, F-146) to their values.
+/// Resolves named secrets (`{ secret: <name> }`, ) to their values.
 ///
 /// The value is returned as [`SecretString`] so a step can use it without
-/// producing it in logs or step outputs (F-87, F-120).
+/// producing it in logs or step outputs .
 #[async_trait]
 pub trait CredentialStore: Send + Sync {
     /// Resolves a named secret, or errors when the name is unknown.

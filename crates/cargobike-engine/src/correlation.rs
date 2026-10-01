@@ -1,9 +1,9 @@
-//! CR correlation (PRD F-63): the mapping the webhook receiver and the
-//! reconciler use — `(provider, repo_id, cr_number) -> (release,
+//! CR correlation: the mapping the webhook receiver and the
+//! reconciler use — `(the provider, repo_id, cr_number) -> (the release,
 //! environment, step, attempt)`.
 //!
-//! The change-request step writes it when the CR opens (engine); the
-//! webhook path (Phase 5) and the reconciler sweep (3.14) read it. The
+//! The change-request step writes it when the CR opens (the engine); the
+//! webhook path (Phase 5 lands it) and the reconciler sweep read it. The
 //! schema lives with the server's migrations (0003).
 
 use sqlx::PgPool;
@@ -22,9 +22,9 @@ pub struct CorrelationRow {
     pub release_id: Uuid,
     /// The environment the release was progressing through.
     pub environment: String,
-    /// The wait step's ID (the F-20a topic's step half).
+    /// The wait step's ID (the topic's step half).
     pub step_id: String,
-    /// The current attempt's workflow ID (F-20c's addressing).
+    /// The current attempt's workflow ID (the addressing).
     pub workflow_id: String,
 }
 
@@ -39,7 +39,7 @@ impl CorrelationRepository {
         Self { pool }
     }
 
-    /// Records the mapping when a CR opens (A1's idempotent upsert: the
+    /// Records the mapping when a CR opens (the an idempotent upsert: the
     /// same head branch re-building a CR re-stamps the row).
     pub async fn stamp(&self, row: &CorrelationRow) -> Result<(), sqlx::Error> {
         sqlx::query(
@@ -80,7 +80,7 @@ impl CorrelationRepository {
         .await
     }
 
-    /// Every open correlation (the reconciler's sweep input, F-69's
+    /// Every open correlation (the reconciler's sweep input,
     /// batching starts here: the batch page comes from the caller).
     pub async fn page(
         &self,

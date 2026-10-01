@@ -1,9 +1,9 @@
-//! Registry and trust validation at load (PRD 2.7, F-80, F-96, F-99a/b,
-//! F-147, §4.13a).
+//! Registry and trust validation at load (,
+//! , ).
 //!
 //! Pure checks over the loaded config: boot refuses a semantically broken
 //! registry instead of starting half-authorised. Template files are read
-//! from `templates.directory` (F-25: the file name is free, the parsed
+//! from `templates.directory` (the file name is free, the parsed
 //! `name`/`version` must match the registry's `name@version` reference).
 
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ impl From<serde_yaml_ng::Error> for ValidationError {
     }
 }
 
-/// Validates the whole config (semantic layer). Template files load from
+/// Validates the whole config (the semantic layer). Template files load from
 /// `templates.directory` (a missing directory with no applications is not
 /// an error; with applications it is).
 pub fn validate(config: &crate::config::Config) -> Result<(), ValidationError> {
@@ -45,12 +45,12 @@ pub fn validate(config: &crate::config::Config) -> Result<(), ValidationError> {
     check_group_references(config)
 }
 
-/// F-80: claim constraints are mandatory unless `allow_unconstrained`.
+/// : claim constraints are mandatory unless `allow_unconstrained`.
 fn check_oidc_entries(config: &crate::config::Config) -> Result<(), ValidationError> {
     for entry in &config.auth.oidc {
         if entry.claims.is_empty() && !entry.allow_unconstrained {
             return Err(ValidationError::Rule(format!(
-                "the OIDC trust entry `{}` has no claim constraint; set claims or allow_unconstrained: true (F-80)",
+                "the OIDC trust entry `{}` has no claim constraint; set claims or allow_unconstrained: true",
                 entry.name
             )));
         }
@@ -58,7 +58,7 @@ fn check_oidc_entries(config: &crate::config::Config) -> Result<(), ValidationEr
     Ok(())
 }
 
-/// F-99b: a named API key must be unique and present a hash.
+/// : a named API key must be unique and present a hash.
 fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError> {
     let mut named: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for entry in &config.auth.api_keys {
@@ -70,7 +70,7 @@ fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError>
         }
         if argon2::password_hash::PasswordHash::new(&entry.hash).is_err() {
             return Err(ValidationError::Rule(format!(
-                "the API key `{}` carries a hash `cargobike-server hash-api-key` did not produce (§9.3)",
+                "the API key `{}` carries a hash that `cargobike-server hash-api-key` does not produce",
                 entry.name
             )));
         }
@@ -78,7 +78,7 @@ fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError>
     Ok(())
 }
 
-/// F-99a: `releasers` selectors reference existing entries and those
+/// : `releasers` selectors reference existing entries and those
 /// entries must grant `release:create`.
 fn check_releaser_references(config: &crate::config::Config) -> Result<(), ValidationError> {
     let oidc_names: BTreeMap<&str, &crate::config::OidcEntry> = config
@@ -114,11 +114,11 @@ fn check_releaser_references(config: &crate::config::Config) -> Result<(), Valid
                         return Err(ValidationError::Reference {
                             context: context.clone(),
                             problem: format!(
-                                "the releaser references `{oidc}`, which does not grant `release:create` (F-99a)"
+                                "the releaser references `{oidc}`, which does not grant `release:create`"
                             ),
                         });
                     }
-                    // F-99a(b): a releaser's `ref` glob must be able to match tag_format.
+                    // (the b): a releaser's `ref` glob must be able to match tag_format.
                     if let (Some(tag_format), Some(ref_claim)) = (
                         app.versioning.tag_format.as_deref(),
                         entry.claims.get("ref").and_then(serde_json::Value::as_str),
@@ -147,14 +147,14 @@ fn check_releaser_references(config: &crate::config::Config) -> Result<(), Valid
     Ok(())
 }
 
-/// A `ref` claim glob can plausibly match the tag format (F-99a(b)): the
+/// A `ref` claim glob can plausibly match the tag format ((the b)): the
 /// claim glob's literal prefix must cover the COMPOSED tag ref's literal
 /// prefix — a real tag lives at `refs/tags/{tag_format}`, so
 /// `refs/tags/v*` covers `v{version}`; `release-*` does not.
 fn ref_may_match_tag(claim_glob: &str, tag_format: &str) -> bool {
     // The claim glob's literal prefix is everything before its first
     // wildcard or escape; the tag's real ref is `refs/tags/<format>`
-    // (F-99a(b)'s composed form), so the claim prefix must cover it.
+    // ((the b)'s composed form), so the claim prefix must cover it.
     if claim_glob == "~ALL" {
         return true;
     }
@@ -163,8 +163,8 @@ fn ref_may_match_tag(claim_glob: &str, tag_format: &str) -> bool {
     tag_ref_prefix.starts_with(claim_prefix)
 }
 
-/// F-96: every environment with an `approval` block must have a template
-/// `wait: approval` step; F-99b: `api_key` approvers refuse unless
+/// : every environment with an `approval` block must have a template
+/// `wait: approval` step; : `api_key` approvers refuse unless
 /// `allow_machine_approvers: true`; selectors must exist and grant the
 /// right request.
 fn check_apply_policy_invariants(config: &crate::config::Config) -> Result<(), ValidationError> {
@@ -181,7 +181,7 @@ fn check_apply_policy_invariants(config: &crate::config::Config) -> Result<(), V
             if !template_has_approval_step(template, env_name) {
                 return Err(ValidationError::Reference {
                     context: format!("application `{}` environment `{env_name}`", app.name),
-                    problem: "the registry declares an `approval` block but the template has no `wait: approval` step for this environment (F-96)".to_owned(),
+                    problem: "the registry declares an `approval` block but the template has no `wait: approval` step for this environment".to_owned(),
                 });
             }
             for selector in &policy.approvers {
@@ -190,7 +190,7 @@ fn check_apply_policy_invariants(config: &crate::config::Config) -> Result<(), V
                         return Err(ValidationError::Reference {
                             context: format!("application `{}` environment `{env_name}`", app.name),
                             problem: format!(
-                                "an approver references the API key `{api_key}`; machine approvers need `allow_machine_approvers: true` (F-99b)"
+                                "an approver references the API key `{api_key}`; machine approvers need `allow_machine_approvers: true`"
                             ),
                         });
                     }
@@ -213,7 +213,7 @@ fn check_apply_policy_invariants(config: &crate::config::Config) -> Result<(), V
                         return Err(ValidationError::Reference {
                             context: format!("application `{}` environment `{env_name}`", app.name),
                             problem: format!(
-                                "the approver references `{oidc}`, which does not grant `release:approve` (F-99a)"
+                                "the approver references `{oidc}`, which does not grant `release:approve`"
                             ),
                         });
                     }
@@ -224,7 +224,7 @@ fn check_apply_policy_invariants(config: &crate::config::Config) -> Result<(), V
     Ok(())
 }
 
-/// Every parsed template in the directory (deduped by name@version).
+/// Every parsed template in the directory (the deduped by name@version).
 pub fn load_templates(
     config: &Arc<crate::config::Config>,
 ) -> Result<BTreeMap<(String, String), PipelineTemplate>, ValidationError> {
@@ -254,7 +254,7 @@ pub fn load_templates(
     Ok(map)
 }
 
-/// Resolves the app's template (F-25: the `name@version` reference).
+/// Resolves the app's template (the `name@version` reference).
 fn template_for_name_version<'a>(
     templates: &'a BTreeMap<(String, String), PipelineTemplate>,
     reference: &str,
@@ -274,14 +274,12 @@ fn template_for_name_version<'a>(
         .get(&(name.to_owned(), version.to_owned()))
         .ok_or_else(|| ValidationError::Reference {
             context: format!("application `{}` environment `{env_name}`", app.name),
-            problem: format!(
-                "the template `{name}@{version}` is not in the templates directory (F-25)"
-            ),
+            problem: format!("the template `{name}@{version}` is not in the templates directory"),
         })
 }
 
 /// Whether the template environment's steps contain a `wait: approval`
-/// control step (F-96's invariant).
+/// control step (the invariant).
 fn template_has_approval_step(template: &PipelineTemplate, environment: &str) -> bool {
     template
         .environments
@@ -291,7 +289,7 @@ fn template_has_approval_step(template: &PipelineTemplate, environment: &str) ->
         .any(|step| step.wait == Some(WaitKind::Approval))
 }
 
-/// F-95/F-147: versioning scheme is one of the kebab values and the
+/// /: versioning scheme is one of the kebab values and the
 /// format strings use their documented placeholders.
 fn check_versioning(config: &crate::config::Config) -> Result<(), ValidationError> {
     for app in &config.applications {
@@ -300,7 +298,7 @@ fn check_versioning(config: &crate::config::Config) -> Result<(), ValidationErro
             .any(|allowed| *allowed == app.versioning.scheme);
         if !scheme_ok {
             return Err(ValidationError::Rule(format!(
-                "the application `{}` declares unknown versioning scheme `{}` (F-95: semver, calver, opaque)",
+                "the application `{}` declares unknown versioning scheme `{}` (semver, calver, opaque)",
                 app.name, app.versioning.scheme
             )));
         }
@@ -321,7 +319,7 @@ fn check_versioning(config: &crate::config::Config) -> Result<(), ValidationErro
     )
 }
 
-/// The F-147 placeholder check: unknown placeholders are errors (not
+/// The placeholder check: unknown placeholders are errors (the not
 /// passed through); `{{`/`}}` are literal-brace escapes.
 pub fn check_placeholders(
     context: &str,
@@ -344,7 +342,7 @@ pub fn check_placeholders(
         let placeholder = format!("{{{token}}}");
         if !allowed.contains(&placeholder.as_str()) {
             return Err(ValidationError::Rule(format!(
-                "the {context} {field} placeholder `{placeholder}` is not documented (F-147; allowed: {allowed:?})"
+                "the {context} {field} placeholder `{placeholder}` is not documented (allowed: {allowed:?})"
             )));
         }
         rest = &rest[close + 1..];
@@ -356,7 +354,7 @@ fn find_brace(rest: &[u8]) -> Option<usize> {
     rest.iter().position(|c| *c == b'{')
 }
 
-/// §4.13a: `extends` names an existing group.
+/// : `extends` names an existing group.
 fn check_group_references(config: &crate::config::Config) -> Result<(), ValidationError> {
     let groups: std::collections::HashSet<&str> = config
         .application_groups
@@ -382,10 +380,10 @@ mod tests {
     fn test_ref_may_match_tag_composes_the_refs_tags_prefix() {
         use super::*;
 
-        // The PRD §13.1's canonical pair: okay (F-99a(b)'s agree case).
+        // The documented canonical pair: the agree case.
         assert!(ref_may_match_tag("refs/tags/v*", "v{version}"));
         assert!(ref_may_match_tag("refs/tags/**", "v{version}"));
-        // The F-99a(b)'s documented misconfiguration: the prefixes
+        // The (the b)'s documented misconfiguration: the prefixes
         // cannot fit (`release-` never covers `refs/tags/v`).
         assert!(!ref_may_match_tag("refs/tags/release-*", "v{version}"));
         assert!(!ref_may_match_tag("refs/tags/v*", "release-{version}"));
@@ -418,8 +416,8 @@ mod tests {
 
     #[test]
     fn test_api_key_approvers_refuse_machines_by_default_f99b() {
-        // The F-96's template invariant first requires a wait-approval
-        // step, so the F-99b refusal needs a REAL template at a temp
+        // The template invariant first requires a wait-approval
+        // step, so the refusal needs a REAL template at a temp
         // directory; validate() walks the whole surface.
         let directory = std::env::temp_dir().join("cb-validation-f99b");
         let _ = std::fs::create_dir_all(&directory);
@@ -436,7 +434,7 @@ mod tests {
             failure
                 .as_ref()
                 .is_err_and(|value| value.to_string().contains("allow_machine_approvers")),
-            "F-99b's refusal is the validate's outcome: {failure:?}"
+            "the machine-approver refusal is the validate's outcome: {failure:?}"
         );
         let _ = std::fs::remove_file(&template_path);
         let _ = std::fs::remove_dir(&directory);

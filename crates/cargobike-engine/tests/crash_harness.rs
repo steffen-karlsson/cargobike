@@ -1,11 +1,11 @@
-//! The T1 crash harness (PRD §14.3): kill the process at every built-in
+//! The crash harness: kills the process at every built-in
 //! action step's boundary, recover, and assert the release converges to
 //! the same result with no duplicated side effects.
 //!
-//! Requires `--features t1-crash-hooks` (the milestone hooks + the mock
+//! Requires `--features crash-hooks` (the milestone hooks + the mock
 //! provider) and `CARGOBIKE_TEST_DATABASE_URL`; skips cleanly otherwise.
 
-#![cfg(feature = "t1-crash-hooks")]
+#![cfg(feature = "crash-hooks")]
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -69,7 +69,7 @@ fn spawn_harness(
         "hold"
     });
     if let Some(milestone) = kill_milestone {
-        command.env("CB_T1_KILL_AT", milestone);
+        command.env("CB_CRASH_AT", milestone);
     }
     command.spawn().map_err(|error| format!("spawn: {error}"))
 }
@@ -95,7 +95,7 @@ fn wait_child(
     }
 }
 
-/// The mock's state file (convergence facts across the kill).
+/// The mock's state file (the convergence facts across the kill).
 fn mock_state(scratch: &std::path::Path) -> Option<String> {
     let mut contents = String::new();
     std::fs::File::open(scratch.join("state.json"))
@@ -106,7 +106,7 @@ fn mock_state(scratch: &std::path::Path) -> Option<String> {
 }
 
 /// Polls until the release converged: one branch, one commit, one CR —
-/// and nothing else (T1's no-duplicate-side-effects assertion).
+/// and nothing else (the no-duplicate-side-effects assertion).
 fn assert_convergence(scratch: &std::path::Path, milestone: &str) {
     let deadline = Instant::now() + Duration::from_secs(90);
     let state = loop {
@@ -159,7 +159,7 @@ fn crash_at_every_step_boundary_converges() {
         // Unique per case: DBOS scopes by app, the scratch holds the
         // shared mock state. The release UUID keys the workflow ID, so
         // re-running the test never resumes a stale record.
-        let app = format!("t1-{}", milestone.replace(['/', ' '], "-"));
+        let app = format!("harness-{}", milestone.replace(['/', ' '], "-"));
         let scratch = base.join(&app);
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).expect("scratch dir");
@@ -184,7 +184,7 @@ fn crash_at_every_step_boundary_converges() {
         assert_eq!(code, 9, "the kill milestone {milestone} did not fire");
 
         // Run 2: `hold` — a fresh process boots without starting; DBOS's
-        // launch-time recovery offer replays recorded steps (bodies
+        // launch-time recovery offer replays recorded steps (the bodies
         // skipped) and drives the release to completion. The driver
         // polls convergence, then stops the holder.
         let mut holder = spawn_harness(binary, &app, &scratch, &release_id, &database_url, None)

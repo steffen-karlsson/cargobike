@@ -33,7 +33,7 @@ semver = { workspace = true }
 anyhow = "1"
 
 [features]
-t1-crash-hooks = []
+crash-hooks = []
 anyhow_harness = []
 
 [dev-dependencies]

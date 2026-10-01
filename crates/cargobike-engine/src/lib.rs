@@ -1,8 +1,8 @@
 //! Cargobike engine: the template compiler, the CEL expression runtime,
-//! the step registry, and (later phases) the durable interpreter that the
-//! spike model (docs/spike-dbos.md) informs.
+//! the step registry, and (the later phases) the durable interpreter that the
+//! spike model (the docs/spike-dbos.md) informs.
 //!
-//! Depends on `cargobike-core` only (PRD §11.2): no axum, no api crate.
+//! Depends on `cargobike-core` only: no axum, no api crate.
 
 pub mod builtin;
 pub mod cleanup;
@@ -12,7 +12,7 @@ pub mod crash;
 pub mod expr;
 pub mod interpreter;
 pub mod leases;
-#[cfg(feature = "t1-crash-hooks")]
+#[cfg(feature = "crash-hooks")]
 pub mod mock;
 pub mod names;
 pub mod reconciler;

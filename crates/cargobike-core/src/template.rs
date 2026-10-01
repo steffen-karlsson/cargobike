@@ -1,7 +1,7 @@
-//! The pipeline template model (PRD §6.3, F-25..F-32b).
+//! The pipeline template model.
 //!
 //! Durations and CEL expressions stay as their exact source strings: the
-//! snapshot stores the template verbatim (F-16), validation and evaluation
+//! snapshot stores the template verbatim , validation and evaluation
 //! happen in the engine, and a rename in the engine never rewrites the
 //! recorded form.
 
@@ -9,34 +9,34 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Versioned, reusable pipeline template (F-25).
+/// Versioned, reusable pipeline template .
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineTemplate {
     /// Template name; versions of the same name coexist as separate files.
     pub name: String,
-    /// Template version string (`"1"`, `"2"`), snapshotted (F-25). The file
+    /// Template version string (`"1"`, `"2"`), snapshotted . The file
     /// name is free; this field is authoritative.
     pub version: String,
     /// Human description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Application-wide inputs supplied by the registry (F-32a).
+    /// Application-wide inputs supplied by the registry .
     #[serde(default)]
     pub inputs: BTreeMap<String, InputSpec>,
-    /// Per-environment inputs supplied by the registry (F-32a). `repo` and
+    /// Per-environment inputs supplied by the registry . `repo` and
     /// `edits` are the two well-known entries.
     #[serde(default)]
     pub environment_inputs: BTreeMap<String, InputSpec>,
     /// Reusable step lists referenced with `include:` from environments
-    /// (F-32b).
+    /// .
     #[serde(default)]
     pub step_groups: Vec<StepGroup>,
     /// Environments and their step sequences.
     pub environments: Vec<EnvironmentSpec>,
 }
 
-/// A typed template input (F-32a, C16).
+/// A typed template input .
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct InputSpec {
@@ -48,7 +48,7 @@ pub struct InputSpec {
     pub description: Option<String>,
 }
 
-/// The well-known and generic input types (F-32a, F-144).
+/// The well-known and generic input types .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InputType {
@@ -64,7 +64,7 @@ pub enum InputType {
     Boolean,
 }
 
-/// A named, reusable step list (F-32b).
+/// A named, reusable step list .
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StepGroup {
@@ -74,37 +74,37 @@ pub struct StepGroup {
     pub steps: Vec<StepSpec>,
 }
 
-/// One environment and its step sequence (PRD §6.3).
+/// One environment and its step sequence.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentSpec {
-    /// Environment name; gates and registry keys reference this (F-26).
+    /// Environment name; gates and registry keys reference this .
     pub name: String,
-    /// CEL gate controlling whether the environment runs (F-26, F-27).
+    /// CEL gate controlling whether the environment runs .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
     /// Concurrency policy; the registry value takes precedence over this
-    /// template default (R11: security-relevant settings are registry-only,
+    /// template default (the security-relevant settings are registry-only,
     /// so the template field exists to keep tests self-contained).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<ConcurrencyPolicy>,
-    /// Steps (mix of action steps, control steps, and `include:` groups).
+    /// Steps (the mix of action steps, control steps, and `include:` groups).
     pub steps: Vec<StepSpec>,
 }
 
-/// Concurrency policy per environment (F-31; §4.9).
+/// Concurrency policy per environment .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConcurrencyPolicy {
-    /// Close the old CR and take over (F-70..F-73).
+    /// Close the old CR and take over (..).
     Supersede,
-    /// Queue behind the current release (F-71).
+    /// Queue behind the current release .
     Queue,
-    /// Refuse with `ConcurrencyRejected` (F-74).
+    /// Refuse with `ConcurrencyRejected` .
     Reject,
 }
 
-/// One step in a sequence (F-28, F-34, F-35).
+/// One step in a sequence .
 ///
 /// Exactly one of [`StepSpec::uses`], [`StepSpec::wait`], or
 /// [`StepSpec::include`] is set; validation rejects otherwise (the
@@ -113,56 +113,56 @@ pub enum ConcurrencyPolicy {
 #[serde(deny_unknown_fields)]
 pub struct StepSpec {
     /// Output-referencing ID; auto-generated deterministically when omitted
-    /// (F-34, C17).
+    /// .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Action step registry name, `builtin/commit-files@1` (F-35).
+    /// Action step registry name, `builtin/commit-files@1` .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uses: Option<String>,
-    /// Control step kind (`merge`, `approval`, `sleep` — F-34).
+    /// Control step kind (`merge`, `approval`, `sleep` — ).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait: Option<WaitKind>,
-    /// `include:` a `step_groups` entry by name (F-32b).
+    /// `include:` a `step_groups` entry by name .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<String>,
-    /// Parameters for the action step (F-28). Secrets travel as
-    /// `{ secret: <name> }` references (F-146), never inline.
+    /// Parameters for the action step . Secrets travel as
+    /// `{ secret: <name> }` references , never inline.
     #[serde(default)]
     pub with: serde_json::Value,
     /// Wait/action deadline; required on `wait: merge` and `wait: approval`,
-    /// not valid on `wait: sleep` (which takes [`StepSpec::duration`]).
+    /// not valid on `wait: sleep` (the which takes [`StepSpec::duration`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
-    /// `wait: sleep` length (F-34).
+    /// `wait: sleep` length .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<String>,
-    /// Wait deadline outcome (F-34): fail or cancel.
+    /// Wait deadline outcome : fail or cancel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_timeout: Option<OnTimeout>,
-    /// Wait-for-merge behaviour on head SHA change (F-62).
+    /// Wait-for-merge behaviour on head SHA change .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_modified: Option<OnModified>,
-    /// Step-level CEL gate (F-28).
+    /// Step-level CEL gate .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
-    /// Retry policy for action steps (F-35).
+    /// Retry policy for action steps .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
 }
 
-/// Control-step kinds (F-34).
+/// Control-step kinds .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WaitKind {
-    /// `wait: merge` — recv + provider verification loop (F-62).
+    /// `wait: merge` — recv + provider verification loop .
     Merge,
-    /// `wait: approval` — recv (F-59, F-96).
+    /// `wait: approval` — recv .
     Approval,
     /// `wait: sleep` — durable sleep, takes [`StepSpec::duration`].
     Sleep,
 }
 
-/// What happens when a wait deadline passes (F-34, C23).
+/// What happens when a wait deadline passes .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OnTimeout {
@@ -172,25 +172,25 @@ pub enum OnTimeout {
     Cancel,
 }
 
-/// What happens when the CR head SHA changes while waiting (F-62).
+/// What happens when the CR head SHA changes while waiting .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OnModified {
-    /// Error with `ChangeRequestModified` (default).
+    /// Error with `ChangeRequestModified` (the default).
     Fail,
     /// Accept the modified CR and keep going.
     Accept,
 }
 
-/// Action-step retry policy (F-35, C23).
+/// Action-step retry policy .
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RetryPolicy {
-    /// Total attempts (default 1, no retry).
+    /// Total attempts (the default 1, no retry).
     pub attempts: u32,
-    /// Backoff shape (default fixed).
+    /// Backoff shape (the default fixed).
     pub backoff: Backoff,
-    /// First delay (default implementation-chosen).
+    /// First delay (the default implementation-chosen).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_delay: Option<String>,
     /// Backoff cap.
@@ -209,11 +209,11 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Backoff shape for action-step retries (F-35).
+/// Backoff shape for action-step retries .
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Backoff {
-    /// Same delay every time (default).
+    /// Same delay every time (the default).
     #[default]
     Fixed,
     /// Exponential growth up to `max_delay`.
@@ -225,12 +225,12 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    /// PRD §6.3 template, verbatim.
+    /// The documented template, verbatim.
     const SERVICE_TEMPLATE: &str = include_str!("../../../templates/service.yaml");
 
     #[test]
     fn test_service_template_parses_and_matches_f32_test_promise() {
-        // F-32 promises a unit test loads the documented example verbatim.
+        // promises a unit test loads the documented example verbatim.
         assert_eq!(SERVICE_TEMPLATE.lines().next(), Some("name: service"));
         let template: PipelineTemplate =
             serde_yaml_ng::from_str(SERVICE_TEMPLATE).expect("template must parse");

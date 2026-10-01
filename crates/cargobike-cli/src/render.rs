@@ -1,12 +1,12 @@
-//! The output rendering (§9.2's table|json|yaml): one canonical pass
+//! The output rendering (theirs table|json|yaml): one canonical pass
 //! per format, so CLI outputs stay greppable and script-parsable. The
-//! rows read F-1's real homes: `metadata.id`, `spec.application`,
+//! rows read real homes: `metadata.id`, `spec.application`,
 //! `spec.version`, `status.phase`.
 
 use crate::config::OutputFormat;
 
 /// Rows: the doc's `metadata.{id, application, version, phase}` quartet
-/// (F-1's root view) — other fields print in the full document form.
+/// (the root view) — other fields print in the full document form.
 pub fn rows(document: &serde_json::Value) -> Vec<[String; 4]> {
     match document.get("items").and_then(serde_json::Value::as_array) {
         Some(items) => items

@@ -1,4 +1,4 @@
-//! SIGHUP hot-reload test (F-129): the server runs as a real process; a
+//! SIGHUP hot-reload test : the server runs as a real process; a
 //! config edit + `kill -HUP` swaps the trust entries; requests through
 //! the old key start failing and the new key starts succeeding, without
 //! a restart. Requires `CARGOBIKE_TEST_DATABASE_URL`.
@@ -86,7 +86,7 @@ async fn test_sighup_swap_is_observed_without_restart() {
         .output()
         .expect("HUP");
 
-    // Poll: the old key (removed in v2) refuses…
+    // Poll: the old key (the removed in v2) refuses…
     let mut refused = false;
     for _ in 0..50 {
         let response = client
@@ -103,7 +103,7 @@ async fn test_sighup_swap_is_observed_without_restart() {
     }
     assert!(refused, "the old key must be refused after the reload");
 
-    // …key-two accepts (same plaintext, new config): the create works.
+    // …key-two accepts (the same plaintext, new config): the create works.
     let response = client
         .post(format!("{base}/api/v1/releases"))
         .header("Authorization", format!("Bearer {plaintext_two}"))

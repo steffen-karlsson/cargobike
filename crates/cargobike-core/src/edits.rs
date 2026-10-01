@@ -1,7 +1,7 @@
-//! The F-41 edit application: dot-notation paths set into JSON/YAML/TOML
+//! The edit application: dot-notation paths set into JSON/YAML/TOML
 //! documents — structural, never text substitution. Providers share this
 //! module so the committed file matches what the verifier walks
-//! (identity: the engine's `get_by_dot` reads the same shape).
+//! (the identity: the engine's `get_by_dot` reads the same shape).
 
 use crate::provider::{Edit, EditError, EditFormat};
 
@@ -50,7 +50,7 @@ pub fn apply_to_document(
     }
 }
 
-/// F-41's extension-based inference (yaml by default): the ONE
+/// extension-based inference (the yaml by default): the ONE
 /// implementation all consumers share (the verifier, the providers).
 pub fn format_for_path(file: &str) -> EditFormat {
     match file.rsplit_once('.').map(|(_, extension)| extension) {
@@ -61,7 +61,7 @@ pub fn format_for_path(file: &str) -> EditFormat {
 }
 
 /// The edit's desired value: absent OR explicit null reads the
-/// release version (F-147's default), anything else wins. The merge
+/// release version (the default), anything else wins. The merge
 /// verifier shares this so both ends agree.
 pub fn desired_value(edit: &Edit, default_value: &serde_json::Value) -> serde_json::Value {
     match &edit.value {
@@ -125,7 +125,7 @@ fn set_json(
     }
 }
 
-/// Walks one hop; missing parents are invalid (the F-41 verifier reads
+/// Walks one hop; missing parents are invalid (the verifier reads
 /// the same shape — an absent envelope is a template error).
 fn down<'tree>(
     current: &'tree mut serde_json::Value,

@@ -1,24 +1,24 @@
-//! The T1 harness binary (feature `t1-crash-hooks`): registers the real
+//! The harness binary (the feature `crash-hooks`): registers the real
 //! interpreter over the mock provider and starts one release; the DRIVER
 //! test kills it at a milestone and the respawn recovers.
 //!
-//! Usage: cargo run --features t1-crash-hooks --bin engine-harness \
+//! Usage: cargo run --features crash-hooks --bin engine-harness \
 //!          -- <app-name> <scratch-dir> <release-id>
-//! Env: CB_HARNESS_DB_URL (the fixture Postgres), CB_T1_KILL_AT.
+//! Env: CB_HARNESS_DB_URL (the fixture Postgres), CB_CRASH_AT.
 
-#[cfg(not(feature = "t1-crash-hooks"))]
+#[cfg(not(feature = "crash-hooks"))]
 fn main() -> anyhow::Result<()> {
-    anyhow::bail!("the harness builds only with --features t1-crash-hooks")
+    anyhow::bail!("the harness builds only with --features crash-hooks")
 }
 
-#[cfg(feature = "t1-crash-hooks")]
+#[cfg(feature = "crash-hooks")]
 mod harness {
     use std::sync::Arc;
 
     use cargobike_core::registry::ProviderRegistry;
     use cargobike_core::version::VersionScheme;
 
-    /// The harness's wait-free template: three action steps (waits' wire
+    /// The harness's wait-free template: three action steps (the waits' wire
     /// behavior already lives in the spike's E3/E5 findings).
     pub const TEMPLATE: &str = r#"
 name: harness
@@ -135,7 +135,7 @@ environments:
         eprintln!("boot: launched");
 
         // The snapshot: the compiled template with the mock repo + edits
-        // stamped into its one environment (F-32a's provision).
+        // stamped into its one environment (the provision).
         let mut compiled = cargobike_engine::template::compile(TEMPLATE, &VersionScheme::Semver)
             .map_err(|error| anyhow::anyhow!("template: {error}"))?;
         let mut env_inputs = std::collections::BTreeMap::new();
@@ -170,7 +170,7 @@ environments:
                 map.insert("builtin/set-labels".to_owned(), "1".to_owned());
                 map
             },
-            content_hash: "t1-harness".to_owned(),
+            content_hash: "crash-harness".to_owned(),
         };
         eprintln!("boot: compiled template");
         if mode == "start" {
@@ -194,7 +194,7 @@ environments:
     }
 }
 
-#[cfg(feature = "t1-crash-hooks")]
+#[cfg(feature = "crash-hooks")]
 fn main() -> anyhow::Result<()> {
     harness::run()
 }

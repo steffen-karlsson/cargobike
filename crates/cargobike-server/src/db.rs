@@ -1,5 +1,5 @@
 //! Database access: the pool, migrations (2.3) and the release
-//! repository (F-1..F-11, F-109).
+//! repository (.., ).
 
 use sqlx::PgPool;
 
@@ -7,7 +7,7 @@ use secrecy::ExposeSecret;
 
 use crate::config::{Config, materialise};
 
-/// Connects the pool and applies migrations (F-124, §2.3).
+/// Connects the pool and applies migrations .
 pub async fn connect(config: &Config) -> Result<PgPool, crate::config::ConfigError> {
     let url = materialise(&config.database.url, &config.secrets)?;
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -28,10 +28,10 @@ pub async fn connect(config: &Config) -> Result<PgPool, crate::config::ConfigErr
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryError {
-    /// The id was not found (→ 404, F-101 family).
+    /// The id was not found (→ 404, family).
     #[error("failed to find release {0}")]
     NotFound(String),
-    /// The create conflict — an active release for (app, version) exists.
+    /// The create conflict — an active release for (the app, version) exists.
     #[error("failed to create release: an active release exists for the application and version")]
     DuplicateActive,
     /// Optimistic-concurrency mismatch (If-Match).

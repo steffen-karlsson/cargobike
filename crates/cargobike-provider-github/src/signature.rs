@@ -1,7 +1,7 @@
-//! The GitHub signature digest (F-51): HMAC-SHA256 keyed by the
+//! The GitHub signature digest : HMAC-SHA256 keyed by the
 //! webhook secret over the RAW delivery body, hex-comparable against
 //! `X-Hub-Signature-256`. Production verifies via webhook's
-//! verify_slice (constant-time); this module's helper exists for
+//! verify_slice (the constant-time); this module's helper exists for
 //! the tests' signature generation.
 
 /// The delivery's digest, lowercase hex (the tests build signatures
@@ -25,7 +25,7 @@ mod tests {
 
     #[test]
     fn test_rfc_4231_case_2_vector() {
-        // HMAC-SHA256(key = "Jefe", data = "what do ya want for nothing?")
+        // HMAC-SHA256(the key = "Jefe", data = "what do ya want for nothing?")
         let digest = hmac_sha256_hex(b"Jefe", b"what do ya want for nothing?");
         assert_eq!(
             digest,

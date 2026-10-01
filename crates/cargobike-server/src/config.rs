@@ -1,9 +1,9 @@
-//! Server config value types and the loader (PRD §13.1, F-124..F-129,
-//! F-134..F-147, §2a naming rules).
+//! Server config value types and the loader (,
+//! .., a naming rules).
 //!
-//! Validation happens structurally (`deny_unknown_fields`, R1/R9/R12
+//! Validation happens structurally (`deny_unknown_fields`, //
 //! enforced by the shapes) and semantically at load ([`validate`]); the
-//! documented example config must load verbatim (F-32's test promise).
+//! documented example config must load verbatim (the test's promise).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
-/// The whole server config (top-level sections, F-124).
+/// The whole server config (the top-level sections, ).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -21,7 +21,7 @@ pub struct Config {
     /// System database (Cargobike's own tables; also DBOS's when the
     /// schema is shared).
     pub database: DatabaseSection,
-    /// Leader election (F-136, one section).
+    /// Leader election (, one section).
     #[serde(default)]
     pub leader_election: LeaderElectionSection,
     /// Who may call the API (OIDC trust entries + API keys).
@@ -29,40 +29,40 @@ pub struct Config {
     /// Named secrets referenced by template steps as `{ secret: <name> }`.
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretSource>,
-    /// Git providers (github + extension-served).
+    /// Git providers (the github + extension-served).
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
-    /// Sidecar extensions (transport + channel auth; F-121).
+    /// Sidecar extensions (the transport + channel auth; ).
     #[serde(default)]
     pub extensions: Vec<ExtensionConfig>,
     /// Pipeline templates directory.
     #[serde(default)]
     pub templates: TemplatesSection,
-    /// Interpreter/engine knobs (F-137).
+    /// Interpreter/engine knobs .
     #[serde(default)]
     pub engine: EngineSection,
-    /// Reconciler (F-138).
+    /// Reconciler .
     #[serde(default)]
     pub reconciler: ReconcilerSection,
-    /// Retention (F-139).
+    /// Retention .
     #[serde(default)]
     pub retention: RetentionSection,
-    /// Rate limits and body sizes (F-118).
+    /// Rate limits and body sizes .
     #[serde(default)]
     pub limits: LimitsSection,
-    /// Egress/SSRF policy (F-117).
+    /// Egress/SSRF policy .
     #[serde(default)]
     pub network: NetworkSection,
-    /// Logging (F-140).
+    /// Logging .
     #[serde(default)]
     pub logging: LoggingSection,
-    /// Optional metrics port (F-141).
+    /// Optional metrics port .
     #[serde(default)]
     pub metrics: MetricsSection,
-    /// The application registry (§4.13; the security core).
+    /// The application registry (; the security core).
     #[serde(default)]
     pub applications: Vec<ApplicationEntry>,
-    /// Application groups for monorepo discovery (§4.13a).
+    /// Application groups for monorepo discovery ().
     #[serde(default)]
     pub application_groups: Vec<ApplicationGroupEntry>,
 }
@@ -75,14 +75,14 @@ impl Config {
     }
 }
 
-/// HTTP surface (F-128, F-134).
+/// HTTP surface .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerSection {
-    /// Bind address, `0.0.0.0:8080` (F-128).
+    /// Bind address, `0.0.0.0:8080` .
     #[serde(default = "default_listen")]
     pub listen: String,
-    /// Externally visible URL (webhooks, CR links, `Location`).
+    /// Externally visible URL (the webhooks, CR links, `Location`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_url: Option<String>,
     /// Graceful shutdown window while steps are in flight.
@@ -101,23 +101,23 @@ fn default_shutdown_timeout() -> String {
     "30s".to_owned()
 }
 
-/// Built-in TLS (F-134).
+/// Built-in TLS .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsSection {
-    /// Certificate (secret-shaped).
+    /// Certificate (the secret-shaped).
     pub certificate: SecretValue,
-    /// Private key (secret-shaped).
+    /// Private key (the secret-shaped).
     pub private_key: SecretValue,
 }
 
-/// Database pool (F-135).
+/// Database pool .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseSection {
-    /// Secret-shaped connection string (literal one is warned at startup).
+    /// Secret-shaped connection string (the literal one is warned at startup).
     pub url: SecretValue,
-    /// Pool cap (default 10).
+    /// Pool cap (the default 10).
     #[serde(default = "default_pool")]
     pub max_connections: u32,
 }
@@ -126,13 +126,13 @@ fn default_pool() -> u32 {
     10
 }
 
-/// One section for leader election (F-136): enabled + dedicated URL.
+/// One section for leader election : enabled + dedicated URL.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LeaderElectionSection {
-    /// On by default (F-136); off simplifies local tests.
+    /// On by default ; off simplifies local tests.
     pub enabled: bool,
-    /// Must bypass PgBouncer transaction pooling (F-131); defaults to `database.url`.
+    /// Must bypass PgBouncer transaction pooling ; defaults to `database.url`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database_url: Option<SecretValue>,
 }
@@ -146,19 +146,19 @@ impl Default for LeaderElectionSection {
     }
 }
 
-/// Authentication section (auth.oidc + auth.api_keys, §9.2/9.3).
+/// Authentication section (auth.oidc + auth.api_keys).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthSection {
-    /// OIDC trust entries; single-direction binding (F-80, F-99a).
+    /// OIDC trust entries; single-direction binding .
     #[serde(default)]
     pub oidc: Vec<OidcEntry>,
-    /// Hashed API keys; single-direction binding like the OIDC entries (F-85).
+    /// Hashed API keys; single-direction binding like the OIDC entries .
     #[serde(default)]
     pub api_keys: Vec<ApiKeyEntry>,
 }
 
-/// One OIDC trust entry (F-77..F-81).
+/// One OIDC trust entry (..).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OidcEntry {
@@ -168,38 +168,38 @@ pub struct OidcEntry {
     pub issuer: String,
     /// Audience the token must carry.
     pub audience: String,
-    /// Claim constraints; glob by default (R7).
+    /// Claim constraints; glob by default .
     #[serde(default)]
     pub claims: BTreeMap<String, serde_json::Value>,
-    /// Grants mapped by this entry (F-99).
+    /// Grants mapped by this entry .
     #[serde(default)]
     pub grants: Vec<String>,
-    /// Unconstrained entries are refused without this (F-80).
+    /// Unconstrained entries are refused without this .
     #[serde(default)]
     pub allow_unconstrained: bool,
-    /// nbf/iat skew allowance (default 60s; F-77).
+    /// nbf/iat skew allowance (the default 60s; ).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock_skew: Option<String>,
-    /// JWKS override for issuers without usable discovery (F-77).
+    /// JWKS override for issuers without usable discovery .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
-    /// Algorithm allowlist per issuer (F-78).
+    /// Algorithm allowlist per issuer .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub algorithms: Option<Vec<String>>,
 }
 
-/// One configurable API key (F-85, F-99b).
+/// One configurable API key .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiKeyEntry {
     /// Name referenced by `releasers: [{ api_key: <name> }]`.
     pub name: String,
-    /// Argon2id hash to compare against (§9.3).
+    /// Argon2id hash to compare against .
     pub hash: String,
-    /// Grants for the key (F-99).
+    /// Grants for the key .
     #[serde(default)]
     pub grants: Vec<String>,
-    /// Rotation expiry (date).
+    /// Rotation expiry (the date).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<String>,
     /// Free description for audit.
@@ -207,7 +207,7 @@ pub struct ApiKeyEntry {
     pub description: Option<String>,
 }
 
-/// Where a named secret's value comes from (F-146); only file/env — a
+/// Where a named secret's value comes from ; only file/env — a
 /// secret cannot point at another secret.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -218,8 +218,8 @@ pub enum SecretSource {
     Env { env: String },
 }
 
-/// A secret-shaped value: a literal (discouraged), `{ file }`, `{ env }`
-/// or `{ secret: <name> }` (R5, C13).
+/// A secret-shaped value: a literal (the discouraged), `{ file }`, `{ env }`
+/// or `{ secret: <name> }` .
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum SecretValue {
@@ -229,7 +229,7 @@ pub enum SecretValue {
     File(FileSecret),
     /// Environment name reference.
     Env { env: String },
-    /// Reference into `secrets:` (F-146).
+    /// Reference into `secrets:` .
     Secret { r#secret: String },
 }
 
@@ -244,7 +244,7 @@ pub struct FileSecret {
 impl<'de> Deserialize<'de> for SecretValue {
     /// The derive's untagged form rejects matches unevenly across shapes; a
     /// hand impl keeps literals and `{ file }`/`{ env }`/`{ secret }` maps
-    /// distinct (R5's one shape promise, tested by the verbatim example).
+    /// distinct (the one-shape promise, tested by the verbatim example).
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -290,21 +290,21 @@ impl SecretValue {
         }
     }
 
-    /// Whether the value is a literal (startup warning; C13).
+    /// Whether the value is a literal (the startup warning; ).
     pub fn is_literal(&self) -> bool {
         matches!(self, SecretValue::Literal(_))
     }
 }
 
 impl std::fmt::Debug for SecretValue {
-    /// Hand-written Debug: never prints a literal (F-87).
+    /// Hand-written Debug: never prints a literal .
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.describe())
     }
 }
 
-/// Materialises secret values the way the server does at boot (tests use
-/// the same code path; F-88 `*_FILE` variants are applied by the loader).
+/// Materialises secret values the way the server does at boot (the tests use
+/// the same code path; `*_FILE` variants are applied by the loader).
 pub fn materialise(
     value: &SecretValue,
     secrets: &BTreeMap<String, SecretSource>,
@@ -358,27 +358,27 @@ fn materialise_source(source: &SecretSource) -> Result<SecretString, ConfigError
     Ok(SecretString::from(value))
 }
 
-/// A git provider (F-49, §7.2) — github or extension-served.
+/// A git provider — github or extension-served.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
-    /// Name referenced by `RepoRef.provider` (F-39).
+    /// Name referenced by `RepoRef.provider` .
     pub name: String,
-    /// `github` or `extension` (F-49, C11).
+    /// `github` or `extension` .
     pub r#type: String,
-    /// For `type: github`: API base (GitHub Enterprise Server support, F-44).
+    /// For `type: github`: API base (GitHub Enterprise Server support, ).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
     /// For `type: github`: the web UI base for CR links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_url: Option<String>,
-    /// For `type: github`: App authentication (§7.2).
+    /// For `type: github`: App authentication .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ProviderAuth>,
-    /// Webhook secrets; list allows two for rotation (F-51, F-58).
+    /// Webhook secrets; list allows two for rotation .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_secrets: Option<Vec<SecretValue>>,
-    /// Defence-in-depth repository globs; authorization uses IDs (F-92).
+    /// Defence-in-depth repository globs; authorization uses IDs .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repositories: Option<RepositorySet>,
     /// For `type: extension`: the extensions entry that serves it.
@@ -386,17 +386,17 @@ pub struct ProviderConfig {
     pub extension: Option<String>,
 }
 
-/// GitHub App authentication block (§7.2, R5).
+/// GitHub App authentication block .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderAuth {
-    /// The App ID, string (R6).
+    /// The App ID, string .
     pub app_id: String,
-    /// Private key (secret-shaped).
+    /// Private key (the secret-shaped).
     pub private_key: SecretValue,
 }
 
-/// Repository allow/deny globs (F-92).
+/// Repository allow/deny globs .
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RepositorySet {
@@ -408,18 +408,18 @@ pub struct RepositorySet {
     pub deny: Vec<String>,
 }
 
-/// One sidecar extension: transport, channel auth, what it provides (C11/C12).
+/// One sidecar extension: transport, channel auth, what it provides .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionConfig {
     /// Name referenced by `providers[].extension`.
     pub name: String,
-    /// `http://…`, `https://…` or `unix://…` (§7.3).
+    /// `http://…`, `https://…` or `unix://…` .
     pub endpoint: String,
-    /// `json` (default) or `grpc` (A.9).
+    /// `json` (the default) or `grpc` .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
-    /// Channel auth: `shared_secret` or `tls` (§7.3).
+    /// Channel auth: `shared_secret` or `tls` .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ExtensionAuth>,
     /// The action step types this sidecar implements (`acme/notify@1`).
@@ -427,7 +427,7 @@ pub struct ExtensionConfig {
     pub provides: ExtensionProvides,
 }
 
-/// What a sidecar provides (F-49, C11: providers come from `providers[]`).
+/// What a sidecar provides (, : providers come from `providers[]`).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ExtensionProvides {
@@ -436,7 +436,7 @@ pub struct ExtensionProvides {
     pub step_types: Vec<String>,
 }
 
-/// Sidecar channel authentication (§7.3) — the map shape of the documented
+/// Sidecar channel authentication — the map shape of the documented
 /// config (`auth: { shared_secret: { file } }` or `auth: { tls: {...} }`).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
@@ -451,11 +451,11 @@ pub enum ExtensionAuth {
     },
 }
 
-/// Templates directory (F-129).
+/// Templates directory .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TemplatesSection {
-    /// Default per PRD: `/etc/cargobike/templates`.
+    /// The default: `/etc/cargobike/templates`.
     pub directory: String,
 }
 
@@ -471,17 +471,17 @@ impl Default for TemplatesSection {
     }
 }
 
-/// Engine knobs (F-137).
+/// Engine knobs .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct EngineSection {
-    /// Step-output cap (F-40).
+    /// Step-output cap .
     pub max_step_output: String,
-    /// Branch name format (A1); placeholders per F-147.
+    /// Branch name format ; placeholders per .
     pub branch_format: String,
-    /// CEL cost cap (F-27).
+    /// CEL cost cap .
     pub cel_max_cost: u64,
-    /// CEL expression length cap (F-27).
+    /// CEL expression length cap .
     pub cel_max_expression_length: u64,
 }
 
@@ -496,13 +496,13 @@ impl Default for EngineSection {
     }
 }
 
-/// Reconciler (F-138).
+/// Reconciler .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ReconcilerSection {
-    /// Default 5m (F-55).
+    /// Default 5m .
     pub interval: String,
-    /// Batched lookup size (F-138).
+    /// Batched lookup size .
     pub batch_size: u32,
 }
 
@@ -515,13 +515,13 @@ impl Default for ReconcilerSection {
     }
 }
 
-/// Retention (F-139).
+/// Retention .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RetentionSection {
-    /// Event-log retention (default 365d, F-114).
+    /// Event-log retention (the default 365d, ).
     pub events: String,
-    /// Raw webhook payloads (personal data; default 30d, F-115).
+    /// Raw webhook payloads (the personal data; default 30d, ).
     pub webhook_payloads: String,
     /// Optional automatic deletion of terminal releases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -538,7 +538,7 @@ impl Default for RetentionSection {
     }
 }
 
-/// Limits per surface (F-118, C14).
+/// Limits per surface .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LimitsSection {
@@ -565,11 +565,11 @@ impl Default for LimitsSection {
     }
 }
 
-/// One surface's limits (F-118: type grammar `<count>/<s|m|h>`).
+/// One surface's limits (the per-surface grammar `<count>/<s|m|h>`).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SurfaceLimits {
-    /// Body size cap, e.g. `1MiB` (R4).
+    /// Body size cap, e.g. `1MiB` .
     pub max_body_size: String,
     /// Sustained rate like `100/s`.
     pub rate: String,
@@ -588,7 +588,7 @@ impl Default for SurfaceLimits {
     }
 }
 
-/// Egress/SSRF policy (F-117).
+/// Egress/SSRF policy .
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSection {
@@ -596,7 +596,7 @@ pub struct NetworkSection {
     pub egress: EgressSection,
 }
 
-/// The SSRF deny-list, allow exceptions and optional proxy (F-117, C13 proxy).
+/// The SSRF deny-list, allow exceptions and optional proxy (, proxy).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EgressSection {
@@ -611,13 +611,13 @@ pub struct EgressSection {
     pub proxy: Option<String>,
 }
 
-/// Logging (F-140).
+/// Logging .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LoggingSection {
-    /// Single level (default `info`).
+    /// Single level (the default `info`).
     pub level: String,
-    /// `json` (default) or `text`.
+    /// `json` (the default) or `text`.
     pub format: String,
 }
 
@@ -630,7 +630,7 @@ impl Default for LoggingSection {
     }
 }
 
-/// Optional metrics port (F-141).
+/// Optional metrics port .
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct MetricsSection {
@@ -639,49 +639,49 @@ pub struct MetricsSection {
     pub listen: Option<String>,
 }
 
-/// One registry application entry (§4.13, F-91). The shapes follow the
-/// documented example verbatim (F-32's test promise).
+/// One registry application entry . The shapes follow the
+/// documented example verbatim (the test's promise).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationEntry {
-    /// Application name in the registry (F-3).
+    /// Application name in the registry .
     pub name: String,
-    /// Human description (F-142).
+    /// Human description .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Filter labels (F-142).
+    /// Filter labels .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
     /// Where the version comes from; `source` replaces as a whole on
-    /// `extends` (§4.13a).
+    /// `extends` ().
     pub source: HashMapEntrySource,
-    /// Registry-only template reference (F-5).
+    /// Registry-only template reference .
     pub template: String,
-    /// Version validation + tag policy (F-95).
+    /// Version validation + tag policy .
     #[serde(default)]
     pub versioning: VersioningEntry,
-    /// Tag-push triggers (F-54); `event: tag` (R12).
+    /// Tag-push triggers ; `event: tag` .
     #[serde(default)]
     pub triggers: Vec<TriggerEntry>,
-    /// Who may release: principal selectors (F-99a), single-direction.
+    /// Who may release: principal selectors , single-direction.
     #[serde(default)]
     pub releasers: Vec<PrincipalSelector>,
-    /// Group inheritance (§4.13a). An app of this name must have been
+    /// Group inheritance (). An app of this name must have been
     /// discovered by the group or validation fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
     /// Generic app-wide inputs supplied to templates as `${{ inputs.<name> }}`
-    /// (F-32a, C16).
+    /// .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<BTreeMap<String, serde_json::Value>>,
-    /// Application freeze (F-142).
+    /// Application freeze .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<PausedEntry>,
-    /// Per-environment config (§4.13).
+    /// Per-environment config .
     pub environments: BTreeMap<String, EnvironmentEntry>,
 }
 
-/// A principal selector: `oidc: <name>` or `api_key: <name>` (§2a, F-99b).
+/// A principal selector: `oidc: <name>` or `api_key: <name>` (the a, ).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum PrincipalSelector {
@@ -697,13 +697,13 @@ pub enum PrincipalSelector {
 pub struct HashMapEntrySource {
     /// Provider name.
     pub provider: String,
-    /// Immutable provider ID (R6).
+    /// Immutable provider ID .
     pub id: String,
-    /// Verified label, checked at startup (F-10, C20).
+    /// Verified label, checked at startup .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Group-source owner id — present only on group `source` blocks;
-    /// per-app `source` replaces the whole object (§4.13a).
+    /// per-app `source` replaces the whole object ().
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<String>,
 }
@@ -711,18 +711,18 @@ pub struct HashMapEntrySource {
 /// Alias the source-type to swap between group and app shapes cleanly.
 pub type HashMapEntrySourceAlias = HashMapEntrySource;
 
-/// The versioning block of an application or group (F-95).
+/// The versioning block of an application or group .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct VersioningEntry {
-    /// Scheme name: `semver`, `calver`, `opaque` (F-4).
+    /// Scheme name: `semver`, `calver`, `opaque` .
     pub scheme: String,
-    /// Tag format like `"v{version}"` (F-147 placeholders).
+    /// Tag format like `"v{version}"` (the placeholders).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag_format: Option<String>,
-    /// Tag existence required for creates (default true).
+    /// Tag existence required for creates (the default true).
     pub require_tag: bool,
-    /// CalVer layout (F-95).
+    /// CalVer layout .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calver_format: Option<String>,
 }
@@ -738,16 +738,16 @@ impl Default for VersioningEntry {
     }
 }
 
-/// A tag-push trigger (F-54, F-82).
+/// A tag-push trigger .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerEntry {
-    /// Trigger event; only `tag` in v1 (R12: `event`, not `on`).
+    /// Trigger event; only `tag` in v1 (the use `event`, not `on`).
     pub event: String,
-    /// Refuse unprotected tags unless explicitly allowed (F-82).
+    /// Refuse unprotected tags unless explicitly allowed .
     #[serde(default = "default_true")]
     pub require_tag_protection: bool,
-    /// Optional sender constraints (principal selectors; F-82).
+    /// Optional sender constraints (the principal selectors; ).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub senders: Option<Vec<PrincipalSelector>>,
 }
@@ -756,91 +756,91 @@ fn default_true() -> bool {
     true
 }
 
-/// Application-level pause (F-142).
+/// Application-level pause .
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PausedEntry {
     /// Boolean pause, no reason.
     Bool(bool),
-    /// Pause with a shown reason (C22).
+    /// Pause with a shown reason .
     Reason { reason: String },
 }
 
-/// One environment's registry config (§4.13).
+/// One environment's registry config .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentEntry {
-    /// Target repo, opaque (F-10/F-11) — well-known `env.inputs.repo`.
+    /// Target repo, opaque — well-known `env.inputs.repo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<HashMapEntrySource>,
-    /// File edits — well-known `env.inputs.edits` (F-41).
+    /// File edits — well-known `env.inputs.edits` .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edits: Option<Vec<EditEntry>>,
-    /// Concurrency policy (registry-only per R11).
+    /// Concurrency policy (the registry-only per ).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<ConcurrencyValue>,
-    /// F-65: fail closed when capability is available.
+    /// : fail closed when capability is available.
     #[serde(default = "default_true")]
     pub require_branch_protection: bool,
-    /// F-66: explicit bypass mechanism for template direct commits.
+    /// : explicit bypass mechanism for template direct commits.
     #[serde(default)]
     pub allow_direct_commit: bool,
-    /// Custom CR title/body/labels/draft (F-143).
+    /// Custom CR title/body/labels/draft .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_request: Option<ChangeRequestOverrides>,
-    /// Custom commit message (F-143).
+    /// Custom commit message .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_message: Option<String>,
-    /// Generic per-environment inputs (F-32a/C16).
+    /// Generic per-environment inputs .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<BTreeMap<String, serde_json::Value>>,
-    /// Approval policy block (F-96).
+    /// Approval policy block .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalPolicy>,
-    /// Environment freeze (F-142, C22).
+    /// Environment freeze .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<PausedEntry>,
 }
 
-/// Registry-level edit shape (F-41).
+/// Registry-level edit shape .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditEntry {
-    /// Repository-relative file; `{application}` placeholders allowed (§4.13a).
+    /// Repository-relative file; `{application}` placeholders allowed ().
     pub file: String,
-    /// Inferred from extension when omitted (F-41).
+    /// Inferred from extension when omitted .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
-    /// Dot-notation field path (`image.tag`, F-41).
+    /// Dot-notation field path (`image.tag`, ).
     pub field: String,
-    /// Optional value; defaults to the release version (F-41).
+    /// Optional value; defaults to the release version .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
 }
 
-/// Concurrency policy value (F-31).
+/// Concurrency policy value .
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConcurrencyValue {
-    /// Close the old CR and take the lease over (F-70).
+    /// Close the old CR and take the lease over .
     Supersede,
-    /// Queue behind an active release (F-71).
+    /// Queue behind an active release .
     Queue,
-    /// Refuse with `ConcurrencyRejected` (F-74).
+    /// Refuse with `ConcurrencyRejected` .
     Reject,
 }
 
-/// Custom CR shaping per environment (F-143).
+/// Custom CR shaping per environment .
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ChangeRequestOverrides {
-    /// Custom title; F-147 placeholders.
+    /// Custom title; placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Custom body; F-147 placeholders.
+    /// Custom body; placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
-    /// Appended to template labels (R11).
+    /// Appended to template labels .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Vec<String>,
     /// Open as draft.
@@ -848,17 +848,17 @@ pub struct ChangeRequestOverrides {
     pub draft: bool,
 }
 
-/// Approval policy per environment (F-96).
+/// Approval policy per environment .
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ApprovalPolicy {
-    /// Distinct approver count (default 1).
+    /// Distinct approver count (the default 1).
     pub required: u32,
-    /// Self-approval default `false` (R2).
+    /// Self-approval default `false` .
     pub allow_self_approval: bool,
     /// Machine approvers default off; `api_key` selectors refuse.
     pub allow_machine_approvers: bool,
-    /// Principal selectors (any match counts).
+    /// Principal selectors (the any match counts).
     pub approvers: Vec<PrincipalSelector>,
 }
 
@@ -873,24 +873,24 @@ impl Default for ApprovalPolicy {
     }
 }
 
-/// One application group (§4.13a).
+/// One application group ().
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationGroupEntry {
     /// Group name referenced by `extends`.
     pub name: String,
-    /// Registry-only template (F-5).
+    /// Registry-only template .
     pub template: String,
-    /// Versioning defaults (F-95).
+    /// Versioning defaults .
     #[serde(default)]
     pub versioning: VersioningEntry,
-    /// Group triggers inherited by discovered apps (§4.13a).
+    /// Group triggers inherited by discovered apps ().
     #[serde(default)]
     pub triggers: Vec<TriggerEntry>,
     /// Who may release discovered apps.
     #[serde(default)]
     pub releasers: Vec<PrincipalSelector>,
-    /// The org the group releases from (`owner_id`; §4.13a F-93).
+    /// The org the group releases from (`owner_id`; ).
     pub source: HashMapEntrySource,
     /// Discovery configuration.
     pub discovery: DiscoveryEntry,
@@ -898,7 +898,7 @@ pub struct ApplicationGroupEntry {
     pub environments: BTreeMap<String, EnvironmentEntry>,
 }
 
-/// Discovery configuration (§4.13a, C19).
+/// Discovery configuration (, ).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryEntry {
@@ -906,10 +906,10 @@ pub struct DiscoveryEntry {
     pub repo: HashMapEntrySource,
     /// Match pattern with `{application}` and `{environment}` captures.
     pub match_: String,
-    /// Branch scanned (default: repository default branch); protect it (§4.13a).
+    /// Branch scanned (the default: repository default branch); protect it ().
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_: Option<String>,
-    /// Rescan interval (default 10m).
+    /// Rescan interval (the default 10m).
     #[serde(default = "default_discovery_interval")]
     pub interval: String,
 }
@@ -918,7 +918,7 @@ fn default_discovery_interval() -> String {
     "10m".to_owned()
 }
 
-/// Semantic load-time validation errors (F-89's fail-fast family).
+/// Semantic load-time validation errors (the fail-fast family).
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// A missing environment variable was referenced.
@@ -946,10 +946,10 @@ pub enum ConfigError {
     Parse(String),
 }
 
-/// The env-var prefix and curated-key mapping (F-125, R10).
+/// The env-var prefix and curated-key mapping .
 pub const ENV_PREFIX: &str = "CARGOBIKE_SERVER_";
 
-/// Curated env-var overrides (F-125: scalars only; a published list, not
+/// Curated env-var overrides (the scalars only; a published list, not
 /// an automatic `__` mapping). Values map the config path.
 pub fn env_overrides() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -962,9 +962,9 @@ pub fn env_overrides() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Loads the config: defaults ← file ← curated envs (F-125). `${VAR}`
-/// interpolation is applied to non-secret string fields only (R5; F-32),
-/// fail-fast on unset variables (F-89).
+/// Loads the config: defaults ← file ← curated envs . `${VAR}`
+/// interpolation is applied to non-secret string fields only ,
+/// fail-fast on unset variables .
 pub fn load(path: Option<&std::path::Path>) -> Result<Config, ConfigError> {
     let path = path.map_or_else(
         || {
@@ -979,11 +979,11 @@ pub fn load(path: Option<&std::path::Path>) -> Result<Config, ConfigError> {
             std::fs::read_to_string(p)
                 .map_err(|cause| ConfigError::Parse(format!("failed to read {}: {cause}", p.display())))?
         }
-        // Env-only bootstrap (F-123) still parses an (almost) empty file.
+        // Env-only bootstrap still parses an (the almost) empty file.
         None => "server: {}\ndatabase: { url: ${CARGOBIKE_SERVER_DATABASE_URL:-postgres://localhost/cargobike} }\nauth: {}\n".to_owned(),
     };
 
-    // Fail-fast ${VAR} expansion for non-secret scalars (F-89).
+    // Fail-fast ${VAR} expansion for non-secret scalars .
     if text.contains("${") {
         text = shellexpand::env(&text)
             .map_err(|source| ConfigError::Parse(format!("interpolation failed: {source}")))?
@@ -993,12 +993,12 @@ pub fn load(path: Option<&std::path::Path>) -> Result<Config, ConfigError> {
     let mut config: Config =
         serde_yaml_ng::from_str(&text).map_err(|source| ConfigError::Parse(format!("{source}")))?;
 
-    // Curated env overrides — scalars only (F-125): a hand-rolled path set
+    // Curated env overrides — scalars only : a hand-rolled path set
     // applied after parse, so mapping is explicit and testable.
     apply_env_overrides(&mut config)?;
 
-    // Literal-database-URL warning (C13) and the secrets are materialised
-    // lazily by the caller, never into Debug (F-87).
+    // Literal-database-URL warning and the secrets are materialised
+    // lazily by the caller, never into Debug .
     Ok(config)
 }
 
@@ -1025,11 +1025,11 @@ fn apply_env_overrides(config: &mut Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Warnings the loader reports (startup noise, not errors; C13).
+/// Warnings the loader reports (the startup noise, not errors; ).
 pub fn literal_secret_warnings(config: &Config) -> Vec<&'static str> {
     let mut out = Vec::new();
     if config.database.url.is_literal() {
-        out.push("database.url is a literal in the config; prefer { file } or { env } (R5)");
+        out.push("database.url is a literal in the config; prefer { file } or { env }");
     }
     if let Some(tls) = &config.server.tls {
         if tls.certificate.is_literal() || tls.private_key.is_literal() {
@@ -1047,8 +1047,8 @@ pub type SharedConfig = Arc<Config>;
 mod tests {
     use super::*;
 
-    /// PRD §13.1's example, extracted from the document itself — the
-    /// verbatim-promise test (F-32, T5a).
+    /// The documented config's example, extracted from the document itself — the
+    /// verbatim-promise test (, T5a).
     fn documented_config() -> String {
         let prd = include_str!("../../../docs/PRD.md");
         let marker = "### 13.1 Server Config (YAML)";
@@ -1064,11 +1064,11 @@ mod tests {
         assert_eq!(config.applications.len(), 1);
         assert_eq!(config.providers.len(), 2);
         assert!(config.application("my-service").is_some());
-        // The documented config must also BOOT (the F-99a(b) registry
+        // The documented config must also BOOT (the (the b) registry
         // cross-checks run here, not just the parser's grammar). The
         // example points at /etc/cargobike/templates; the test points
         // the SAME registry entries at the workspace's canonical
-        // template (F-32's verbatim value).
+        // template (the verbatim value).
         let mut config = config;
         config.templates.directory = [env!("CARGO_MANIFEST_DIR"), "/../../templates"].concat();
         crate::validation::validate(&config).expect("13.1 config validates");

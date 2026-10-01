@@ -1,11 +1,11 @@
-//! The reconciler (PRD 3.14, F-55, F-67..F-69): a long-lived durable
+//! The reconciler: a long-lived durable
 //! workflow looping on `dbos::sleep` — the wake time survives crashes
-//! (F-24's proof in the spike report §1's E3/E5) — that checks the ACTUAL
+//! (the spike report's kill-and-recover proof) — that checks the ACTUAL
 //! CR state for releases in `PendingApproval` and sends signals; the
 //! workflow remains the only writer of its release's status.
 //!
 //! Webhooks are the latency optimisation; the reconciler is the
-//! correctness floor (F-55).
+//! correctness floor .
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -18,16 +18,16 @@ use uuid::Uuid;
 
 use crate::signals::{InterpreterError, Signal, merge_topic};
 
-/// The registered reconciler workflow name (F-68's durable loop).
+/// The registered reconciler workflow name (the durable loop).
 pub const RECONCILE_WORKFLOW: &str = "cargobike.reconcile.v1";
 
 /// The reconciler's single durable argument.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReconcileArgs {
-    /// Sweep interval (F-55's default 5m; config `reconciler.interval`).
+    /// Sweep interval (the default: 5m; config `reconciler.interval`).
     #[serde(with = "humantime_serde_wrap")]
     pub interval: Duration,
-    /// Batch size (F-69; config `reconciler.batch_size`).
+    /// Batch size (; config `reconciler.batch_size`).
     pub batch_size: u32,
 }
 
@@ -53,14 +53,14 @@ pub mod humantime_serde_wrap {
     }
 }
 
-/// F-69's release scan seam: the sweep joins only releases that are
+/// release scan seam: the sweep joins only releases that are
 /// *currently* `PendingApproval` — a signal to a finished release finds
-/// no listener, but the provider calls would be waste (F-55's budget).
+/// no listener, but the provider calls would be waste (the call budget).
 /// The server's release repository backs this seam in production; tests
 /// mount the in-memory fixture.
 #[async_trait]
 pub trait PendingReleaseSource: Send + Sync {
-    /// The release IDs in the PendingApproval phase (F-101's cursor:
+    /// The release IDs in the PendingApproval phase (the cursor:
     /// newest first, IDs smaller than the cursor).
     async fn pending_approval_ids(
         &self,
@@ -69,7 +69,7 @@ pub trait PendingReleaseSource: Send + Sync {
     ) -> Result<Vec<Uuid>, String>;
 }
 
-/// The test fixture for the scan seam (release ids in a set).
+/// The test fixture for the scan seam (the release ids in a set).
 pub struct InMemoryPendingReleaseSource {
     existing_id_set: std::sync::RwLock<HashSet<Uuid>>,
 }
@@ -114,18 +114,18 @@ impl PendingReleaseSource for InMemoryPendingReleaseSource {
     }
 }
 
-/// The reconciler's services (providers, the correlation read side, the
+/// The reconciler's services (the providers, the correlation read side, the
 /// release scan).
 pub struct ReconcilerServices {
-    /// Providers (F-39).
+    /// Providers .
     pub providers: Arc<ProviderRegistry>,
-    /// CR correlation rows (F-63's sweep input).
+    /// CR correlation rows (the sweep's input).
     pub correlations: Arc<crate::correlation::CorrelationRepository>,
-    /// The PendingApproval scan (F-69's join through this seam).
+    /// The PendingApproval scan (the join through this seam).
     pub releases: Arc<dyn PendingReleaseSource + Send + Sync>,
 }
 
-/// Registers the reconciler BEFORE launch (F-15's registry snapshot).
+/// Registers the reconciler BEFORE launch (the registry snapshot).
 pub fn register_reconciler(
     instance: &dbos::DBOS,
     services: Arc<ReconcilerServices>,
@@ -136,7 +136,7 @@ pub fn register_reconciler(
     })
 }
 
-/// The loop: sleep → sweep → repeat (F-68).
+/// The loop: sleep → sweep → repeat .
 async fn loop_fn(
     args: ReconcileArgs,
     services: Arc<ReconcilerServices>,
@@ -154,10 +154,10 @@ async fn loop_fn(
 }
 
 /// One sweep: join the PendingApproval releases, then check their CR
-/// states and send the signals only (F-67: never writes release status).
+/// states and send the signals only (the never writes release status).
 async fn sweep(services: &ReconcilerServices, batch_size: u32) -> Result<u32, InterpreterError> {
     const SWEEP_PAGE: u32 = 200;
-    // F-69's scan: consulted once per sweep; the join is in-memory.
+    // scan: consulted once per sweep; the join is in-memory.
     let mut pending: HashSet<Uuid> = HashSet::new();
     let mut release_cursor: Option<Uuid> = None;
     loop {
@@ -198,7 +198,7 @@ async fn sweep(services: &ReconcilerServices, batch_size: u32) -> Result<u32, In
             break;
         }
         for row in &rows {
-            // The join: only live releases' correlations speak (F-69).
+            // The join: only live releases' correlations speak .
             if !pending.contains(&row.release_id) {
                 continue;
             }
@@ -210,7 +210,7 @@ async fn sweep(services: &ReconcilerServices, batch_size: u32) -> Result<u32, In
                 _ProviderContract::get_change_request(&*provider, &repo, row.cr_number as u64)
                     .await
             else {
-                continue; // unavailable this cycle: the next sweep retries (F-55)
+                continue; // unavailable this cycle: the next sweep retries 
             };
             let merged = matches!(change_request.state, cargobike_core::model::CrState::Merged);
             let closed = matches!(change_request.state, cargobike_core::model::CrState::Closed);
@@ -237,7 +237,7 @@ async fn sweep(services: &ReconcilerServices, batch_size: u32) -> Result<u32, In
     Ok(sent)
 }
 
-/// The signal half of one row: topic + idempotency key + envelope (owned;
+/// The signal half of one row: topic + idempotency key + envelope (the owned;
 /// the caller builds the borrow-bearing `SendOptions` across its await).
 fn reconciler_send_form(
     row: &crate::correlation::CorrelationRow,
@@ -260,7 +260,7 @@ fn reconciler_send_form(
         Signal::MergeComplete {
             merged,
             by_way_of: format!("reconciler/cr-{}", row.cr_number),
-            // F-62's re-verify needs the identity; the sweep's
+            // re-verify needs the identity; the sweep's
             // observation provides the number (the head SHA arrives
             // via the provider re-verify).
             number: row.cr_number as u64,

@@ -1,41 +1,41 @@
-//! Normalised webhook events (F-46): providers map their delivery formats
+//! Normalised webhook events : providers map their delivery formats
 //! onto this shape at the transport boundary (`cargobike-provider-github`
 //! and sidecars); the server's dispatch logic stays provider-neutral.
 
 use serde::{Deserialize, Serialize};
 
-/// A webhook delivery reduced to what Cargobike acts on (F-50, F-54).
+/// A webhook delivery reduced to what Cargobike acts on .
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum NormalisedEvent {
-    /// A tag push: release creation candidates (`event: tag` triggers, F-54).
+    /// A tag push: release creation candidates (`event: tag` triggers, ).
     TagPush(TagPush),
-    /// A change request reached a customer state (F-63 correlation).
+    /// A change request reached a customer state (the correlation).
     ChangeRequestClosed {
         /// CR number.
         number: u64,
-        /// State the CR reached (`merged` or `closed`; F-62).
+        /// State the CR reached (`merged` or `closed`; ).
         merged: bool,
     },
-    /// Any other event: persisted, acknowledged, ignored (F-56).
+    /// Any other event: persisted, acknowledged, ignored .
     Unrecognised {
         /// Provider event name, recorded for the audit log.
         provider_event: String,
     },
 }
 
-/// A tag push delivery (F-54).
+/// A tag push delivery .
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct TagPush {
-    /// Tag name, e.g. `v1.2.3` (version extraction happens per
-    /// `versioning.tag_format` in the server, §8.2).
+    /// Tag name, e.g. `v1.2.3` (the version extraction happens per
+    /// `versioning.tag_format` in the server, ).
     pub tag: String,
-    /// Commit SHA the tag points at, verified against the provider (F-95).
+    /// Commit SHA the tag points at, verified against the provider .
     pub sha: String,
-    /// Repository the push landed in (immutable ID; R6).
+    /// Repository the push landed in (the immutable ID; ).
     pub repository_id: String,
-    /// Pusher display name (F-83 actor; the reconciler uses the same).
+    /// Pusher display name (the actor; the reconciler uses the same).
     pub sender: String,
 }
 

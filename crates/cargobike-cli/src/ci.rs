@@ -1,14 +1,14 @@
-//! GitHub Actions auto-detection (PRD §9.7, F-130, §2.2): no
+//! GitHub Actions auto-detection: no
 //! config file needed when the Actions OIDC environment is present —
 //! the CLI exchanges the workflow's request token for an audience
 //! token, and carries the CI context on commands that create releases.
 
 use std::env;
 
-/// The CI facts the CLI auto-detects (F-83's actor annotation).
+/// The CI facts the CLI auto-detects (the actor annotation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiContext {
-    /// `GITHUB_REPOSITORY` (owner/name).
+    /// `GITHUB_REPOSITORY` (the owner/name).
     pub repository: String,
     /// `GITHUB_SHA` (the triggering commit).
     pub sha: String,
@@ -33,7 +33,7 @@ impl CiContext {
     }
 }
 
-/// The Actions OIDC request environment (both variables are required).
+/// The Actions OIDC request environment (the both variables are required).
 pub fn oidc_request_environment() -> Option<(String, String)> {
     let url = env::var("ACTIONS_ID_TOKEN_REQUEST_URL").ok()?;
     let token = env::var("ACTIONS_ID_TOKEN_REQUEST_TOKEN").ok()?;

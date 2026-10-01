@@ -1,11 +1,11 @@
-//! Lease rows (PRD 3.12, A2, F-70..F-73): work per
-//! `(application, environment)` serialises through one DB row whose
+//! Lease rows: work per
+//! `(the application, environment)` serialises through one DB row whose
 //! holder names a release. Every operation is conditional, so two
 //! concurrent acquirers cannot both win (the database is the arbiter).
 //!
 //! Split by policy in the interpreter: `supersede` transfers the lease
-//! atomically here (F-73), `queue` waits for a `LeaseReleased` signal
-//! (F-71), `reject` fails immediately (F-74).
+//! atomically here , `queue` waits for a `LeaseReleased` signal
+//! , `reject` fails immediately .
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -20,9 +20,9 @@ pub struct LeaseRepository {
 pub enum LeaseAttempt {
     /// This release now holds the lease.
     Held,
-    /// This release already held the lease (A1's idempotent no-op).
+    /// This release already held the lease (the an idempotent no-op).
     HeldAlready,
-    /// Another release holds it, with its version for F-72's compare.
+    /// Another release holds it, with its version for compare.
     HeldBy {
         /// The holder's release ID.
         other_release_id: Uuid,
@@ -31,13 +31,13 @@ pub enum LeaseAttempt {
     },
 }
 
-/// What a transfer attempt found (F-73's atomic supersede).
+/// What a transfer attempt found (the atomic supersede).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaseTransfer {
     /// The lease moved: the old holder lost it in the same statement.
     Transferred,
     /// Stale hand-off: something else holds it or the old holder has
-    /// already released; the caller (supersede path) refuses rather than
+    /// already released; the caller (the supersede path) refuses rather than
     /// fighting.
     RestState {
         /// Who actually holds it now, when held.
@@ -51,7 +51,7 @@ impl LeaseRepository {
         Self { pool }
     }
 
-    /// Conditional INSERT (A2): no row ⇒ insert this holder; a row with
+    /// Conditional INSERT : no row ⇒ insert this holder; a row with
     /// this holder ⇒ no-op success; any other holder ⇒ visible loss.
     pub async fn acquire(
         &self,
@@ -107,8 +107,8 @@ impl LeaseRepository {
         }
     }
 
-    /// F-73's atomic supersede transfer: one statement moves holder from
-    /// `from` to `to` (stamping the new holder's version); a third
+    /// atomic supersede transfer: one statement moves holder from
+    /// `from` to `to` (the stamping the new holder's version); a third
     /// release cannot slip in between.
     pub async fn transfer(
         &self,
@@ -142,7 +142,7 @@ impl LeaseRepository {
         Ok(LeaseTransfer::RestState { holder })
     }
 
-    /// Releases the lease only when held by `holder` (A2's per-environment
+    /// Releases the lease only when held by `holder` (the per-environment
     /// release; `cargobike.cleanup.v1` on cancel uses the same form). The
     /// row goes with it — the table is the live state only.
     pub async fn release(
@@ -179,7 +179,7 @@ impl LeaseRepository {
         Ok(holder)
     }
 
-    /// The holder's version (F-72's compare input).
+    /// The holder's version (the compare's input).
     pub async fn version_of(
         &self,
         application: &str,

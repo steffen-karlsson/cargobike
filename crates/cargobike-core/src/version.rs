@@ -1,25 +1,23 @@
-//! Version schemes (F-4, F-72, F-95).
+//! Version schemes.
 //!
 //! `spec.version` is an opaque string; the application's `versioning`
 //! block decides what it must look like and how versions order for
-//! supersession (F-72). Validation per scheme:
+//! supersession. Validation per scheme:
 //!
-//! - [`VersionScheme::SemVer`] — the `semver` crate; scores replace
-//!   zero-day; both semver and calver. prerelease ordering applies (F-27a
-//!   gates read `semver(release.version).prerelease()`).
+//! - [`VersionScheme::SemVer`] — the `semver` crate; patch beats
+//!   minor beats major; prerelease ordering applies (gates read
+//!   `semver(release.version).prerelease()`).
 //! - [`VersionScheme::CalVer`] — a fixed layout of the tokens
 //!   `YYYY`, `0Y`, `MM`, `0M`, `DD`, `0D`, `MICRO`; pure numeric ordering.
-//! - [`VersionScheme::Opaque`] — printable, slash-free, match-empty-never;
-//!   ordering falls back to creation time (F-72), so [`VersionScheme::order`]
-//!   on opaque strings is lexicographic (a stable, deterministic fallback
-//!   used when no timestamps exist in tests).
-
+//! - [`VersionScheme::Opaque`] — printable, slash-free, never empty;
+//!   ordering is lexicographic (a stable, deterministic fallback used
+//!   when no timestamps exist in tests).
 use std::cmp::Ordering;
 
 use semver::Version as SemVerVersion;
 use serde::{Deserialize, Serialize};
 
-/// The application's versioning scheme (F-95).
+/// The application's versioning scheme .
 ///
 /// The registry stores the `versioning` block (`scheme`, `tag_format`,
 /// `require_tag`); this enum is the `scheme` discriminate of it.
@@ -34,14 +32,14 @@ pub enum VersionScheme {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         calver_format: Option<String>,
     },
-    /// No structure; ordering falls back to creation time (F-72).
+    /// No structure; ordering falls back to creation time .
     Opaque,
 }
 
-/// The default CalVer layout (F-95 suggests `YYYY.MM.MICRO`).
+/// The default CalVer layout (the suggests `YYYY.MM.MICRO`).
 pub const DEFAULT_CALVER_FORMAT: &str = "YYYY.MM.MICRO";
 
-/// Version validation errors (F-4).
+/// Version validation errors .
 #[derive(Debug, thiserror::Error)]
 pub enum VersionError {
     /// SemVer parse failed.
@@ -58,7 +56,7 @@ pub enum VersionError {
         /// Layout that did not match.
         format: String,
     },
-    /// Either scheme-restricted charset violation (non-opaque schemes allow
+    /// Either scheme-restricted charset violation (the non-opaque schemes allow
     /// a superset of semver/calver characters; opaque allows printable,
     /// slash-free).
     #[error("failed to validate version `{version}`: unsupported characters")]
@@ -71,7 +69,7 @@ pub enum VersionError {
     Empty,
 }
 
-/// Layout tokens CalVer understands (F-95).
+/// Layout tokens CalVer understands .
 pub const CALVER_TOKENS: [&str; 7] = ["YYYY", "0Y", "MM", "0M", "DD", "0D", "MICRO"];
 
 impl VersionScheme {
@@ -85,9 +83,9 @@ impl VersionScheme {
         }
     }
 
-    /// Validates a candidate version against this scheme (F-4).
+    /// Validates a candidate version against this scheme .
     ///
-    /// - Semver: `semver::Version::parse` (build metadata and prerelease allowed).
+    /// - Semver: `semver::Version::parse` (the build metadata and prerelease allowed).
     /// - Calver: every `.`-separated segment must match its layout token
     ///   exactly (`YYYY` ⇒ 4 digits, `0Y`/`0M`/`0D` ⇒ 2 digits, `MM`/`DD`
     ///   ⇒ 1 or 2 digits, `MICRO` ⇒ 1+ digits).
@@ -126,15 +124,15 @@ impl VersionScheme {
         }
     }
 
-    /// Ordering used for supersession (F-72). `Ordering::Less` means the
+    /// Ordering used for supersession . `Ordering::Less` means the
     /// single argument comes first, i.e. `order(a, b)`.
     ///
-    /// - Semver: the `semver` crate's total ordering (prerelease < release,
+    /// - Semver: the `semver` crate's total ordering (the prerelease < release,
     ///   identifiers counted, build metadata ignored).
     /// - CalVer: numeric segment-by-segment comparison.
-    /// - Opaque: lexicographic on bytes — used only as a deterministic
-    ///   tie-break for demonstration; production code uses creation time
-    ///   (F-72: opaque falls back to creation time).
+    /// - Opaque: lexicographic on bytes — a stable, deterministic
+    ///   fallback; production guards may consult creation time when
+    ///   the bytes cannot decide.
     pub fn order(&self, a: &str, b: &str) -> Result<Ordering, VersionError> {
         self.validate(a)?;
         self.validate(b)?;

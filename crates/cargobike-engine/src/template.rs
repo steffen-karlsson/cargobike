@@ -1,8 +1,8 @@
-//! Template compilation (PRD 3.1, F-25..F-32b): parse a template's YAML,
-//! validate its structure (F-28's step exclusivity, F-34's wait rules and
-//! auto IDs, C17's uniqueness after `include` expansion, F-27a's gate
+//! Template compilation: parse a template's YAML,
+//! validate its structure (the step exclusivity, wait rules and
+//! auto IDs, uniqueness after `include` expansion, gate
 //! checks against the version scheme), and produce the resolved form the
-//! interpreter executes and the release snapshot stores (F-16/F-29).
+//! interpreter executes and the release snapshot stores .
 
 use std::time::Duration as StdDuration;
 
@@ -17,47 +17,47 @@ use cargobike_core::version::VersionScheme;
 pub enum StepBody {
     /// An action step (`uses: builtin/commit-files@1`).
     Action {
-        /// Registered step name@version (F-35).
+        /// Registered step name@version .
         uses: String,
-        /// Parameters (F-28); `{ secret: <name> }` references allowed (F-146).
+        /// Parameters ; `{ secret: <name> }` references allowed .
         with: serde_json::Value,
-        /// Bound of one attempt's body run (F-35).
+        /// Bound of one attempt's body run .
         timeout: Option<StdDuration>,
-        /// Retry policy (F-35).
+        /// Retry policy .
         retry: Option<RetryPolicy>,
     },
-    /// `wait: merge` — recv + provider verification loop (F-62).
+    /// `wait: merge` — recv + provider verification loop .
     WaitMerge {
-        /// Required: nothing waits forever by accident (F-34).
+        /// Required: nothing waits forever by accident .
         timeout: StdDuration,
-        /// Default `fail` (F-34's documented default).
+        /// Default `fail` (the documented default).
         on_timeout: OnTimeout,
-        /// Default `fail` (F-62, C23).
+        /// Default `fail` .
         on_modified: OnModified,
     },
-    /// `wait: approval` — recv (F-59/F-96).
+    /// `wait: approval` — recv .
     WaitApproval {
-        /// Required (F-34).
+        /// Required .
         timeout: StdDuration,
-        /// Only `fail` in v1.0 (approval timeout surfaces `ApprovalTimeout`);
-        /// cancel semantics arrive with the `wait: approval` work in 4.9.
+        /// Only `fail` in v1.0 (the approval timeout surfaces `ApprovalTimeout`);
+        /// the cancel semantics arrive with the `wait: approval` work.
         on_timeout: OnTimeout,
     },
-    /// `wait: sleep` — durable sleep with its own `duration` (F-34).
+    /// `wait: sleep` — durable sleep with its own `duration` .
     WaitSleep {
-        /// The sleep length (not a deadline).
+        /// The sleep length (the not a deadline).
         duration: StdDuration,
     },
 }
 
 /// One fully-resolved step: the ID that signal topics and approvals
-/// address (F-20a, F-59) plus its body.
+/// address plus its body.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedStep {
     /// Final ID: user-declared or auto-generated (`merge-0`), unique
-    /// within the environment after `include` expansion (F-34, C17).
+    /// within the environment after `include` expansion .
     pub id: String,
-    /// The step's declared CEL gate, when any (F-28).
+    /// The step's declared CEL gate, when any .
     pub when: Option<String>,
     /// Body.
     pub body: StepBody,
@@ -72,7 +72,7 @@ impl ResolvedStep {
         }
     }
 
-    /// The retry policy an action step carries (F-35).
+    /// The retry policy an action step carries .
     pub fn body_retry_policy(&self) -> Option<cargobike_core::template::RetryPolicy> {
         match &self.body {
             StepBody::Action { retry, .. } => retry.clone(),
@@ -80,7 +80,7 @@ impl ResolvedStep {
         }
     }
 
-    /// One attempt's body bound (F-35's per-step `timeout`).
+    /// One attempt's body bound (the per-step `timeout`).
     pub fn action_kind_timeout(&self) -> Option<StdDuration> {
         match &self.body {
             StepBody::Action { timeout, .. } => *timeout,
@@ -94,36 +94,35 @@ impl ResolvedStep {
 pub struct ResolvedEnvironment {
     /// Environment name, referenced by gates and registry environments.
     pub name: String,
-    /// Environment-level CEL gate (F-26).
+    /// Environment-level CEL gate .
     pub when: Option<String>,
-    /// Template-default concurrency; the registry overrides (R11).
+    /// Template-default concurrency; the registry overrides .
     pub concurrency: Option<cargobike_core::template::ConcurrencyPolicy>,
     /// Expanded, resolved steps.
     pub steps: Vec<ResolvedStep>,
-    /// Per-environment inputs the release's provision stamps (F-32a:
-    /// `repo` and `edits` are the well-known entries; the registry may
+    /// Per-environment inputs the release's provision stamps (     /// `repo` and `edits` are the well-known entries; the registry may
     /// also add generic ones — the interpreter reads them via env.inputs).
     #[serde(default)]
     pub env_inputs: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-/// The canonical, validated template (the F-16 snapshot's template half).
+/// The canonical, validated template (the snapshot's template half).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CompiledTemplate {
     /// Template name.
     pub name: String,
-    /// Template version (snapshotted; F-25).
+    /// Template version (the snapshotted; ).
     pub version: String,
-    /// Application-wide inputs the registry supplies (F-32a).
+    /// Application-wide inputs the registry supplies .
     pub inputs: std::collections::BTreeMap<String, cargobike_core::template::InputSpec>,
-    /// Per-environment inputs the registry supplies (F-32a).
+    /// Per-environment inputs the registry supplies .
     pub environment_inputs: std::collections::BTreeMap<String, cargobike_core::template::InputSpec>,
-    /// Environments in declaration order (gates reference names; F-26).
+    /// Environments in declaration order (the gates reference names; ).
     pub environments: Vec<ResolvedEnvironment>,
 }
 
-/// Everything a template can fail to compile for (validated diagnostics
-/// on the CLI side, 4.8; here they surface as strings).
+/// Everything a template can fail to compile for (the validated diagnostics
+/// they surface as strings here until then).
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
     /// YAML parse failure.
@@ -141,7 +140,7 @@ impl From<serde_yaml_ng::Error> for TemplateError {
 }
 
 /// Compiles a template from its YAML source against the application's
-/// version scheme (F-27a's gate checks happen here, before any release).
+/// version scheme (the gate checks happen here, before any release).
 /// Structural only: the `uses:`-against-registry check needs the server's
 /// installed steps and lives in [`compile_with`].
 pub fn compile(
@@ -154,7 +153,7 @@ pub fn compile(
 }
 
 /// Compilation that also validates every `uses:` against the installed
-/// step types (F-35: unregistered steps refuse at compile time).
+/// step types (the unregistered steps refuse at compile time).
 pub fn compile_with(
     source: &str,
     version_scheme: &VersionScheme,
@@ -166,7 +165,7 @@ pub fn compile_with(
     resolve(template)
 }
 
-/// Every action step's `uses:` must resolve in the registry (F-35); the
+/// Every action step's `uses:` must resolve in the registry ; the
 /// environment's declared steps include the ones `include:` pulls in.
 fn check_uses(
     template: &PipelineTemplate,
@@ -182,7 +181,7 @@ fn check_uses(
             .map(|_step| ())
             .ok_or_else(|| {
                 TemplateError::Invalid(format!(
-                    "the step `{uses}` is not installed (F-35: templates compile against installed step types)"
+                    "the step `{uses}` is not installed (templates compile against installed step types)"
                 ))
             })
     };
@@ -203,7 +202,7 @@ fn check_uses(
     Ok(())
 }
 
-/// Structural validation before resolution (F-25..F-34).
+/// Structural validation before resolution (..).
 fn validate(template: &PipelineTemplate, scheme: &VersionScheme) -> Result<(), TemplateError> {
     if template.name.is_empty() {
         return Err(TemplateError::Invalid(
@@ -217,20 +216,20 @@ fn validate(template: &PipelineTemplate, scheme: &VersionScheme) -> Result<(), T
     }
     if template.environments.is_empty() {
         return Err(TemplateError::Invalid(
-            "the template must declare at least one environment (F-26)".to_owned(),
+            "the template must declare at least one environment".to_owned(),
         ));
     }
     let mut names = std::collections::HashSet::new();
     for environment in &template.environments {
         if !names.insert(environment.name.clone()) {
             return Err(TemplateError::Invalid(format!(
-                "environment `{}` is declared twice (F-26: gates reference names)",
+                "environment `{}` is declared twice (gates reference names)",
                 environment.name
             )));
         }
     }
-    // F-32b: `include:` at the top level references a named group; groups
-    // resolve inline (single level) — cycles have no place to hide.
+    // : `include:` at the top level references a named group; groups
+    // resolve inline (the single level) — cycles have no place to hide.
     let groups: std::collections::HashMap<&str, &cargobike_core::template::StepGroup> = template
         .step_groups
         .iter()
@@ -240,7 +239,7 @@ fn validate(template: &PipelineTemplate, scheme: &VersionScheme) -> Result<(), T
         for step in &group.steps {
             if step.include.is_some() {
                 return Err(TemplateError::Invalid(format!(
-                    "step group `{}` contains an `include:`; groups resolve one level deep (F-32b)",
+                    "step group `{}` contains an `include:`; groups resolve one level deep",
                     group.name
                 )));
             }
@@ -250,18 +249,16 @@ fn validate(template: &PipelineTemplate, scheme: &VersionScheme) -> Result<(), T
         for step in &environment.steps {
             check_step_shorthand(step)?;
             if let Some(include) = &step.include {
-                groups
-                    .get(include.as_str())
-                    .ok_or_else(|| {
-                        TemplateError::Invalid(format!(
-                            "environment `{environment}` includes unknown step group `{include}` (F-32b)",
-                            environment = environment.name
-                        ))
-                    })?;
+                groups.get(include.as_str()).ok_or_else(|| {
+                    TemplateError::Invalid(format!(
+                        "environment `{environment}` includes unknown step group `{include}`",
+                        environment = environment.name
+                    ))
+                })?;
             }
         }
     }
-    // F-27a: gate functions that belong to specific version schemes.
+    // : gate functions that belong to specific version schemes.
     for environment in &template.environments {
         validate_gate(
             scheme,
@@ -281,7 +278,7 @@ fn validate(template: &PipelineTemplate, scheme: &VersionScheme) -> Result<(), T
     Ok(())
 }
 
-/// Step exclusivity (F-28): exactly one of `uses` / `wait` / `include`.
+/// Step exclusivity : exactly one of `uses` / `wait` / `include`.
 fn check_step_shorthand(step: &StepSpec) -> Result<(), TemplateError> {
     let chosen: [_; 3] = [
         step.uses.is_some(),
@@ -302,7 +299,7 @@ fn check_step_shorthand(step: &StepSpec) -> Result<(), TemplateError> {
     Ok(())
 }
 
-/// F-27a's gate-check: `semver(...)` gates are the semver scheme's alone.
+/// gate-check: `semver(...)` gates are the semver scheme's alone.
 fn validate_gate(
     scheme: &VersionScheme,
     environment: &str,
@@ -312,15 +309,15 @@ fn validate_gate(
     let Some(when) = when else { return Ok(()) };
     if when.contains("semver(") && !matches!(scheme, VersionScheme::Semver) {
         return Err(TemplateError::Invalid(format!(
-            "environment `{environment}`: the {kind} gate uses `semver(release.version)` but the application's version scheme is not `semver` (F-27a)"
+            "environment `{environment}`: the {kind} gate uses `semver(release.version)` but the application's version scheme is not `semver`"
         )));
     }
-    // runtime-validated placeholders only (F-147/D? for CEL: the expression
-    // context is fixed; unknown identifiers fail at evaluation (3.2)).
+    // runtime-validated placeholders only (/D? for CEL: the expression
+    // context is fixed; unknown identifiers fail at evaluation).
     Ok(())
 }
 
-/// Resolves includes, generates ids, and parses durations (F-34, C17).
+/// Resolves includes, generates ids, and parses durations .
 fn resolve(template: PipelineTemplate) -> Result<CompiledTemplate, TemplateError> {
     let groups: std::collections::HashMap<&str, &cargobike_core::template::StepGroup> = template
         .step_groups
@@ -350,7 +347,7 @@ fn resolve(template: PipelineTemplate) -> Result<CompiledTemplate, TemplateError
 }
 
 /// Expands one environment's steps: includes in place, and every resolved
-/// step carries its final ID (declared or deterministic, C17/F-34).
+/// step carries its final ID (the declared or deterministic, /).
 fn resolve_sequence(
     environment: &EnvironmentSpec,
     groups: &std::collections::HashMap<&str, &cargobike_core::template::StepGroup>,
@@ -382,7 +379,7 @@ fn resolve_step(step: &StepSpec, into: &mut Vec<ResolvedStep>) -> Result<(), Tem
     Ok(())
 }
 
-/// Auto-id: `<wait-or-uses-name>-<index>` for a deterministic replay (F-34).
+/// Auto-id: `<wait-or-uses-name>-<index>` for a deterministic replay .
 fn auto_id(step: &StepSpec, index: usize) -> String {
     let stem = match (&step.uses, step.wait) {
         (Some(uses), _) => uses
@@ -397,7 +394,7 @@ fn auto_id(step: &StepSpec, index: usize) -> String {
     format!("{stem}-{index}")
 }
 
-/// Parses the source body (F-34's wait rules; F-35's action fields).
+/// Parses the source body (the wait rules; action fields).
 fn compare_body(step: &StepSpec) -> Result<StepBody, TemplateError> {
     if let Some(wait) = step.wait {
         return match wait {
@@ -421,13 +418,13 @@ fn compare_body(step: &StepSpec) -> Result<StepBody, TemplateError> {
                     let seconds = parse_duration(duration)?;
                     if step.timeout.is_some() {
                         return Err(TemplateError::Invalid(
-                            "`wait: sleep` takes `duration`, not `timeout` (F-34)".to_owned(),
+                            "`wait: sleep` takes `duration`, not `timeout`".to_owned(),
                         ));
                     }
                     Ok(StepBody::WaitSleep { duration: seconds })
                 }
                 (None, _) => Err(TemplateError::Invalid(
-                    "`wait: sleep` requires `duration` (F-34)".to_owned(),
+                    "`wait: sleep` requires `duration`".to_owned(),
                 )),
             },
         };
@@ -445,12 +442,12 @@ fn compare_body(step: &StepSpec) -> Result<StepBody, TemplateError> {
     ))
 }
 
-/// Waits except sleep require an explicit timeout (F-34, C23).
+/// Waits except sleep require an explicit timeout .
 fn wait_timeout(step: &StepSpec) -> Result<StdDuration, TemplateError> {
     match &step.timeout {
         Some(timeout) => parse_duration(timeout),
         None => Err(TemplateError::Invalid(
-            "`wait: merge` / `wait: approval` require an explicit `timeout` (F-34; nothing waits forever by accident)".to_owned(),
+            "`wait: merge` / `wait: approval` require an explicit `timeout`: nothing waits forever by accident".to_owned(),
         )),
     }
 }
@@ -461,7 +458,7 @@ fn parse_duration(text: &str) -> Result<StdDuration, TemplateError> {
     })
 }
 
-/// C17: uniqueness after `include` expansion — declared and auto ids both.
+/// : uniqueness after `include` expansion — declared and auto ids both.
 fn ensure_unique(steps: &[ResolvedStep]) -> Result<(), TemplateError> {
     let mut seen = std::collections::HashSet::new();
     for step in steps {
@@ -519,7 +516,7 @@ environments:
         let compiled = compile(SERVICE_TEMPLATE, &VersionScheme::Semver).expect("compiles");
         assert_eq!(compiled.name, "service");
         assert_eq!(compiled.environments.len(), 2);
-        // ids unique after include expansion (C17)
+        // ids unique after include expansion
         let steps: Vec<String> = compiled.environments[1]
             .steps
             .iter()
@@ -619,7 +616,7 @@ environments:
                 calver_format: None,
             },
         ] {
-            let error = compile(source, &scheme).expect_err("must refuse (F-27a)");
+            let error = compile(source, &scheme).expect_err("must refuse");
             assert!(matches!(error, TemplateError::Invalid(_)));
         }
         compile(source, &VersionScheme::Semver).expect("semver gate is fine for semver");

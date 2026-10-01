@@ -1,11 +1,11 @@
-//! The step-type abstraction (PRD §6.4, F-33..F-39) and the SSRF-safe
+//! The step-type abstraction and the SSRF-safe
 //! HTTP seam steps use ([`HttpService`]).
 //!
 //! `StepContext` must compile to `wasm32-wasip2` with the rest of core
-//! (A.14): the HTTP client is an abstract seam (`HttpService`), the
+//! : the HTTP client is an abstract seam (`HttpService`), the
 //! cancellation token is a cooperative flag, and logging is a
-//! `tracing::Span`. The engine wires concrete implementations (reqwest
-//! behind the guard, tokio tooling) at construction time (§6.7).
+//! `tracing::Span`. The engine wires concrete implementations (the reqwest
+//! behind the guard, tokio tooling) at construction time .
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -21,7 +21,7 @@ use crate::provider::HttpError;
 
 pub use crate::provider::HttpError as StepHttpError;
 
-/// Cooperative cancellation token handed to steps (F-39, §6.7).
+/// Cooperative cancellation token handed to steps .
 ///
 /// The engine pairs this with its own `tokio_util` token: when a release is
 /// cancelled, the flag flips and steps observe it at their next await point
@@ -47,16 +47,16 @@ impl CancelToken {
     }
 }
 
-/// An outbound HTTP request issued by a step (`builtin/http-call@1`, F-144).
+/// An outbound HTTP request issued by a step (`builtin/http-call@1`, ).
 #[derive(Clone, Debug)]
 pub struct HttpRequest {
     /// Absolute URL; the engine's guard applies `network.egress` policy before
-    /// connecting (F-117), so a blocked host fails before I/O.
+    /// connecting , so a blocked host fails before I/O.
     pub url: String,
-    /// HTTP method (uppercase).
+    /// HTTP method (the uppercase).
     pub method: String,
     /// Headers; values with `{ secret: <name> }` references are resolved by
-    /// the engine before the request is sent (F-144, F-146).
+    /// the engine before the request is sent .
     pub headers: Vec<(String, String)>,
     /// Request body, when any.
     pub body: Option<Vec<u8>>,
@@ -73,25 +73,25 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
-/// The HTTP seam steps call through (F-39 `http_client`). Implemented in
-/// the engine by the SSRF-guarded reqwest client (F-117); the sidecar
+/// The HTTP seam steps call through ( `http_client`). Implemented in
+/// the engine by the SSRF-guarded reqwest client ; the sidecar
 /// client is a *separate* implementation so `http-call` can never reach a
-/// sidecar endpoint (§6.7).
+/// sidecar endpoint .
 #[async_trait]
 pub trait HttpService: Send + Sync {
     /// Sends the request, applying the egress policy of the instance.
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError>;
 }
 
-/// What a step produces (PRD §6.4).
+/// What a step produces.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "outcome")]
 pub enum StepOutput {
-    /// Payload later steps reference as `steps.<id>.outputs.<field>` (F-28).
+    /// Payload later steps reference as `steps.<id>.outputs.<field>` .
     Continue(Value),
-    /// Only valid before any side effect; marks the environment `Skipped` (F-7).
+    /// Only valid before any side effect; marks the environment `Skipped` .
     SkipEnvironment,
-    /// Fail the environment with the given reason (F-41's stop path).
+    /// Fail the environment with the given reason (the stop path).
     Stop(StepFailureReason),
 }
 
@@ -105,45 +105,45 @@ pub type StepFailureReason = String;
 #[derive(Clone, Debug, PartialEq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "failure")]
 pub enum StepError {
-    /// The step failed transiently; `StepOptions` retries apply (F-35).
+    /// The step failed transiently; `StepOptions` retries apply .
     #[error("step failed transiently: {0}")]
     Transient(String),
     /// The step failed permanently; the release error carries `code`.
     #[error("{code}: {message}")]
     Failed {
-        /// One of the code constants from [`crate::error`] (F-8).
+        /// One of the code constants from [`crate::error`] .
         code: String,
         /// Human-readable message.
         message: String,
     },
-    /// The step observed cancellation and abandoned its work (F-39).
+    /// The step observed cancellation and abandoned its work .
     #[error("step was cancelled")]
     Cancelled,
 }
 
-/// The environment's provisioned view for a step run (F-32a's
+/// The environment's provisioned view for a step run (
 /// well-known values as the snapshot supplies them).
 #[derive(Clone, Debug)]
 pub struct EnvRef {
     /// Environment name.
     pub name: String,
-    /// Target repo (F-10/F-11: opaque, resolved in the registry).
+    /// Target repo (/: opaque, resolved in the registry).
     pub repo: Option<crate::model::RepoRef>,
-    /// Structural edits for `commit-files` (F-41).
+    /// Structural edits for `commit-files` .
     pub edits: Vec<crate::provider::Edit>,
-    /// The registry's commit message (F-143); placeholders resolved at
+    /// The registry's commit message ; placeholders resolved at
     /// provision time.
     pub commit_message: Option<String>,
-    /// The engine's branch format, stamped by the provisioner (A1).
+    /// The engine's branch format, stamped by the provisioner .
     pub branch_format: Option<String>,
-    /// The release's version string (F-147's edit default: an edit
+    /// The release's version string (the edit default: an edit
     /// without an explicit value writes the version; providers can't
     /// know it otherwise).
     pub release_version: String,
 }
 
 impl EnvRef {
-    /// An environment view without a provisioned repo (templates whose
+    /// An environment view without a provisioned repo (the templates whose
     /// steps take their own repo parameter).
     pub fn named(name: &str) -> Self {
         Self {
@@ -157,17 +157,17 @@ impl EnvRef {
     }
 }
 
-/// One executable step type, versioned (F-36, F-37). The trait keeps the
+/// One executable step type, versioned . The trait keeps the
 /// types typed at the call site; the interpreter registers instances
-/// under `builtin/<name>@<version>` or sidecar-derived names (F-33).
+/// under `builtin/<name>@<version>` or sidecar-derived names .
 #[async_trait]
 pub trait StepType: Send + Sync {
     /// Registry name, e.g. `builtin/commit-files`; the `@version` suffix in
     /// templates resolves against [`StepType::version`].
     fn name(&self) -> &str;
-    /// Version of the step type's output schema (F-37 `@1`).
+    /// Version of the step type's output schema ( `@1`).
     fn version(&self) -> &str;
-    /// Executes the step. Side effects must be idempotent (F-14, A1); the
+    /// Executes the step. Side effects must be idempotent ; the
     /// step may run again on recovery with a previously recorded result.
     async fn execute(
         &self,
@@ -178,24 +178,24 @@ pub trait StepType: Send + Sync {
     ) -> Result<StepOutput, StepError>;
 }
 
-/// Everything a step receives from the engine (F-39, §6.7).
+/// Everything a step receives from the engine .
 pub struct StepContext {
-    /// Providers, resolved by `RepoRef.provider` name (F-39).
+    /// Providers, resolved by `RepoRef.provider` name .
     pub providers: ProviderRegistry,
-    /// SSRF-guarded HTTP client (F-117); never the sidecar's client (§6.7).
+    /// SSRF-guarded HTTP client ; never the sidecar's client .
     pub http: Arc<dyn HttpService>,
-    /// Named secrets resolved from the `secrets:` section (F-146).
+    /// Named secrets resolved from the `secrets:` section .
     pub credentials: Arc<dyn crate::registry::CredentialStore>,
-    /// `release_id/environment/step_id` — the idempotency inputs (F-39, A1).
+    /// `release_id/environment/step_id` — the idempotency inputs .
     pub idempotency_key: String,
-    /// Cooperative cancellation flag (F-39).
+    /// Cooperative cancellation flag .
     pub cancel_token: CancelToken,
-    /// Span to log inside; `release_id`, `workflow_id`, `environment` (A.10).
+    /// Span to log inside; `release_id`, `workflow_id`, `environment` .
     pub log: Span,
 }
 
 impl std::fmt::Debug for StepContext {
-    /// Hand-written Debug: never leaks provider or credential internals (F-87).
+    /// Hand-written Debug: never leaks provider or credential internals .
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StepContext")
             .field("providers", &self.providers.len())

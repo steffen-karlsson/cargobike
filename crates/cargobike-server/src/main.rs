@@ -1,9 +1,9 @@
-//! The `cargobike-server` entry point: clap args (F-125..F-128), logging
-//! init (F-140), and `axum::serve` on the configured listener.
+//! The `cargobike-server` entry point: clap args (..), logging
+//! init , and `axum::serve` on the configured listener.
 
 use clap::Parser;
 
-/// Server arguments; every flag maps to a `CARGOBIKE_SERVER_*` variable (R10).
+/// Server arguments; every flag maps to a `CARGOBIKE_SERVER_*` variable .
 #[derive(Parser, Debug)]
 #[command(
     name = "cargobike-server",
@@ -11,7 +11,7 @@ use clap::Parser;
     about = "Cargobike release orchestration server"
 )]
 pub struct ServerArgs {
-    /// Config file path (F-124; default /etc/cargobike/config.yaml).
+    /// Config file path (; default /etc/cargobike/config.yaml).
     #[arg(
         long,
         env = "CARGOBIKE_SERVER_CONFIG",
@@ -28,7 +28,7 @@ pub struct ServerArgs {
 
 fn main() {
     // Pre-logging bootstrap only: no tracing yet, so fallback writes go to
-    // stderr by hand. Everything else logs (F-87/F-140).
+    // stderr by hand. Everything else logs .
     let mut args: Vec<String> = std::env::args().collect();
     if args
         .get(1)
@@ -47,7 +47,7 @@ fn main() {
     runtime.block_on(run(args));
 }
 
-/// §9.3: reads a plaintext key on stdin (never argv) and prints an
+/// : reads a plaintext key on stdin (the never argv) and prints an
 /// argon2id hash for the `auth.api_keys[].hash` field of the config.
 #[allow(clippy::print_stderr, clippy::print_stdout, unused_imports)]
 fn hash_api_key() -> i32 {
@@ -113,14 +113,14 @@ async fn run(args: ServerArgs) {
     }
 }
 
-/// The exit path before logging is initialised (main only).
+/// The exit path before logging is initialised (the main only).
 #[allow(clippy::print_stderr)]
 fn exit_before_logging(error: &impl std::fmt::Display) -> ! {
     eprintln!("cargobike-server: {error}");
     std::process::exit(2);
 }
 
-/// Doc comment for the logging init (F-140).
+/// Doc comment for the logging init .
 #[allow(unused)] // rewritten by 2.8b's reload wiring; kept honest for now
 fn init_logging(config: &cargobike_server::Config) {
     use tracing_subscriber::EnvFilter;

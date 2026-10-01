@@ -1,14 +1,14 @@
-//! HTTP plumbing: RFC 9457 problem details (F-103) and health surfaces.
+//! HTTP plumbing: RFC 9457 problem details and health surfaces.
 //!
-//! Errors: `{type, title, status, detail, instance, code}` (F-103); the
-//! extension member `code` is one of the §10.2 vocabulary constants.
+//! Errors: `{type, title, status, detail, instance, code}` ; the
+//! extension member `code` is one of the vocabulary constants.
 
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde_json::json;
 
-/// HTTP error codes (§10.2) lives in the api crate's vocabulary later;
+/// HTTP error codes lives in the api crate's vocabulary later;
 /// the server's survival constants here are the subset routes raise.
 pub const RELEASE_NOT_FOUND: &str = "ReleaseNotFound";
 pub const INTERNAL_ERROR: &str = "InternalError";
@@ -17,12 +17,12 @@ pub const STATE_CONFLICT: &str = "StateConflict";
 const CANONICAL_FORBIDDEN_SLUG: &str = "forbidden-resource";
 const FORBIDDEN_RESOURCE: &str = "ForbiddenResource";
 
-/// An API error with the RFC 9457 shape baked in (F-103).
+/// An API error with the RFC 9457 shape baked in .
 #[derive(Debug)]
 pub struct ApiError {
     /// HTTP status of the problem response.
     pub status: StatusCode,
-    /// Code constant (§10.2 vocabulary).
+    /// Code constant (the vocabulary).
     pub code: &'static str,
     /// Human detail.
     pub detail: String,
@@ -62,7 +62,7 @@ impl axum::response::IntoResponse for ApiError {
 }
 
 impl ApiError {
-    /// A 403 problem (§10.2 `ForbiddenResource`).
+    /// A 403 problem ( `ForbiddenResource`).
     pub fn forbidden(detail: impl Into<String>) -> Self {
         Self::new(
             axum::http::StatusCode::FORBIDDEN,
@@ -73,7 +73,7 @@ impl ApiError {
     }
 }
 
-/// A 500 from an internal failure (§10.2).
+/// A 500 from an internal failure .
 pub fn internal(error: impl std::fmt::Display) -> ApiError {
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,

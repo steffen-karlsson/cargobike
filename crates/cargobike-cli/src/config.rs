@@ -1,11 +1,11 @@
-//! The CLI's config file (PRD §9.7, F-124/F-130/F-145): named contexts,
+//! The CLI's config file: named contexts,
 //! auth kinds, and the `flag > env > context > defaults` precedence.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// The CLI config file's root (F-124: `CARGOBIKE_CONFIG`,
+/// The CLI config file's root ( `CARGOBIKE_CONFIG`,
 /// `~/.config/cargobike/config.yaml`).
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -16,7 +16,7 @@ pub struct ConfigFile {
     /// The named servers.
     #[serde(default)]
     pub contexts: Vec<ContextConfig>,
-    /// Cross-context defaults (§9.7, F-145).
+    /// Cross-context defaults .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defaults: Option<DefaultsConfig>,
 }
@@ -28,12 +28,12 @@ pub struct ContextConfig {
     /// The name a `cargobike context use <name>` selects by.
     pub name: String,
     /// The server's base URL; `http://` is refused unless the host is a
-    /// local one (F-98, `--allow-http` bypasses).
+    /// local one (, `--allow-http` bypasses).
     pub url: String,
     /// A custom CA bundle for corporate roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<PathBuf>,
-    /// How the client proves itself (§9.6's vocabulary).
+    /// How the client proves itself (theirs vocabulary).
     #[serde(default)]
     pub auth: AuthConfig,
 }
@@ -60,7 +60,7 @@ pub struct DefaultsConfig {
     pub output: OutputFormat,
 }
 
-/// The client auth vocabulary (§9.6/F-93's shapes).
+/// The client auth vocabulary (/ shapes).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum AuthConfig {
@@ -70,12 +70,12 @@ pub enum AuthConfig {
     /// An API key's secret reference (`{ file }`/`{ env }` only — the
     /// CLI reads no server-side named secrets).
     ApiKey {
-        /// The bearer's material nested under `api_key:` (§9.7).
+        /// The bearer's material nested under `api_key:` .
         api_key: SecretRef,
     },
     /// A local command that prints ONLY the token on stdout (TSV).
     Exec {
-        /// The command (from the local config only — never a server hint).
+        /// The command (the from the local config only — never a server hint).
         command: String,
         /// The command's arguments.
         #[serde(default)]
@@ -84,13 +84,13 @@ pub enum AuthConfig {
     /// GitHub Actions: the OIDC endpoint's request-token exchange
     /// (ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN).
     GithubActions {
-        /// The `aud` the Actions token requests (default `cargobike`).
+        /// The `aud` the Actions token requests (the default `cargobike`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         audience: Option<String>,
     },
 }
 
-/// A bearer-shaped secret reference (F-146's file/env forms only here).
+/// A bearer-shaped secret reference (the file/env forms only here).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum SecretRef {
@@ -125,7 +125,7 @@ impl<'de> Deserialize<'de> for SecretRef {
 }
 
 /// The config's load path contract: explicit path, else the XDG config;
-/// an absent file is a valid empty config (§2.1's env-only setup).
+/// an absent file is a valid empty config (theirs env-only setup).
 pub fn config_path(environment: Option<String>, home: PathBuf) -> PathBuf {
     if let Some(path) = environment {
         return PathBuf::from(path);
@@ -152,7 +152,7 @@ pub fn load(path: &PathBuf) -> Result<ConfigFile, ConfigError> {
     })
 }
 
-/// Parses a config's text (tests and diagnostics).
+/// Parses a config's text (the tests and diagnostics).
 pub fn parse(text: &str) -> Result<ConfigFile, ConfigError> {
     serde_yaml_ng::from_str(text).map_err(|failure| ConfigError(failure.to_string()))
 }
@@ -175,23 +175,23 @@ pub fn save(path: &PathBuf, config: &ConfigFile) -> Result<(), ConfigError> {
 #[error("{0}")]
 pub struct ConfigError(pub String);
 
-/// The URL pin a flag/env supplied (the F-145's precedence walk).
+/// The URL pin a flag/env supplied (the precedence walk).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UrlOverride {
-    /// The URL text (unparsed until the refusal rule runs).
+    /// The URL text (the unparsed until the refusal rule runs).
     pub value: String,
     /// Whether `--allow-http` blesses plain http.
     pub allow_http: bool,
 }
 
-/// F-98's refusal: `http://` only for local hosts.
+/// refusal: `http://` only for local hosts.
 pub fn refusal_error(url: &str) -> ConfigError {
     ConfigError(format!(
         "the server URL `{url}` uses plain http; only local hosts may (override with --allow-http)"
     ))
 }
 
-/// Whether the URL's host is local (the http rule's exception, F-98).
+/// Whether the URL's host is local (the http rule's exception, ).
 pub fn is_local_host(host: &str) -> bool {
     matches!(
         host.to_ascii_lowercase().as_str(),
@@ -337,7 +337,7 @@ defaults:
         let resolved = resolve(&config, None, false, None).expect("resolves");
         assert_eq!(resolved.url, "https://cargobike.example.com");
         assert!(matches!(resolved.auth, AuthConfig::ApiKey { .. }));
-        // Flag over context (F-145).
+        // Flag over context .
         let resolved = resolve(
             &config,
             Some("http://localhost:8080".to_owned()),
@@ -370,22 +370,22 @@ defaults:
     }
 }
 
-/// The resolved target the commands talk to (F-145's precedence walk
+/// The resolved target the commands talk to (the precedence walk
 /// finally materialised). `context_url` is `None` when no context was
 /// selected; `default_url` when neither the flag nor env supplied one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
-    /// The effective URL (refusal-checked, F-98).
+    /// The effective URL (the refusal-checked, ).
     pub url: String,
     /// The effective auth.
     pub auth: AuthConfig,
     /// The CA bundle from the context.
     pub ca_file: Option<PathBuf>,
-    /// The output format (defaults' section).
+    /// The output format (the defaults' section).
     pub output: OutputFormat,
 }
 
-/// F-145's precedence: flag > env > context > defaults > built-in.
+/// precedence: flag > env > context > defaults > built-in.
 pub fn resolve(
     config: &ConfigFile,
     flag_url: Option<String>,

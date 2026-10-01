@@ -1,4 +1,4 @@
-//! Deterministic names (A1 + F-147): branches derive from the release
+//! Deterministic names : branches derive from the release
 //! and the environment; the default format here is the contract and the
 //! server's `engine.branch_format` overrides it via the snapshot.
 
@@ -7,12 +7,12 @@ use std::collections::BTreeMap;
 use cargobike_core::model::Release;
 use cargobike_core::step::EnvRef;
 
-/// `cargobike/{application}/{environment}/{release_id}` (A1's default).
+/// `cargobike/{application}/{environment}/{release_id}` (the default).
 pub const DEFAULT_BRANCH_FORMAT: &str = "cargobike/{application}/{environment}/{release_id}";
 
-/// Expands the A1 branch name for a release + environment. The env's
-/// `branch_format` input (stamped by the provisioner) wins over the
-/// default when present (F-147's placeholders below).
+/// Expands the branch name for a release + environment. The env's
+/// `branch_format` input (the stamped by the provisioner) wins over the
+/// default when present (the placeholders below).
 pub fn branch_name(release: &Release, env: &EnvRef) -> String {
     branch_name_with(
         env.branch_format
@@ -23,7 +23,7 @@ pub fn branch_name(release: &Release, env: &EnvRef) -> String {
     )
 }
 
-/// The expansion with the F-147 name set.
+/// The expansion with the name set.
 pub fn branch_name_with(format: &str, release: &Release, env: &EnvRef) -> String {
     let mut values: BTreeMap<String, String> = BTreeMap::new();
     values.insert("application".to_owned(), release.spec.application.clone());
@@ -32,10 +32,10 @@ pub fn branch_name_with(format: &str, release: &Release, env: &EnvRef) -> String
     expand(format, &values)
 }
 
-/// F-147's format-string expansion: `{placeholder}` from `values`,
+/// format-string expansion: `{placeholder}` from `values`,
 /// `{{`/`}}` as literal-brace escapes, unknown placeholders pass
-/// through unvalidated here (validation lives in the compile-time
-/// checks, F-147's references).
+/// through unvalidated here (the validation lives in the compile-time
+/// checks, references).
 pub fn expand(format: &str, values: &BTreeMap<String, String>) -> String {
     let mut out = String::with_capacity(format.len());
     let mut rest = format;
@@ -54,7 +54,7 @@ pub fn expand(format: &str, values: &BTreeMap<String, String>) -> String {
                 if let Some(value) = values.get(token) {
                     out.push_str(value);
                 } else {
-                    // Unknown names stay with their braces (validation
+                    // Unknown names stay with their braces (the validation
                     // refuses the named pattern at compile; runtime is exact).
                     out.push('{');
                     out.push_str(token);

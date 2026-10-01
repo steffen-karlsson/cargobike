@@ -1,11 +1,11 @@
-//! The cleanup workflow (PRD 3.13, F-75/F-73, A2): a separate durable
+//! The cleanup workflow: a separate durable
 //! workflow started from the cancel and supersede paths — the cancelled
 //! interpreter cannot run its own compensation.
 //!
-//! Work per environment: close the CR (comment links to the replacing CR
+//! Work per environment: close the CR (the comment links to the replacing CR
 //! under supersede), delete the release branch, then settle the lease —
-//! release, or transfer to the new holder in one statement (F-73).
-//! Every action idempotent (A1); a replayed cleanup converges.
+//! release, or transfer to the new holder in one statement .
+//! Every action idempotent ; a replayed cleanup converges.
 
 use std::sync::Arc;
 
@@ -16,25 +16,25 @@ use cargobike_core::registry::ProviderRegistry;
 use crate::leases::{LeaseRepository, LeaseTransfer};
 use crate::signals::InterpreterError;
 
-/// The registered cleanup workflow name (F-75).
+/// The registered cleanup workflow name .
 pub const CLEANUP_WORKFLOW: &str = "cargobike.cleanup.v1";
 
 /// What a cleanup serves: the CR/branch facts of one environment.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CleanupTarget {
-    /// The application's name (lease + comment context).
+    /// The application's name (the lease + comment context).
     pub application: String,
     /// The environment the release was progressing through.
     pub environment: String,
-    /// The release's branch (A1's deterministic name), when it was cut.
+    /// The release's branch (the deterministic name), when it was cut.
     pub branch: Option<String>,
-    /// The open CR this release holds, when any (F-63's row form).
+    /// The open CR this release holds, when any (the row's form).
     pub change_request: Option<CrSummary>,
     /// Under `supersede`: the new release becomes the lease's holder in
-    /// the same statement (F-73); the CR comment links to it.
+    /// the same statement ; the CR comment links to it.
     pub superseded_by: Option<String>,
     /// The replacing release's version (the transfer stamps it so the
-    /// F-72 guard stays honest for the next arrival; the supersede
+    /// guard stays honest for the next arrival; the supersede
     /// flow's starter supplies it).
     pub to_version: Option<String>,
 }
@@ -59,16 +59,16 @@ pub struct CleanupArgs {
     pub targets: Vec<CleanupTarget>,
 }
 
-/// The cleanup's services (providers + lease rows).
+/// The cleanup's services (the providers + lease rows).
 pub struct CleanupServices {
-    /// Providers resolved by `RepoRef.provider` (F-39).
+    /// Providers resolved by `RepoRef.provider` .
     pub providers: Arc<ProviderRegistry>,
-    /// Lease rows (A2).
+    /// Lease rows .
     pub leases: Arc<LeaseRepository>,
 }
 
 impl CleanupServices {
-    /// Builds the CR reference a provider call needs (F-63's form).
+    /// Builds the CR reference a provider call needs (the row's form).
     pub fn env_of(&self, target: &CleanupTarget) -> Option<(CoreRepoRef, u64)> {
         target
             .change_request
@@ -77,7 +77,7 @@ impl CleanupServices {
     }
 }
 
-/// Registers the cleanup BEFORE launch (F-15).
+/// Registers the cleanup BEFORE launch .
 pub fn register_cleanup(
     instance: &dbos::DBOS,
     services: Arc<CleanupServices>,
@@ -88,7 +88,7 @@ pub fn register_cleanup(
     })
 }
 
-/// The body: per target — close the CR (linkedin comment under supersee),
+/// The body: per target — close the CR (the linkedin comment under supersee),
 /// delete the branch, settle the lease. Failures log and continue (the
 /// cleanup is best-effort compensation; the release record is already
 /// terminal either way).
@@ -102,7 +102,7 @@ async fn run(
     dbos::Result::Ok(())
 }
 
-/// One environment's compensation, idempotent (A1).
+/// One environment's compensation, idempotent .
 async fn clean_target(release_id: &str, target: &CleanupTarget, services: &CleanupServices) {
     // 1: close the CR.
     if let Some((repo, number)) = services.env_of(target) {
@@ -125,13 +125,13 @@ async fn clean_target(release_id: &str, target: &CleanupTarget, services: &Clean
             );
         }
     }
-    // 2: delete the release branch (when cut).
+    // 2: delete the release branch (the when cut).
     if let Some(branch) = &target.branch {
         if let Some(repo) = target.change_request.as_ref().map(|summary| &summary.repo) {
             if let Ok(provider) = services.providers.resolve(repo) {
                 // The provider's contract covers branch deletes via the
                 // CR close + branch cleanup; the branch delete is the repo
-                // content operation the provider exposes (F-46).
+                // content operation the provider exposes .
                 let outcome = Provider::delete_branch(&*provider, repo, branch).await;
                 log_outcome(release_id, &target.environment, "delete-branch", outcome);
             }
@@ -140,7 +140,7 @@ async fn clean_target(release_id: &str, target: &CleanupTarget, services: &Clean
     // 3: settle the lease.
     let lease_outcome = match &target.superseded_by {
         Some(superseded_by) => {
-            // F-73: the atomic hand-off to the replacing release.
+            // : the atomic hand-off to the replacing release.
             match uuid::Uuid::try_parse(superseded_by) {
                 Ok(new_holder) => match uuid::Uuid::try_parse(release_id) {
                     Ok(old_holder) => services

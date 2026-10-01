@@ -1,8 +1,8 @@
-//! The provider abstraction (PRD §7.1, F-43..F-48).
+//! The provider abstraction.
 //!
 //! Async, decoupled from DBOS: an in-process trait object resolved by the
 //! provider registry ([`crate::registry`]). The neutral term "change
-//! request" is used throughout (F-48) — GitHub PRs, GitLab MRs, and any
+//! request" is used throughout — GitHub PRs, GitLab MRs, and any
 //! future provider's concept land under one name.
 
 use async_trait::async_trait;
@@ -11,13 +11,13 @@ use serde_json::Value;
 
 use crate::model::RepoRef;
 
-/// Result type of provider operations (§10.1).
+/// Result type of provider operations .
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
 /// Errors a provider reports upward.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
-    /// The provider does not implement a capability-gated operation (F-47).
+    /// The provider does not implement a capability-gated operation .
     #[error("provider does not support this operation")]
     Unsupported,
     /// The provider's backend call failed.
@@ -28,16 +28,16 @@ pub enum ProviderError {
     NotFound(&'static str),
 }
 
-/// Errors of the SSRF-guarded HTTP seam ([`crate::step::HttpService`], F-117).
+/// Errors of the SSRF-guarded HTTP seam ([`crate::step::HttpService`], ).
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
-    /// The egress policy refused the host address (F-117 deny-list).
+    /// The egress policy refused the host address (the deny-list).
     #[error("blocked by egress policy: {0}")]
     Forbidden(String),
     /// The request exceeded its bound.
     #[error("request timed out")]
     Timeout,
-    /// Connection-level failure (connect, TLS, proxy).
+    /// Connection-level failure (the connect, TLS, proxy).
     #[error("connection failed: {0}")]
     Connect(String),
     /// Anything else the client reports.
@@ -45,45 +45,45 @@ pub enum HttpError {
     Other(String),
 }
 
-/// Capabilities a provider advertises (F-47); optional operations
+/// Capabilities a provider advertises ; optional operations
 /// (`enable_auto_merge`, `create_tag`, `create_release`, webhook
 /// verification and parsing) are gated on these.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ProviderCaps {
-    /// `enable_auto_merge` for opened CRs (v1.1 `auto_merge` param).
+    /// `enable_auto_merge` for opened CRs (the v1.1 `auto_merge` param).
     pub auto_merge: bool,
     /// Tag creation (`builtin/tag@1`, v1.1).
     pub tags: bool,
     /// Release creation (`builtin/release@1`, v1.1).
     pub releases: bool,
-    /// Branch-protection checks (F-65).
+    /// Branch-protection checks .
     pub branch_protection: bool,
-    /// Tag-protection checks for `require_tag_protection` (F-82).
+    /// Tag-protection checks for `require_tag_protection` .
     pub tag_protection: bool,
-    /// Branch delete (F-75's cleanup path).
+    /// Branch delete (the cleanup path).
     pub branch_delete: bool,
-    /// Signature verification of webhook deliveries (F-51).
+    /// Signature verification of webhook deliveries .
     pub webhook_verification: bool,
-    /// Parsing of webhook deliveries (F-46).
+    /// Parsing of webhook deliveries .
     pub webhook_parsing: bool,
 }
 
-/// Document format of an edit (F-44's `Edit`); the registry may omit it,
-/// in which case the engine infers it from the file extension (F-41).
+/// Document format of an edit ( `Edit`); the registry may omit it,
+/// in which case the engine infers it from the file extension .
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EditFormat {
-    /// YAML document (format-preserving edits, see A.8).
+    /// YAML document (the format-preserving edits, see ).
     #[default]
     Yaml,
-    /// JSON document (pointer-style edits).
+    /// JSON document (the pointer-style edits).
     Json,
-    /// TOML document (key paths).
+    /// TOML document (the key paths).
     Toml,
 }
 
-/// Why an edit application refused (F-41).
+/// Why an edit application refused .
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
     /// The base document did not parse in the edit's format.
@@ -94,22 +94,22 @@ pub enum EditError {
     InvalidPath(String),
 }
 
-/// A structured file edit (F-41): a dot-notation path into a YAML/JSON
+/// A structured file edit : a dot-notation path into a YAML/JSON
 /// document or a key path into TOML — never text substitution.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Edit {
-    /// Repository-relative file; normalised, `..` rejected (F-41).
+    /// Repository-relative file; normalised, `..` rejected .
     pub file: String,
-    /// Document format, inferred from the extension when omitted (F-41).
+    /// Document format, inferred from the extension when omitted .
     pub format: Option<EditFormat>,
-    /// Dot-notation (or key-path) of the field to update (`image.tag`).
+    /// Dot-notation (the or key-path) of the field to update (`image.tag`).
     pub field: String,
-    /// Value to write; the release version by default (F-41, F-147).
+    /// Value to write; the release version by default .
     pub value: Option<Value>,
 }
 
-/// What a successful commit produced (F-52's raw form before CR creation).
+/// What a successful commit produced (the raw form before CR creation).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitResult {
     /// New commit SHA on the branch.
@@ -118,20 +118,20 @@ pub struct CommitResult {
     pub branch: String,
 }
 
-/// A change request, provider-neutrally (F-48).
+/// A change request, provider-neutrally .
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeRequest {
     /// Provider CR number.
     pub number: u64,
     /// Provider web URL for humans.
     pub url: String,
-    /// Head SHA the CR currently carries (F-62).
+    /// Head SHA the CR currently carries .
     pub head_sha: String,
     /// State of the CR.
     pub state: crate::model::CrState,
 }
 
-/// Branch protection state of a base branch (F-65).
+/// Branch protection state of a base branch .
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct BranchProtection {
@@ -141,7 +141,7 @@ pub struct BranchProtection {
     pub required_review_count: Option<u16>,
 }
 
-/// Commit status to set (F-44's `set_commit_status`).
+/// Commit status to set ( `set_commit_status`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CommitStatus {
@@ -153,23 +153,23 @@ pub enum CommitStatus {
     Failure,
 }
 
-/// The provider trait (PRD §7.1): including webhook verification and
-/// parsing in the contract (F-46), exposed behind [`ProviderCaps`].
+/// The provider trait: including webhook verification and
+/// parsing in the contract , exposed behind [`ProviderCaps`].
 ///
-/// Sidecars (v1.0) and WASM modules (v1.1) implement the same operations
-/// over their own transports (PRD §7.3, §7.4); the adapter into this trait
+/// Sidecars (the v1.0) and WASM modules (the v1.1) implement the same operations
+/// over their own transports; the adapter into this trait
 /// lives in `cargobike-server`, not here.
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// Capability discovery (F-47).
+    /// Capability discovery .
     fn capabilities(&self) -> ProviderCaps;
 
     /// Fetches the repository path (`my-org/my-repo`) for an opaque
-    /// [`RepoRef`] (F-10).
+    /// [`RepoRef`] .
     async fn get_repo_path(&self, repo: &RepoRef) -> ProviderResult<String>;
 
     /// Creates `branch` from `from_sha`; "already exists at expected SHA"
-    /// is success (A1).
+    /// is success .
     async fn create_branch(
         &self,
         repo: &RepoRef,
@@ -177,7 +177,7 @@ pub trait Provider: Send + Sync {
         from_sha: &str,
     ) -> ProviderResult<()>;
 
-    /// Applies structured edits and commits in one operation (F-41, A1
+    /// Applies structured edits and commits in one operation (,
     /// fused edit+commit). `expected_parent` is the pre-commit SHA: a
     /// mismatch is a conflict rather than a silent overwrite.
     async fn commit_files(
@@ -189,8 +189,8 @@ pub trait Provider: Send + Sync {
         expected_parent: Option<&str>,
     ) -> ProviderResult<CommitResult>;
 
-    /// Opens a change request (F-48). Existing open CRs are found by head
-    /// branch first (A1 `change-request` idempotency).
+    /// Opens a change request . Existing open CRs are found by head
+    /// branch first ( `change-request` idempotency).
     async fn create_change_request(
         &self,
         repo: &RepoRef,
@@ -208,7 +208,7 @@ pub trait Provider: Send + Sync {
         number: u64,
     ) -> ProviderResult<ChangeRequest>;
 
-    /// Finds an open CR by head branch (A1).
+    /// Finds an open CR by head branch .
     async fn find_change_request_by_head(
         &self,
         repo: &RepoRef,
@@ -223,18 +223,18 @@ pub trait Provider: Send + Sync {
         comment: &str,
     ) -> ProviderResult<()>;
 
-    /// Lists open CRs (reconciliation batching uses provider paging; F-69).
+    /// Lists open CRs (the reconciliation batching uses provider paging; ).
     async fn list_open_change_requests(&self, repo: &RepoRef)
     -> ProviderResult<Vec<ChangeRequest>>;
 
-    /// Reads a file at `ref` (merge verification reads base files; F-62).
+    /// Reads a file at `ref` (the merge verification reads base files; ).
     async fn read_file(&self, repo: &RepoRef, path: &str, git_ref: &str)
     -> ProviderResult<Vec<u8>>;
 
-    /// Comments on a CR (supersede notices; F-73).
+    /// Comments on a CR (the supersede notices; ).
     async fn comment(&self, repo: &RepoRef, cr_number: u64, body: &str) -> ProviderResult<()>;
 
-    /// Adds labels to a CR (`builtin/set-labels@1`; F-35).
+    /// Adds labels to a CR (`builtin/set-labels@1`; ).
     async fn add_labels(
         &self,
         repo: &RepoRef,
@@ -242,20 +242,20 @@ pub trait Provider: Send + Sync {
         labels: &[String],
     ) -> ProviderResult<()>;
 
-    /// Merges the base branch into `branch` (F-46 `update_branch`).
+    /// Merges the base branch into `branch` ( `update_branch`).
     async fn update_branch(&self, repo: &RepoRef, branch: &str) -> ProviderResult<()>;
 
-    /// Deletes a release branch (F-75's cleanup), gated on
+    /// Deletes a release branch (the cleanup), gated on
     /// [`ProviderCaps::branch_delete`].
     async fn delete_branch(&self, repo: &RepoRef, branch: &str) -> ProviderResult<()> {
         let _ = (repo, branch);
         Err(ProviderError::Unsupported)
     }
 
-    /// The repository's default branch (branch creation base; A1).
+    /// The repository's default branch (the branch creation base; ).
     async fn default_branch(&self, repo: &RepoRef) -> ProviderResult<String>;
 
-    /// The SHA of a branch tip (A1 "already exists at expected SHA").
+    /// The SHA of a branch tip ( "already exists at expected SHA").
     async fn branch_sha(&self, repo: &RepoRef, branch: &str) -> ProviderResult<String>;
 
     /// Sets a commit status (`builtin/wait-for-check` draft surface).
@@ -267,7 +267,7 @@ pub trait Provider: Send + Sync {
     ) -> ProviderResult<()>;
 
     /// Branch protection check, gated on [`ProviderCaps::branch_protection`]
-    /// (F-65; the step fails closed when the capability is absent).
+    /// (; the step fails closed when the capability is absent).
     async fn check_branch_protection(
         &self,
         repo: &RepoRef,
@@ -277,7 +277,7 @@ pub trait Provider: Send + Sync {
         Err(ProviderError::Unsupported)
     }
 
-    /// Tag protection check for `require_tag_protection` (F-82), gated on
+    /// Tag protection check for `require_tag_protection` , gated on
     /// [`ProviderCaps::tag_protection`].
     async fn check_tag_protection(
         &self,
@@ -288,20 +288,20 @@ pub trait Provider: Send + Sync {
         Err(ProviderError::Unsupported)
     }
 
-    /// Enables auto merge on a CR (v1.1 `auto_merge` param), gated on
+    /// Enables auto merge on a CR (the v1.1 `auto_merge` param), gated on
     /// [`ProviderCaps::auto_merge`].
     async fn enable_auto_merge(&self, repo: &RepoRef, number: u64) -> ProviderResult<()> {
         let _ = (repo, number);
         Err(ProviderError::Unsupported)
     }
 
-    /// Creates a tag (v1.1 `builtin/tag@1`), gated on [`ProviderCaps::tags`].
+    /// Creates a tag (the v1.1 `builtin/tag@1`), gated on [`ProviderCaps::tags`].
     async fn create_tag(&self, repo: &RepoRef, tag: &str, sha: &str) -> ProviderResult<()> {
         let _ = (repo, tag, sha);
         Err(ProviderError::Unsupported)
     }
 
-    /// Creates a release (v1.1 `builtin/release@1`), gated on
+    /// Creates a release (the v1.1 `builtin/release@1`), gated on
     /// [`ProviderCaps::releases`].
     async fn create_release(
         &self,
@@ -314,7 +314,7 @@ pub trait Provider: Send + Sync {
         Err(ProviderError::Unsupported)
     }
 
-    /// Verifies a webhook delivery and normalises the event (F-51), gated
+    /// Verifies a webhook delivery and normalises the event , gated
     /// on [`ProviderCaps::webhook_verification`].
     async fn verify_webhook(
         &self,

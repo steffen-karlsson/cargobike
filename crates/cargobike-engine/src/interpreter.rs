@@ -1,12 +1,12 @@
-//! The durable interpreter (PRD 3.9/3.4, F-15..F-24): one registered
+//! The durable interpreter: one registered
 //! DBOS workflow per instance (`cargobike.interpret.v1`), the control
-//! steps (F-34's wait rules), and the merge verification (F-62/F-64).
+//! steps (the wait rules), and the merge verification .
 //!
 //! The body is a pure function of the snapshot and the recorded outputs
-//! (F-15). Wait steps are interpreter-native: `recv` over the signal
-//! topics (F-20a) and a provider re-verification for merges. One
+//! . Wait steps are interpreter-native: `recv` over the signal
+//! topics and a provider re-verification for merges. One
 //! argument only — the snapshot (the spike's confirmed shape); the
-//! closure must not capture the instance (spike doc §2.1).
+//! closure must not capture the instance (the spike doc ).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,13 +27,13 @@ use crate::snapshot::ReleaseSnapshot;
 use crate::steps::StepRegistry;
 use crate::template::{ResolvedEnvironment, ResolvedStep, StepBody};
 
-/// The registered interpreter workflow name (F-15).
+/// The registered interpreter workflow name .
 pub const INTERPRETER_WORKFLOW: &str = "cargobike.interpret.v1";
 
 /// The interpreter's single durable argument.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InterpretArgs {
-    /// The F-16 snapshot: template, inputs, step-type versions, hash.
+    /// The snapshot: template, inputs, step-type versions, hash.
     pub snapshot: ReleaseSnapshot,
 }
 
@@ -44,40 +44,40 @@ pub struct InterpretResult {
     pub environments: Vec<EnvironmentOutcome>,
 }
 
-/// One environment's outcome (F-7's rollup input).
+/// One environment's outcome (the rollup input).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EnvironmentOutcome {
     /// The environment's name.
     pub name: String,
     /// The environment's terminal phase.
     pub phase: EnvironmentPhase,
-    /// Error detail when failed (F-8).
+    /// Error detail when failed .
     pub error: Option<ReleaseError>,
 }
 
 /// Everything the interpreter runs against, part of the registered
-/// closure (the executor snapshots the registry at launch, F-15).
+/// closure (the executor snapshots the registry at launch, ).
 pub struct InterpreterServices {
-    /// Step types installed (3.3's registry).
+    /// Step types installed (the registry).
     pub steps: Arc<StepRegistry>,
-    /// Providers resolved by `RepoRef.provider` name (F-39).
+    /// Providers resolved by `RepoRef.provider` name .
     pub providers: Arc<cargobike_core::registry::ProviderRegistry>,
-    /// Named secrets (F-146).
+    /// Named secrets .
     pub credentials: Arc<dyn cargobike_core::registry::CredentialStore>,
-    /// The SSRF-guarded client (§6.7's step paths).
+    /// The SSRF-guarded client (theirs step paths).
     pub http: Arc<dyn HttpService>,
-    /// Lease rows (A2/F-71).
+    /// Lease rows .
     pub leases: Arc<LeaseRepository>,
 }
 
 impl InterpreterServices {
-    /// A `StepContext` for a concrete step run (F-39).
+    /// A `StepContext` for a concrete step run .
     pub fn step_context(&self, release_id: &str, environment: &str, step_id: &str) -> StepContext {
         StepContext {
             providers: (*self.providers).clone(),
             http: Arc::clone(&self.http),
             credentials: Arc::clone(&self.credentials),
-            // A1: `release_id/environment/step_id` is the idempotency input.
+            // : `release_id/environment/step_id` is the idempotency input.
             idempotency_key: format!("{release_id}/{environment}/{step_id}"),
             cancel_token: cargobike_core::step::CancelToken::new(),
             log: Span::current(),
@@ -86,7 +86,7 @@ impl InterpreterServices {
 }
 
 /// Registers the interpreter; registration only works BEFORE `launch()`
-/// (F-15; the spike's registry snapshot applies).
+/// (; the spike's registry snapshot applies).
 pub fn register_interpreter(
     instance: &dbos::DBOS,
     services: Arc<InterpreterServices>,
@@ -97,7 +97,7 @@ pub fn register_interpreter(
     })
 }
 
-/// The workflow body: environments × steps of the snapshot (F-15's
+/// The workflow body: environments × steps of the snapshot (
 /// pure-function rule).
 async fn run(
     args: InterpretArgs,
@@ -127,12 +127,12 @@ async fn run_environment(
             Ok(true) => {}
         }
     }
-    // F-70..F-74: the lease gates the environment's work.
+    // ..: the lease gates the environment's work.
     match crate::concurrency::enter(&services.leases, snapshot, environment).await {
         Ok(LeaseDecision::Proceed) => {}
         Ok(LeaseDecision::WaitForLease) => {
             loop {
-                // F-71's queue: the lease's release signal wakes it.
+                // queue: the lease's release signal wakes it.
                 let taken = dbos::recv::<Signal, InterpreterError>(
                     Some(crate::signals::lease_topic(&environment.name).as_str()),
                     crate::concurrency::QUEUE_WAKE_TIMEOUT,
@@ -156,7 +156,7 @@ async fn run_environment(
         match run_step(snapshot, environment, step, &mut context, services).await {
             StepFlow::Continue => {}
             StepFlow::Skip => {
-                // F-71: the lease releases on skip, waking the queue.
+                // : the lease releases on skip, waking the queue.
                 if let Err(release_failure) =
                     crate::concurrency::release_lease(&services.leases, snapshot, environment).await
                 {
@@ -170,13 +170,13 @@ async fn run_environment(
                 return finished(environment, EnvironmentPhase::Skipped, None);
             }
             StepFlow::Error(failure) => {
-                // F-74: a failed environment KEEPS the lease for the fork
+                // : a failed environment KEEPS the lease for the fork
                 // resume; the supersede chain releases it server-side.
                 return error_to_outcome(environment, failure);
             }
         }
     }
-    // F-71: the lease releases on complete, waking the queue.
+    // : the lease releases on complete, waking the queue.
     if let Err(release_failure) =
         crate::concurrency::release_lease(&services.leases, snapshot, environment).await
     {
@@ -190,7 +190,7 @@ async fn run_environment(
     finished(environment, EnvironmentPhase::Completed, None)
 }
 
-/// Maps an expression failure to the interpreter's envelope (F-8's
+/// Maps an expression failure to the interpreter's envelope (
 /// `StepFailed` family: the step never evaluated).
 fn expr_failure(error: crate::expr::ExprError) -> InterpreterError {
     InterpreterError::Step(cargobike_core::step::StepError::Failed {
@@ -211,7 +211,7 @@ fn finished(
     }
 }
 
-/// An interpreter failure becomes the environment's F-8 outcome.
+/// An interpreter failure becomes the environment's outcome.
 fn error_to_outcome(
     environment: &ResolvedEnvironment,
     failure: InterpreterError,
@@ -223,7 +223,7 @@ fn error_to_outcome(
     }
 }
 
-/// The F-7 phase each failure maps to.
+/// The phase each failure maps to.
 pub const fn environment_phase_of(failure: &InterpreterError) -> EnvironmentPhase {
     match failure {
         InterpreterError::Cancelled => EnvironmentPhase::Canceled,
@@ -235,14 +235,14 @@ pub const fn environment_phase_of(failure: &InterpreterError) -> EnvironmentPhas
 enum StepFlow {
     /// Keep going.
     Continue,
-    /// The environment skips (F-7's skip path).
+    /// The environment skips (the skip path).
     Skip,
-    /// A failure the environment takes (F-8's error).
+    /// A failure the environment takes (the error).
     Error(InterpreterError),
 }
 
 /// One step: action steps run their registered type; control steps walk
-/// the wait logic (F-33's two kinds).
+/// the wait logic (the two kinds).
 async fn run_step(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
@@ -284,7 +284,7 @@ async fn run_step(
     }
 }
 
-/// The F-62 verify decision, computed inside a durable step (a replay
+/// The verify decision, computed inside a durable step (a replay
 /// re-reads the recorded decision without re-querying the provider, so
 /// the wait's loop branch sequence stays replay-deterministic).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -310,7 +310,7 @@ fn now_unix_millis() -> u64 {
         .unwrap_or_default()
 }
 
-/// `wait: merge`'s enclosure (F-62): durable anchor -> recv -> recorded
+/// `wait: merge`'s enclosure : durable anchor -> recv -> recorded
 /// provider re-verify; open CRs keep waiting under the recorded
 /// deadline; closed-without-merge is terminal; `on_modified` decides
 /// the head-SHA move.
@@ -366,7 +366,7 @@ async fn wait_merge(
         let received = match taken {
             Ok(received) => received,
             // An engine-level failure is transient: the next retry
-            // redoes the wait with the same recorded facts (F-35).
+            // redoes the wait with the same recorded facts .
             Err(_) => {
                 return StepFlow::Error(InterpreterError::Step(
                     cargobike_core::step::StepError::Transient(
@@ -390,7 +390,7 @@ async fn wait_merge(
             };
         };
         if !merged {
-            // Closed without merge is terminal (`ApprovalRejected`, F-62).
+            // Closed without merge is terminal (`ApprovalRejected`, ).
             return StepFlow::Error(InterpreterError::ApprovalRejected);
         }
 
@@ -404,7 +404,7 @@ async fn wait_merge(
             .and_then(|step| context_peek(context, step.id.as_str()));
 
         // The verify runs as its own durable step: replay re-reads the
-        // recorded decision (no re-query), so the loop's branch shapes
+        // recorded decision (the no re-query), so the loop's branch shapes
         // stay deterministic.
         let verify_name = format!("merge/verify/{step_id}");
         let providers = services.providers.clone();
@@ -463,13 +463,13 @@ async fn wait_merge(
 }
 
 /// Whether a resolved step is the env's change-request step (the
-/// head-SHA reference F-62's on_modified compares against).
+/// head-SHA reference on_modified compares against).
 fn uses_change_request(step: &ResolvedStep) -> bool {
     matches!(&step.body, crate::template::StepBody::Action { uses, .. } if uses.starts_with("builtin/change-request"))
 }
 
 /// The recorded outputs an earlier step left in the environment's
-/// expression context (`steps.<id>.outputs.<field>`, F-28).
+/// expression context (`steps.<id>.outputs.<field>`, ).
 fn context_peek(context: &crate::expr::ExprContext, step_id: &str) -> Option<String> {
     context
         .steps
@@ -479,7 +479,7 @@ fn context_peek(context: &crate::expr::ExprContext, step_id: &str) -> Option<Str
         .map(str::to_owned)
 }
 
-/// The F-62 facts game: provider state -> head-SHA policy -> content
+/// The facts game: provider state -> head-SHA policy -> content
 /// presence, one decision per invocation.
 async fn verify_merged_facts(
     providers: &cargobike_core::registry::ProviderRegistry,
@@ -495,7 +495,7 @@ async fn verify_merged_facts(
     let fallback = RepoRef::new("github", "0");
     let repo = repo.unwrap_or(&fallback);
     let Ok(provider) = providers.resolve(repo) else {
-        return MergeVerify::NotYet; // unavailable: wait again (F-55)
+        return MergeVerify::NotYet; // unavailable: wait again 
     };
     let Ok(change_request) = Provider::get_change_request(&*provider, repo, number).await else {
         return MergeVerify::NotYet; // unavailable this cycle: wait again
@@ -504,7 +504,7 @@ async fn verify_merged_facts(
         CrState::Open => MergeVerify::NotYet,
         CrState::Closed => MergeVerify::CrClosed,
         CrState::Merged => {
-            // The head-SHA move: the ORIGINAL head (recorded at the CR's
+            // The head-SHA move: the ORIGINAL head (the recorded at the CR's
             // opening) vs the merge's head (the re-verify's own read).
             if let (Some(original), Some(current)) =
                 (&original_head_sha, Some(&change_request.head_sha))
@@ -553,7 +553,7 @@ async fn wait_approval(
 }
 
 /// A signal arrived on a topic that does not belong to it — a bug, and
-/// never a successful advance (F-20a's topics are addressed per wait).
+/// never a successful advance (the topics are addressed per wait).
 fn wrong_signal() -> StepFlow {
     StepFlow::Error(InterpreterError::Step(
         cargobike_core::step::StepError::Failed {
@@ -563,9 +563,9 @@ fn wrong_signal() -> StepFlow {
     ))
 }
 
-/// Content verification (F-62's merged case): the CR's target files on
+/// Content verification (the merged case): the CR's target files on
 /// the base branch carry the intended values at the intended pointers.
-/// A mismatch becomes `ChangeRequestModified` (F-62's fail).
+/// A mismatch becomes `ChangeRequestModified` (the fail).
 async fn verify_content(
     provider: &(dyn cargobike_core::provider::Provider + 'static),
     repo: &cargobike_core::model::RepoRef,
@@ -578,8 +578,8 @@ async fn verify_content(
         let contents = provider
             .read_file(repo, edit.file.as_str(), base.as_str())
             .await?;
-        // F-41's format inference by extension when the edit didn't
-        // declare; the parse is a CONTRACT ERROR (never honoured as
+        // format inference by extension when the edit didn't
+        // declare; the parse is a CONTRACT ERROR (the never honoured as
         // empty — a malformed base document cannot decide).
         let format = edit
             .format
@@ -591,7 +591,7 @@ async fn verify_content(
                     edit.file
                 ))
             })?;
-        // F-147: absent or explicit-null values mean the release version;
+        // : absent or explicit-null values mean the release version;
         // shared with the apply path so both ends agree.
         let desired = cargobike_core::edits::desired_value(
             edit,
@@ -610,7 +610,7 @@ async fn verify_content(
     Ok(())
 }
 
-/// Reads a dot-notation path into the document tree (F-41's field walk);
+/// Reads a dot-notation path into the document tree (the field walk);
 /// arrays take integer indices.
 pub fn get_by_dot<'tree>(
     document: &'tree serde_json::Value,
@@ -631,13 +631,13 @@ pub fn get_by_dot<'tree>(
     Some(current)
 }
 
-/// The F-32a provisioned view (name/repo/edits/commit_message) from the
+/// The provisioned view (the name/repo/edits/commit_message) from the
 /// snapshot's per-environment inputs.
 fn environment_env_ref(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
 ) -> cargobike_core::step::EnvRef {
-    // F-147's provision stamp: an edit without an explicit (or
+    // provision stamp: an edit without an explicit (the or
     // non-null) value writes the release version; after this point the
     // edits carry values (the providers stay version-agnostic).
     let version_value = snapshot.release.version.clone();
@@ -683,16 +683,16 @@ async fn dispatch_action(
             return StepFlow::Error(InterpreterError::Step(
                 cargobike_core::step::StepError::Failed {
                     code: cargobike_core::error::STEP_FAILED.to_owned(),
-                    message: format!("the step `{uses}` is not installed (F-35): {registry_error}"),
+                    message: format!("the step `{uses}` is not installed: {registry_error}"),
                 },
             ));
         }
     };
     let release_view = snapshot.read_release();
-    // F-32a's provisioned view: repo/edits/commit_message from env inputs.
+    // provisioned view: repo/edits/commit_message from env inputs.
     let environment_view = environment_env_ref(snapshot, environment);
-    // F-28's `with`: parameters evaluate against the documented context;
-    // the release version is a step-edit's default (F-41, F-147).
+    // `with`: parameters evaluate against the documented context;
+    // the release version is a step-edit's default .
     let with = match interpolate_params(&step.params(), context) {
         Ok(with) => with,
         Err(error) => {
@@ -704,9 +704,9 @@ async fn dispatch_action(
             ));
         }
     };
-    // F-33: action steps run inside `dbos::step` — the checkpoint makes
-    // the run exactly-once per attempt (replays skip the body) and the
-    // template's retry policy maps onto `StepOptions` (F-35).
+    // : action steps run inside `dbos::step` — the checkpoint makes
+    // the run exactly-once per attempt (the replays skip the body) and the
+    // template's retry policy maps onto `StepOptions` .
     let options = step_options(step);
     let ran = dbos::step_with::<
         Result<StepOutput, cargobike_core::step::StepError>,
@@ -717,8 +717,8 @@ async fn dispatch_action(
         format!("builtin/{}/{}", environment.name, step.id).as_str(),
         options,
         move || {
-            // T1's kill-point: the harness exits exactly here, at the
-            // boundary, before the body runs (feature-gated hook).
+            // kill-point: the harness exits exactly here, at the
+            // boundary, before the body runs (the feature-gated hook).
             crate::crash::milestone_maybe(environment.name.as_str(), step.id.as_str());
             // Each attempt builds its own context; the async block owns it.
             let owned_context =
@@ -751,7 +751,7 @@ async fn dispatch_action(
     match inner {
         Ok(execution_result) => match execution_result {
             Ok(StepOutput::Continue(outputs)) => {
-                // F-28: the recorded outputs (`steps.<id>.outputs.*`) are
+                // : the recorded outputs (`steps.<id>.outputs.*`) are
                 // durable WITH the step's checkpoint — the context only
                 // gains them after the run.
                 context
@@ -772,7 +772,7 @@ async fn dispatch_action(
     }
 }
 
-/// Maps the template's retry policy to `StepOptions` (F-35; total
+/// Maps the template's retry policy to `StepOptions` (; total
 /// attempts is `max_attempts`).
 fn step_options(step: &ResolvedStep) -> dbos::StepOptions<InterpreterError> {
     let attempt_bound = step.action_kind_timeout();
@@ -789,7 +789,7 @@ fn step_options(step: &ResolvedStep) -> dbos::StepOptions<InterpreterError> {
         .and_then(|text| humantime::parse_duration(text).ok())
         .unwrap_or(Duration::from_secs(1));
     let default = dbos::StepOptions::<InterpreterError>::default();
-    // F-35's backoff: `fixed` stays at the interval; `exponential` grows by
+    // backoff: `fixed` stays at the interval; `exponential` grows by
     // the default rate (2.0) within `max_delay`.
     let (backoff_rate, max_interval) = match policy.backoff {
         cargobike_core::template::Backoff::Fixed => (1.0, default.max_interval),
@@ -809,7 +809,7 @@ fn step_options(step: &ResolvedStep) -> dbos::StepOptions<InterpreterError> {
         max_interval,
         timeout: attempt_bound,
         // The Transient contract: machinery wobble retries, permanent
-        // template/step failures do not (F-35, §6.7).
+        // template/step failures do not .
         should_retry: Some(std::sync::Arc::new(
             |failure: &dbos::Error<InterpreterError>| {
                 matches!(

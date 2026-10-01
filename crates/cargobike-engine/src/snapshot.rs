@@ -1,6 +1,6 @@
-//! The release snapshot (PRD F-16/F-29): the resolved, validated
+//! The release snapshot: the resolved, validated
 //! template plus the registry's supplied inputs, hashed at release
-//! creation. The interpreter reads ONLY this (F-15's purity rule).
+//! creation. The interpreter reads ONLY this (the purity rule).
 
 use std::collections::BTreeMap;
 use std::time::Duration as StdDuration;
@@ -13,31 +13,31 @@ use serde::{Deserialize, Serialize};
 /// `release.{id, application, version}` context and branch names).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseIdentity {
-    /// The release ID (UUIDv7 text; F-2).
+    /// The release ID (UUIDv7 text; ).
     pub id: String,
     /// The application name.
     pub application: String,
-    /// The opaque version string (F-4).
+    /// The opaque version string .
     pub version: String,
-    /// The release's versioning scheme (F-72's supersede guard); the
+    /// The release's versioning scheme (the supersede guard); the
     /// provisioner stamps it from the registry's versioning block.
-    /// The scheme guards F-72's supersede; always present since the
+    /// The scheme guards supersede; always present since the
     /// template's versioning decides it at provision time.
     pub version_scheme: cargobike_core::version::VersionScheme,
 }
 
-/// The canonical snapshot of a release (F-16).
+/// The canonical snapshot of a release .
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReleaseSnapshot {
     /// The compiled template the interpreter executes.
     pub template: crate::template::CompiledTemplate,
-    /// The release's identity (F-8/F-39's context).
+    /// The release's identity (/ context).
     pub release: ReleaseIdentity,
-    /// Application-wide inputs the registry supplied (F-32a).
+    /// Application-wide inputs the registry supplied .
     pub inputs: BTreeMap<String, serde_json::Value>,
-    /// Step-type versions the release pins (F-37).
+    /// Step-type versions the release pins .
     pub step_type_versions: BTreeMap<String, String>,
-    /// Content hash over template + inputs (canonical, F-16).
+    /// Content hash over template + inputs (the canonical, ).
     pub content_hash: String,
 }
 
@@ -52,10 +52,10 @@ struct EditEntry {
     value: Option<serde_json::Value>,
 }
 
-/// The Edit format by its config name (`yaml`/`json`/`toml`); the F-41
+/// The Edit format by its config name (`yaml`/`json`/`toml`); the
 /// inference is the provider of last resort when the name is missing.
 fn format_from_name(name: &str) -> cargobike_core::provider::EditFormat {
-    // F-41's declared name (one `format_from_name` consumer); the
+    // declared name (the one `format_from_name` consumer); the
     // FILE-PATH inference lives in core::edits::format_for_path.
     match name {
         "json" => cargobike_core::provider::EditFormat::Json,
@@ -65,7 +65,7 @@ fn format_from_name(name: &str) -> cargobike_core::provider::EditFormat {
 }
 
 impl ReleaseSnapshot {
-    /// The expression context of one environment (F-32's contract).
+    /// The expression context of one environment (the contract).
     pub fn context(&self, environment: &str) -> crate::expr::ExprContext {
         let (name, env_inputs) = self
             .template
@@ -94,7 +94,7 @@ impl ReleaseSnapshot {
         }
     }
 
-    /// The edits one environment supplies (F-32a's `edits` well-known
+    /// The edits one environment supplies ( `edits` well-known
     /// entry); the interpreter and the verifier consume the same list.
     pub fn edits_of(&self, environment: &str) -> Vec<Edit> {
         let Some(inputs) = self
@@ -121,7 +121,7 @@ impl ReleaseSnapshot {
             .collect()
     }
 
-    /// The target repo reference for one environment (F-32a's `repo`).
+    /// The target repo reference for one environment ( `repo`).
     pub fn repo_of(&self, environment: &str) -> Option<CoreRepoRef> {
         let inputs = self
             .template
@@ -156,12 +156,12 @@ impl ReleaseSnapshot {
         }
     }
 
-    /// The release record view (F-1's three root properties; status is
+    /// The release record view (the three root properties; status is
     /// the interpreter's view — attempts/remotes stay server-side).
     pub fn read_release(&self) -> cargobike_core::model::Release {
-        // Deterministic per release (F-15's purity): every attempt and
+        // Deterministic per release (the purity): every attempt and
         // replay of the workflow derives the SAME step-visible release
-        // view (the random id/`github/0` stub betrayed A1's naming).
+        // view (the random id/`github/0` stub betrayed naming).
         let id = uuid::Uuid::parse_str(&self.release.id).unwrap_or_else(|_| uuid::Uuid::now_v7());
         let metadata = cargobike_core::model::ReleaseMetadata {
             id,

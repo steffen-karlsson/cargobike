@@ -1,4 +1,4 @@
-//! The T1 harness's mock provider (feature t1-crash-hooks only): state
+//! The harness's mock provider (the feature crash-hooks only): state
 //! lives in ONE JSON file that the sequential harness processes share, so
 //! the side-effect counts are observable across the kill.
 
@@ -23,18 +23,18 @@ use cargobike_core::step::HttpResponse;
 use cargobike_core::step::HttpService as HttpServiceTrait;
 use secrecy::SecretString;
 
-/// What the state file declares (T1's convergence facts).
+/// What the state file declares (the convergence facts).
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MockState {
-    /// Branch creations (one per release).
+    /// Branch creations (the one per release).
     pub branch_creates: u64,
-    /// Fused edit+commit runs (one per release).
+    /// Fused edit+commit runs (the one per release).
     pub commit_runs: u64,
     /// The CRs, keyed by head branch.
     pub change_requests: BTreeMap<String, CrSummary>,
     /// Branch SHAs per name.
     pub branches: BTreeMap<String, String>,
-    /// The files (branch/field -> last committed content).
+    /// The files (the branch/field -> last committed content).
     pub files: BTreeMap<String, String>,
 }
 
@@ -74,7 +74,7 @@ pub struct MockProvider {
 }
 
 impl MockProvider {
-    /// A provider over one scratch dir; the base branch pre-exists (a
+    /// A provider over one scratch dir; the base branch pre-exists (the a
     /// repository always has `main`).
     pub fn at(scratch: &str) -> Self {
         std::fs::create_dir_all(scratch).expect("scratch mkdir");

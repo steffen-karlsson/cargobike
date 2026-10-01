@@ -1,17 +1,17 @@
-//! The step registry (PRD 3.3, F-33..F-38): what a template's `uses:`
+//! The step registry: what a template's `uses:`
 //! resolves to, sidecar registration, and the step-type versions the
-//! snapshot records (F-37).
+//! snapshot records .
 //!
 //! Built-ins register at startup; sidecars register when the extension
 //! host brings their transports up. A template's `uses: name@version`
-//! chases one entry: unregistered names are compile errors (F-35).
+//! chases one entry: unregistered names are compile errors .
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use cargobike_core::step::StepType;
 
-/// Installed step types, keyed `name -> version -> instance` (F-36/F-37:
+/// Installed step types, keyed `name -> version -> instance` (/:
 /// versions side by side).
 #[derive(Clone, Default)]
 pub struct StepRegistry {
@@ -19,13 +19,13 @@ pub struct StepRegistry {
 }
 
 impl StepRegistry {
-    /// Empty registry (built-ins register at startup; 3.5..3.8).
+    /// Empty registry (the built-ins register at startup).
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Registers one versioned step instance; a later insert at the same
-    /// name@version replaces the earlier one (config reload semantics).
+    /// name@version replaces the earlier one (the config reload semantics).
     pub fn register(&mut self, step: Arc<dyn StepType>) {
         self.entries
             .entry(step.name().to_owned())
@@ -33,7 +33,7 @@ impl StepRegistry {
             .insert(step.version().to_owned(), step);
     }
 
-    /// Resolves a template's `uses: builtin/commit-files@1` (F-35).
+    /// Resolves a template's `uses: builtin/commit-files@1` .
     pub fn resolve(&self, uses: &str) -> Result<Arc<dyn StepType>, StepRegistryError> {
         let (name, version) = uses
             .split_once('@')
@@ -53,7 +53,7 @@ impl StepRegistry {
     }
 
     /// Every installed `name -> version` pair; the snapshot's
-    /// step_type_versions come from the resolved uses of one release (F-37).
+    /// step_type_versions come from the resolved uses of one release .
     pub fn installed(&self) -> Vec<(String, String)> {
         self.entries
             .iter()
@@ -65,21 +65,21 @@ impl StepRegistry {
             .collect()
     }
 
-    /// Whether any step of the base name is installed (control-step
+    /// Whether any step of the base name is installed (the control-step
     /// reservation: `wait:` names are interpreter-native, never registered).
     pub fn has_step_name(&self, name: &str) -> bool {
         self.entries.contains_key(name)
     }
 }
 
-/// Registry-resolution failures (F-35's diagnostics).
+/// Registry-resolution failures (the diagnostics).
 #[derive(Debug, thiserror::Error)]
 pub enum StepRegistryError {
     /// No `@version` suffix.
-    #[error("the step reference `{0}` must be `name@version` (F-35)")]
+    #[error("the step reference `{0}` must be `name@version`")]
     Malformed(String),
     /// The base name is not installed.
-    #[error("the step `{0}` is not installed (F-35)")]
+    #[error("the step `{0}` is not installed")]
     UnknownStep(String),
     /// The version is not installed; alternatives listed.
     #[error("the step `{name}` has no version {version}; installed: {installed:?}")]
@@ -93,7 +93,7 @@ pub enum StepRegistryError {
     },
 }
 
-/// Secrets privacy for debug (F-87): names appear, instances never.
+/// Secrets privacy for debug : names appear, instances never.
 impl std::fmt::Debug for StepRegistry {
     /// Hand-written Debug — a step registry's contents are code, printing
     /// them is noise; keep the surface summarised.
@@ -212,7 +212,7 @@ environments:
         let schemes = cargobike_core::version::VersionScheme::Opaque;
         assert!(crate::template::compile_with(template, &schemes, &registry()).is_err());
 
-        // Registered instead: the same template compiles (F-35 positive).
+        // Registered instead: the same template compiles (the positive).
         let mut installed = registry();
         installed.register(std::sync::Arc::new(CommitFilesDummy));
         crate::template::compile_with(template, &schemes, &installed)

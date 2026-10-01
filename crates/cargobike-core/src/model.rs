@@ -1,6 +1,6 @@
-//! The release model (PRD §5): the only root-level properties are
-//! `metadata`, `spec`, and `status` (F-1). Repositories are opaque
-//! [`RepoRef`]s (F-10); phases roll up on the server (F-6, F-7).
+//! The release model: the only root-level properties are
+//! `metadata`, `spec`, and `status` . Repositories are opaque
+//! [`RepoRef`]s ; phases roll up on the server .
 
 use std::collections::BTreeMap;
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// A release: metadata, spec, status — the only root-level properties (F-1).
+/// A release: metadata, spec, status — the only root-level properties .
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Release {
     /// Bookkeeping: IDs, timestamps, optimistic-concurrency version.
@@ -19,10 +19,10 @@ pub struct Release {
     pub status: ReleaseStatus,
 }
 
-/// Release bookkeeping (PRD §5.1).
+/// Release bookkeeping.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReleaseMetadata {
-    /// UUIDv7 — time-ordered and sortable (F-2).
+    /// UUIDv7 — time-ordered and sortable .
     pub id: Uuid,
     /// When the release was created.
     #[serde(with = "time::serde::rfc3339")]
@@ -30,17 +30,17 @@ pub struct ReleaseMetadata {
     /// When the release row was last updated.
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
-    /// Optimistic concurrency, honoured via `If-Match` (F-9).
+    /// Optimistic concurrency, honoured via `If-Match` .
     pub resource_version: u64,
     /// ID of the release this one was retried from, if any.
     pub retried_from: Option<Uuid>,
-    /// Free-form labels for filtering (F-142).
+    /// Free-form labels for filtering .
     pub labels: BTreeMap<String, String>,
-    /// Untrusted caller-supplied values (F-142).
+    /// Untrusted caller-supplied values .
     pub annotations: BTreeMap<String, String>,
 }
 
-/// One execution attempt of a release workflow (PRD §5.1).
+/// One execution attempt of a release workflow.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Attempt {
     /// DBOS workflow ID of the attempt.
@@ -52,41 +52,41 @@ pub struct Attempt {
     pub fork_from: Option<String>,
 }
 
-/// What to release (PRD §5.2). The registry, not the caller, resolves
-/// source and template (F-3, F-5, F-11).
+/// What to release. The registry, not the caller, resolves
+/// source and template .
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReleaseSpec {
     /// Application name in the registry.
     pub application: String,
     /// Opaque version string, validated by the application's
-    /// [`crate::version::VersionScheme`] (F-4).
+    /// [`crate::version::VersionScheme`] .
     pub version: String,
-    /// Where the version came from, resolved from the registry (F-11).
+    /// Where the version came from, resolved from the registry .
     pub source: RepoRef,
-    /// Registry-only template reference, `name@version` (F-5).
+    /// Registry-only template reference, `name@version` .
     pub template: String,
 }
 
-/// How the release is going (PRD §5.3).
+/// How the release is going.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReleaseStatus {
-    /// Physical release phase (F-6).
+    /// Physical release phase .
     pub phase: Phase,
-    /// Who started the release (F-83).
+    /// Who started the release .
     pub actor: Actor,
-    /// Generic CI context, `Some` when started from CI (F-83).
+    /// Generic CI context, `Some` when started from CI .
     pub ci: Option<CiContext>,
-    /// Interpreter workflow identity and pinned versions (F-37).
+    /// Interpreter workflow identity and pinned versions .
     pub workflow: WorkflowInfo,
-    /// Error detail when the release has failed (F-8).
+    /// Error detail when the release has failed .
     pub error: Option<crate::error::ReleaseError>,
-    /// Per-environment status array (F-7).
+    /// Per-environment status array .
     pub environments: Vec<EnvironmentStatus>,
-    /// Attempt records with workflow IDs and fork points (F-9).
+    /// Attempt records with workflow IDs and fork points .
     pub attempts: Vec<Attempt>,
 }
 
-/// Release phase (F-6).
+/// Release phase .
 #[derive(
     Clone,
     Copy,
@@ -119,7 +119,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// Terminal phases allow `release delete` (US-6, F-74).
+    /// Terminal phases allow `release delete` .
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -128,7 +128,7 @@ impl Phase {
     }
 }
 
-/// Who started the release: `(issuer, subject)` plus a display name (F-83).
+/// Who started the release: `(the issuer, subject)` plus a display name .
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Actor {
     /// OIDC issuer the auth token came from.
@@ -139,15 +139,15 @@ pub struct Actor {
     pub display_name: String,
 }
 
-/// Generic CI context (PRD §5.3) — verified values only. A generic type,
-/// never GitHub-specific; both are token claims (F-83).
+/// Generic CI context — verified values only. A generic type,
+/// never GitHub-specific; both are token claims .
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CiContext {
     /// provider of the CI system.
     pub provider: String,
     /// repository the run executed in.
     pub repository: String,
-    /// repository ID (immutable) the run executed in.
+    /// repository ID (the immutable) the run executed in.
     pub repository_id: String,
     /// workflow ref of the run.
     pub workflow_ref: String,
@@ -157,22 +157,22 @@ pub struct CiContext {
     pub run_url: String,
 }
 
-/// Interpreter workflow identity and pinned step-type versions (F-16, F-37).
+/// Interpreter workflow identity and pinned step-type versions .
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkflowInfo {
     /// Interpreter workflow name, always `"cargobike.interpret.v1"`.
     pub id: String,
-    /// Template the interpreter reads (registry-only, F-5).
+    /// Template the interpreter reads (the registry-only, ).
     pub template_name: String,
-    /// Template version, snapshotted (F-25).
+    /// Template version, snapshotted .
     pub template_version: String,
-    /// Content hash over template + inputs (F-16).
+    /// Content hash over template + inputs .
     pub template_hash: String,
     /// Built-in and sidecar step type versions pinned in the snapshot.
     pub step_type_versions: BTreeMap<String, String>,
 }
 
-/// Environment phase (F-7).
+/// Environment phase .
 #[derive(
     Clone,
     Copy,
@@ -209,7 +209,7 @@ pub enum EnvironmentPhase {
 }
 
 impl EnvironmentPhase {
-    /// Whether the environment has concluded (per F-7).
+    /// Whether the environment has concluded (the per ).
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -222,10 +222,10 @@ impl EnvironmentPhase {
     }
 }
 
-/// Status of one environment (F-7).
+/// Status of one environment .
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnvironmentStatus {
-    /// Environment name (registry key; lowercase shown here).
+    /// Environment name (the registry key; lowercase shown here).
     pub name: String,
     /// Environment phase.
     pub phase: EnvironmentPhase,
@@ -237,23 +237,23 @@ pub struct EnvironmentStatus {
     pub completed_at: Option<OffsetDateTime>,
 }
 
-/// A change request opened for a release (PRD §5.3), kept for verification
-/// and webhook correlation (F-63).
+/// A change request opened for a release, kept for verification
+/// and webhook correlation .
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChangeRequestRef {
     /// Provider CR number.
     pub number: u64,
     /// Provider web URL.
     pub url: String,
-    /// Target repo (opaque) used for verification and correlation.
+    /// Target repo (the opaque) used for verification and correlation.
     pub target_repo: crate::model::RepoRef,
-    /// Head SHA Cargobike committed (F-62).
+    /// Head SHA Cargobike committed .
     pub head_sha: String,
     /// Current CR state.
     pub state: CrState,
 }
 
-/// State of a change request (PRD §5.3).
+/// State of a change request.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::EnumString, strum::Display,
 )]
@@ -262,13 +262,13 @@ pub struct ChangeRequestRef {
 pub enum CrState {
     /// Open, awaiting merge.
     Open,
-    /// Closed without merging (⇒ `ApprovalRejected`, F-62).
+    /// Closed without merging (⇒ `ApprovalRejected`, ).
     Closed,
-    /// Merged into the base branch (F-62).
+    /// Merged into the base branch .
     Merged,
 }
 
-/// An opaque repository reference (F-10).
+/// An opaque repository reference .
 ///
 /// `id` is the provider's immutable ID, a string used for authorization.
 /// `path` may be declared as a verified label: the server checks it at
@@ -278,11 +278,11 @@ pub enum CrState {
 /// via `get_repo_path`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoRef {
-    /// Provider name, resolved against the provider registry (F-39).
+    /// Provider name, resolved against the provider registry .
     pub provider: String,
-    /// Immutable provider ID (GitHub repository ID) as a string (R6).
+    /// Immutable provider ID (GitHub repository ID) as a string .
     pub id: String,
-    /// Optional verified label, otherwise fetched at runtime (F-10).
+    /// Optional verified label, otherwise fetched at runtime .
     pub path: Option<String>,
 }
 

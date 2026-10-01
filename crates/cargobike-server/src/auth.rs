@@ -1,7 +1,7 @@
-//! Auth (PRD 2.5/2.6): claim matching (F-79), the authenticated caller
-//! (F-83/F-85), argon2 API-key verification with rotation, the
-//! localhost-only bootstrap key (F-86), create authorization
-//! (F-93/F-99a), and the Bearer middleware that protects routes.
+//! Auth: claim matching, the authenticated caller
+//! , argon2 API-key verification with rotation, the
+//! localhost-only bootstrap key , create authorization
+//! , and the Bearer middleware that protects routes.
 //! OIDC-token validation against JWKS is the next milestone; tokens
 //! answer `InvalidToken` until then.
 
@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::http::AppState;
 use crate::http::errors::ApiError;
 
-/// Claim matching (F-79): all listed claims must match (AND); string
-/// claims are glob by default (R7, literal_separator semantics);
+/// Claim matching : all listed claims must match (AND); string
+/// claims are glob by default (, literal_separator semantics);
 /// array-valued claims match if any element matches.
 pub fn claim_match(
     expected: &std::collections::BTreeMap<String, serde_json::Value>,
@@ -32,7 +32,7 @@ pub fn claim_match(
     Some(())
 }
 
-/// Matches one claim value: strings compare as globs (R7, with
+/// Matches one claim value: strings compare as globs (, with
 /// GlobBuilder's literal_separator so `*` stays inside one segment),
 /// everything else as exact JSON equality.
 fn value_match(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
@@ -48,43 +48,43 @@ fn value_match(actual: &serde_json::Value, expected: &serde_json::Value) -> bool
     }
 }
 
-/// The documented algorithm allowlist (F-78): reject `none` and `HS*`.
+/// The documented algorithm allowlist : reject `none` and `HS*`.
 pub const ALGORITHM_ALLOWLIST: [&str; 8] = [
     "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384",
 ];
 
-/// The authenticated caller (F-83's actor, F-85's key grants).
+/// The authenticated caller (the actor identity + the key's grants).
 #[derive(Clone, Debug)]
 pub struct AuthedCaller {
-    /// OIDC trust entry name (api keys: their own key name).
+    /// OIDC trust entry name (the api keys: their own key name).
     pub origin: String,
-    /// Token issuer (api keys: `"api-key"`).
+    /// Token issuer (the api keys: `"api-key"`).
     pub issuer: String,
     /// Token subject or the api-key name.
     pub subject: String,
     /// Presentable name.
     pub display_name: String,
-    /// Grants of the matched entry (F-99).
+    /// Grants of the matched entry .
     pub grants: Vec<String>,
-    /// `repository_id` claim when the token carried one (F-93).
+    /// `repository_id` claim when the token carried one .
     pub repository_id: Option<String>,
-    /// Bootstrap-key caller (never network-legal, F-86).
+    /// Bootstrap-key caller (the never network-legal, ).
     pub bootstrap: bool,
 }
 
 impl AuthedCaller {
-    /// Whether a grant covers the operation (F-99: exact or `"*"`).
+    /// Whether a grant covers the operation (the exact or `"*"`).
     pub fn has_grant(&self, grant: &str) -> bool {
         self.grants.iter().any(|g| g == "*" || g == grant)
     }
 
-    /// The `(issuer, subject)` pair distinct-approver counting uses (F-96).
+    /// The `(the issuer, subject)` pair distinct-approver counting uses .
     pub fn principal(&self) -> String {
         format!("{}/{}", self.issuer, self.subject)
     }
 }
 
-/// Auth failures map to the §10.2 vocabulary (F-103 problem details).
+/// Auth failures map to the vocabulary (the problem details).
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     /// No Authorization header at all.
@@ -113,8 +113,8 @@ impl AuthError {
     }
 }
 
-/// Constant-time argon2 verify across the stored hashes (F-85; two keys
-/// can be active at once for rotation). Expired keys (F-85's `expires`)
+/// Constant-time argon2 verify across the stored hashes (; two keys
+/// can be active at once for rotation). Expired keys ( `expires`)
 /// never verify: rotation is meant to dislodge them.
 fn verify_api_keys<'a>(
     entries: &'a [crate::config::ApiKeyEntry],
@@ -141,7 +141,7 @@ fn verify_api_keys<'a>(
 }
 
 /// An active key: `expires` (a date, or an RFC 3339 stamp) has not
-/// passed. Unparsable expires texts never validate (fail closed).
+/// passed. Unparsable expires texts never validate (the fail closed).
 fn entry_is_active(entry: &crate::config::ApiKeyEntry, now: &time::OffsetDateTime) -> bool {
     let Some(text) = &entry.expires else {
         return true;
@@ -161,16 +161,16 @@ fn entry_is_active(entry: &crate::config::ApiKeyEntry, now: &time::OffsetDateTim
     }
 }
 
-/// The auth context the middleware consults (F-77: JWKS cached, refetch
+/// The auth context the middleware consults ( JWKS cached, refetch
 /// on unknown `kid` is rate-limited by the moka TTL window). Trust
 /// entries come from the shared watch, so SIGHUP reloads reach auth too.
 pub struct AuthState {
-    /// The shared config source (F-129: hot reload swaps this).
+    /// The shared config source (the hot reload swaps this).
     config: tokio::sync::watch::Receiver<Arc<crate::config::Config>>,
-    /// The localhost bootstrap key hashed at startup (F-86: the PHC
+    /// The localhost bootstrap key hashed at startup (the PHC
     /// string persists in the process only; verification is argon2).
     bootstrap: Option<String>,
-    /// Cached JWKS documents keyed by URL (F-77).
+    /// Cached JWKS documents keyed by URL .
     jwks: moka::sync::Cache<String, Arc<jsonwebtoken::jwk::JwkSet>>,
     /// The outbound client used for JWKS fetches only.
     client: reqwest::Client,
@@ -186,7 +186,7 @@ fn rand_materials() -> [u8; 16] {
 use rand_core::RngCore as _;
 
 /// Constant-time argon2 verify against a startup-hashed at-rest value
-/// (the bootstrap key; F-86/A.5).
+/// (the bootstrap key; /).
 fn verify_password_at_rest(hashed: &str, presented: &str) -> bool {
     match argon2::password_hash::PasswordHash::new(hashed) {
         Ok(stored) => argon2::password_hash::PasswordVerifier::verify_password(
@@ -199,7 +199,7 @@ fn verify_password_at_rest(hashed: &str, presented: &str) -> bool {
     }
 }
 
-/// The bootstrap-key environment variables (F-86).
+/// The bootstrap-key environment variables .
 pub const BOOTSTRAP_ENV: &str = "CARGOBIKE_SERVER_BOOTSTRAP_API_KEY";
 pub const BOOTSTRAP_ENV_FILE: &str = "CARGOBIKE_SERVER_BOOTSTRAP_API_KEY_FILE";
 
@@ -226,11 +226,11 @@ impl AuthState {
         let plaintext = explicit.or(from_file);
         tracing::warn!(
             present = plaintext.is_some(),
-            "the bootstrap key is for first-time setup; localhost requests only (F-86)"
+            "the bootstrap key is for first-time setup; localhost requests only"
         );
         Ok(Self {
             config,
-            // F-86: hash AT startup; the plaintext does not survive past
+            // : hash AT startup; the plaintext does not survive past
             // this line (the argon2 PHC string is the kept form).
             bootstrap: plaintext.map(|plaintext| {
                 use argon2::password_hash::{PasswordHasher, SaltString};
@@ -257,12 +257,12 @@ impl AuthState {
         })
     }
 
-    /// The config as of now (cheap Arc clone; updated on every SIGHUP swap).
+    /// The config as of now (the cheap Arc clone; updated on every SIGHUP swap).
     pub fn config(&self) -> Arc<crate::config::Config> {
         self.config.borrow().clone()
     }
 
-    /// The JWKS document for an entry, cached by URL (F-77's `jwks_url`
+    /// The JWKS document for an entry, cached by URL ( `jwks_url`
     /// override when the issuer lacks usable discovery).
     async fn jwks_for(&self, url: &str) -> Result<Arc<jsonwebtoken::jwk::JwkSet>, AuthError> {
         if let Some(cached) = self.jwks.get(url) {
@@ -286,9 +286,9 @@ impl AuthState {
         Ok(fresh)
     }
 
-    /// Resolves a Bearer-credential caller: API keys first (F-85), then
-    /// the bootstrap key from loopback peers only (F-86), then OIDC
-    /// validation per trust entry (F-77..F-79).
+    /// Resolves a Bearer-credential caller: API keys first , then
+    /// the bootstrap key from loopback peers only , then OIDC
+    /// validation per trust entry (..).
     pub async fn resolve_bearer(
         &self,
         presented: &str,
@@ -308,7 +308,7 @@ impl AuthState {
         }
         if let Some(bootstrap_hash) = &self.bootstrap {
             let is_local = peer.map(|ip| ip.is_loopback()).unwrap_or(false);
-            // F-86: the bootstrap key was hashed at startup; the verify
+            // : the bootstrap key was hashed at startup; the verify
             // is the same argon2 path, constant against key material.
             if is_local && verify_password_at_rest(bootstrap_hash, presented) {
                 return Ok(AuthedCaller {
@@ -325,7 +325,7 @@ impl AuthState {
         self.decode_oidc(presented).await
     }
 
-    /// The OIDC validation path (F-77..F-79). The first trust entry whose
+    /// The OIDC validation path (..). The first trust entry whose
     /// full validation passes wins; a strictly expired token is surfaced
     /// as its own 401 code; claim mismatches surface 403.
     async fn decode_oidc(&self, token: &str) -> Result<AuthedCaller, AuthError> {
@@ -373,13 +373,13 @@ impl AuthState {
                 .as_deref()
                 .and_then(|skew| humantime::parse_duration(skew).ok())
                 .map(|skew| skew.as_secs())
-                .unwrap_or(60); // F-77's documented default skew is 60s
+                .unwrap_or(60); // documented default skew is 60s
             let decoded = match jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation)
             {
                 Ok(decoded) => decoded,
                 Err(error) => {
                     // Only a strictly expired token surfaces `TokenExpired`;
-                    // bad signature/audience stay `InvalidToken` (§10.2).
+                    // bad signature/audience stay `InvalidToken` .
                     tracing::warn!(entry = %entry.name, ?error, "failed to decode");
                     if *error.kind() == jsonwebtoken::errors::ErrorKind::ExpiredSignature {
                         expired = true;
@@ -388,8 +388,8 @@ impl AuthState {
                 }
             };
             let claims = decoded.claims;
-            // F-79's matching; F-80's unconstrained guard double-checks the
-            // config-validated entry (defence in depth at runtime).
+            // matching; unconstrained guard double-checks the
+            // config-validated entry (the defence in depth at runtime).
             if entry.claims.is_empty() && !entry.allow_unconstrained {
                 return Err(AuthError::InvalidToken);
             }
@@ -423,7 +423,7 @@ impl AuthState {
     }
 }
 
-/// Create authorization (F-93/F-99a): the caller needs `release:create`,
+/// Create authorization : the caller needs `release:create`,
 /// must be referenced by the application's `releasers`, and — when its
 /// token carries `repository_id` — the claim must match the registered
 /// source. Returns the matched application.
@@ -456,7 +456,7 @@ pub fn authorize_create<'a>(
 }
 
 /// The Bearer middleware: resolves the caller, inserts it as a request
-/// extension (handlers read `Extension<AuthedCaller>`), or answers
+/// extension (the handlers read `Extension<AuthedCaller>`), or answers
 /// 401/403 with the problem document.
 pub async fn require_auth(
     state: axum::extract::State<Arc<AppState>>,
@@ -484,7 +484,7 @@ pub async fn require_auth(
     }
 }
 
-/// Turns an auth failure into the RFC 9457 problem response (§10.2/F-103).
+/// Turns an auth failure into the RFC 9457 problem response .
 pub fn problem(path: &str, error: AuthError) -> axum::response::Response {
     let (status, slug) = match error {
         AuthError::MissingToken => (axum::http::StatusCode::UNAUTHORIZED, "missing-token"),
@@ -522,7 +522,7 @@ mod tests {
         assert!(claim_match(&expected, &claims).is_some());
         let wrong = json!({ "repository_owner_id": "999", "ref": "refs/tags/v1.2.3" });
         assert!(claim_match(&expected, &wrong).is_none());
-        // `*` does not cross separators (R7): nested refs need `**`.
+        // `*` does not cross separators : nested refs need `**`.
         let nested = json!("refs/tags/v1/2/3");
         assert!(claim_match(&expected, &nested).is_none());
     }

@@ -1,4 +1,4 @@
-//! GitHub webhook deliveries (F-51/F-46): signature verification
+//! GitHub webhook deliveries : signature verification
 //! (HMAC-SHA256 over the raw body, constant-time compare) and the
 //! normalisation of the events Cargobike acts on (`push` tag pushes,
 //! `pull_request` close).
@@ -7,13 +7,13 @@ use cargobike_core::provider::ProviderError;
 use cargobike_core::webhook::{NormalisedEvent, TagPush};
 use secrecy::ExposeSecret as _;
 
-/// The GitHub delivery headers Cargobike requires (F-51).
+/// The GitHub delivery headers Cargobike requires .
 const SIGNATURE_HEADER: &str = "x-hub-signature-256";
 const EVENT_HEADER: &str = "x-github-event";
 
 /// Verifies the delivery's signature against each configured secret and
 /// normalises the event. GitHub sends `sha256=<hex>`; matching any one
-/// secret accepts the delivery (rotation needs two secrets).
+/// secret accepts the delivery (the rotation needs two secrets).
 pub fn verify_and_normalise(
     headers: &[(&str, &str)],
     body: &[u8],
@@ -30,14 +30,14 @@ pub fn verify_and_normalise(
     let expected = signature
         .strip_prefix("sha256=")
         .ok_or_else(|| ProviderError::Request("the signature is not a sha256 digest".to_owned()))?;
-    // A.5/F-51: the compare is HMAC's verify_slice (constant-time on
+    // /: the compare is HMAC's verify_slice (the constant-time on
     // the raw tag bytes; the hex was only the delivery's encoding).
     let verified = secrets
         .iter()
         .any(|secret| digest_matches(secret.expose_secret().as_bytes(), body, expected));
     if !verified {
         // A failed verification is a transport rejection, not an event
-        // (F-51: the server answers 401 and FORGETS).
+        // (the server answers 401 and forgets).
         return Err(ProviderError::Request(
             "the delivery's signature does not verify".to_owned(),
         ));
@@ -50,10 +50,10 @@ pub fn verify_and_normalise(
     normalise(event_name, body)
 }
 
-/// F-46's normalisation over the delivery body.
+/// normalisation over the delivery body.
 pub fn normalise(event_name: &str, body: &[u8]) -> Result<NormalisedEvent, ProviderError> {
     match event_name {
-        // F-54: tag pushes as release candidates.
+        // : tag pushes as release candidates.
         "push" => {
             let delivery: serde_json::Value =
                 serde_json::from_slice(body).map_err(|failure| unreadable(&failure))?;
@@ -88,7 +88,7 @@ pub fn normalise(event_name: &str, body: &[u8]) -> Result<NormalisedEvent, Provi
                 provider_event: event_name.to_owned(),
             })
         }
-        // F-63: the event a release's wait was listening for.
+        // : the event a release's wait was listening for.
         "pull_request" => {
             let delivery: serde_json::Value =
                 serde_json::from_slice(body).map_err(|failure| unreadable(&failure))?;
@@ -120,7 +120,7 @@ pub fn normalise(event_name: &str, body: &[u8]) -> Result<NormalisedEvent, Provi
     }
 }
 
-/// The constant-time digest check (A.5): decode the expected tag then
+/// The constant-time digest check : decode the expected tag then
 /// verify slice-against-slice; an unparsable digest is a reject.
 fn digest_matches(secret_key: &[u8], body: &[u8], expected_hex: &str) -> bool {
     use hmac::Mac as _;
@@ -140,7 +140,7 @@ fn unreadable(failure: &serde_json::Error) -> ProviderError {
     ProviderError::Request(format!("the delivery body is unreadable: {failure}"))
 }
 
-/// A structured delivery missing a required field (F-51's boundary).
+/// A structured delivery missing a required field (the boundary).
 fn malformed(reason: impl std::fmt::Display) -> ProviderError {
     ProviderError::Request(format!("the delivery body is malformed: {reason}"))
 }
@@ -164,7 +164,7 @@ mod tests {
             ("X-GitHub-Event", "ping"),
         ];
         let verified = verify_and_normalise(&headers, body, &[secret("sekrit")]).expect("verifies");
-        // An unacted-on event normalises to Unrecognised (F-56).
+        // An unacted-on event normalises to Unrecognised .
         assert!(matches!(verified, NormalisedEvent::Unrecognised { .. }));
 
         let forged: [(&str, String); 2] = [

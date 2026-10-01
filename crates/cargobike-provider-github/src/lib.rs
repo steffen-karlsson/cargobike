@@ -1,7 +1,7 @@
-//! GitHub provider implementation for Cargobike (PRD §7.2, Phase 4).
+//! GitHub provider implementation for Cargobike (Phase 4).
 //!
 //! The octocrab-backed implementation of the provider contract: REST for
-//! repositories/PRs/commits, the App's JWT for installations (or a PAT),
+//! repositories/PRs/commits, the App's JWT for installations (the or a PAT),
 //! and the webhook's signature + normalisation at the transport edge.
 //! Every shape here is pinned against octocrab 0.54's source (get_ref,
 //! create_ref, create_tree with UTF-8 content, create_commit, update_ref
@@ -24,10 +24,10 @@ mod webhook;
 
 pub use webhook::verify_and_normalise;
 
-/// Either a GitHub App (§7.2's default; app-level JWT resolved to an
+/// Either a GitHub App (theirs default; app-level JWT resolved to an
 /// installation token at construction) or a personal token.
 pub enum GithubAuth {
-    /// A GitHub App identity; the installation is required (one
+    /// A GitHub App identity; the installation is required (the one
     /// installation of the App owns the repositories Cargobike drives).
     App {
         app_id: u64,
@@ -54,7 +54,7 @@ impl std::fmt::Debug for GithubAuth {
 }
 
 /// The octocrab-backed provider; the client is built once per instance
-/// (§6.7's isolation: clients live inside the step context's lifetime).
+/// (theirs isolation: clients live inside the step context's lifetime).
 #[derive(Clone)]
 pub struct GithubProvider {
     github: octocrab::Octocrab,
@@ -62,7 +62,7 @@ pub struct GithubProvider {
 
 impl GithubProvider {
     /// Builds the client with the auth's token lifecycle absorbed at
-    /// construction (octocrab caches installation tokens internally).
+    /// construction (the octocrab caches installation tokens internally).
     pub fn new(auth: &GithubAuth) -> Result<Self, ProviderError> {
         let mut builder = octocrab::Octocrab::builder();
         builder = match auth {
@@ -118,7 +118,7 @@ impl GithubProvider {
     }
 }
 
-/// The octocrab failure mapped to the provider vocabulary (F-48: a
+/// The octocrab failure mapped to the provider vocabulary (the a
 /// missing object is `NotFound`; upable-and-retried failures are
 /// `Request`).
 fn request_failure(failure: octocrab::Error) -> ProviderError {
@@ -214,7 +214,7 @@ impl Provider for GithubProvider {
             return Err(ProviderError::NotFound("edits"));
         }
         let handler = self.git_by_id(repo)?;
-        // The branch must exist and carry our parent (A1's fused branch+
+        // The branch must exist and carry our parent (the fused branch+
         // commit: the provider creates it when absent — the caller's
         // `branch_sha` find-then-create already covers the general case;
         // here a missing branch means we are mid-recovery of one).
@@ -238,7 +238,7 @@ impl Provider for GithubProvider {
         let parent = expected_parent.unwrap_or(&base_sha);
         if let Some(at) = expected_parent {
             if at != base_sha.as_str() {
-                // F-52: the branch moved under us; the caller's A1 retry
+                // : the branch moved under us; the caller's retry
                 // path decides (a new commit would silently betray the
                 // expected base).
                 return Err(ProviderError::Request(format!(
@@ -248,7 +248,7 @@ impl Provider for GithubProvider {
         }
         // Group the edits by file: one tree entry per file (the
         // same-file multi-edits previously raced as separate entries);
-        // values arrive provision-stamped. A1's replay no-op: when a
+        // values arrive provision-stamped. replay no-op: when a
         // file's edited document equals its current content, the
         // commit already answered - such files contribute no entry.
         let mut grouped: std::collections::BTreeMap<String, Vec<cargobike_core::provider::Edit>> =
@@ -286,7 +286,7 @@ impl Provider for GithubProvider {
             });
         }
         if entries.is_empty() {
-            // A1: the tree already matches; the branch tip is the answer.
+            // : the tree already matches; the branch tip is the answer.
             return Ok(CommitResult {
                 sha: base_sha,
                 branch: branch.to_owned(),
@@ -306,7 +306,7 @@ impl Provider for GithubProvider {
             .map_err(request_failure)?;
         handler
             .update_ref(&Reference::Branch(branch.to_owned()), commit.sha.clone())
-            .force(false) // a moved ref betrays the expected parent (F-52)
+            .force(false) // a moved ref betrays the expected parent
             .send()
             .await
             .map_err(request_failure)?;
@@ -349,7 +349,7 @@ impl Provider for GithubProvider {
             .send()
             .await
             .map_err(request_failure)?;
-        // F-49's labels apply separately (the create's belt-and-bed check).
+        // labels apply separately (the create's belt-and-bed check).
         if !labels.is_empty() {
             self.github
                 .issues(owner, name)
@@ -445,7 +445,7 @@ impl Provider for GithubProvider {
     }
 
     async fn update_branch(&self, _repo: &CoreRepoRef, _branch: &str) -> ProviderResult<()> {
-        // F-47's `builtin/update-branch@1` wires this in v1.1; the
+        // `builtin/update-branch@1` wires this in v1.1; the
         // contract's shape stays (the mock's implementation notes the
         // same boundary).
         Err(ProviderError::Unsupported)
@@ -505,7 +505,7 @@ impl Provider for GithubProvider {
             .into_iter()
             .map(|pull| change_request_shape(&pull))
             .collect::<Vec<_>>();
-        // The `next` link's `page=N` query parameter (no extra parsing
+        // The `next` link's `page=N` query parameter (the no extra parsing
         // dependency; the link lives on the Page).
         while let Some(next_number) =
             page.next
@@ -664,8 +664,8 @@ impl Provider for GithubProvider {
 }
 
 /// Whether the ruleset actively protects the trigger's tag pattern
-/// (F-82). The include list is GitHub glob syntax: `~ALL` covers every
-/// ref; otherwise inclusion requires the pattern EQUALS (breadth
+/// . The include list is GitHub glob syntax: `~ALL` covers every
+/// ref; otherwise inclusion requires the pattern EQUALS (the breadth
 /// comparison between globs is not well-defined, so the conservative
 /// false refuses over-broad cases — documented).
 fn pattern_protects(pattern: &str, ruleset: &octocrab::models::rulesets::Ruleset) -> bool {
@@ -681,7 +681,7 @@ fn pattern_protects(pattern: &str, ruleset: &octocrab::models::rulesets::Ruleset
         .any(|glob| glob == "~ALL" || glob == pattern)
 }
 
-/// The octocrab repository ID out of the immutable string id (F-10; R6).
+/// The octocrab repository ID out of the immutable string id .
 fn reference_id(repo: &CoreRepoRef) -> Result<octocrab::models::RepositoryId, ProviderError> {
     let parsed: u64 = repo.id.parse().map_err(|_| {
         ProviderError::Request(format!("the repo id `{}` is not a number", repo.id))

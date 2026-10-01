@@ -1,10 +1,10 @@
-//! The CEL expression engine (PRD 3.2, F-27, F-32).
+//! The CEL expression engine.
 //!
 //! Gates and `${{ ... }}` parameter expressions evaluate against one
-//! documented context (§6.3's note): `release.{id, application, version}`,
+//! documented context (theirs note): `release.{id, application, version}`,
 //! `env.{name, inputs}`, `inputs`, and `steps.<id>.outputs`. Pure
 //! functions only — the registrar refuses `now()`-style impurity by
-//! construction of what it registers (F-27).
+//! construction of what it registers .
 
 use semver::Version as SemVerVersion;
 
@@ -14,19 +14,19 @@ use std::{collections::BTreeMap, sync::Arc};
 use cel::Value;
 use cel::objects::{Key, Map as CelMap};
 
-/// Evaluation knobs (F-27: limits are configured; the server passes
+/// Evaluation knobs (the limits are configured; the server passes
 /// `engine.cel.*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Maximum expression length (F-27; config `engine.cel.max_expression_length`).
+    /// Maximum expression length (; config `engine.cel.max_expression_length`).
     pub max_expression_length: usize,
-    /// Cost approximation bound; fires on deep nesting (no runtime fuel
+    /// Cost approximation bound; fires on deep nesting (the no runtime fuel
     /// in cel 0.14 — see the note in `Options` at `docs/spike-dbos.md`'s
     /// follow-up list).
     pub max_depth: usize,
 }
 
-/// F-27's documented default limits (config overrides).
+/// documented default limits (the config overrides).
 pub const DEFAULT_LIMITS: Limits = Limits {
     max_expression_length: 4_096,
     max_depth: 24,
@@ -49,7 +49,7 @@ pub enum ExprError {
         /// Parser's message.
         cause: String,
     },
-    /// Execution failure (unknown identifiers, type errors).
+    /// Execution failure (the unknown identifiers, type errors).
     #[error("failed to evaluate `{expression}`: {cause}")]
     Execution {
         /// The violating source text.
@@ -62,20 +62,20 @@ pub enum ExprError {
     Limit(String),
 }
 
-/// The pieces one expression sees (§6.3's context contract).
+/// The pieces one expression sees (theirs context contract).
 #[derive(Default, Clone, Debug)]
 pub struct ExprContext {
     /// `release.{id, application, version}`.
     pub release: ReleaseFields,
     /// `env.{name, inputs}` — per-environment values.
     pub environment: EnvironmentFields,
-    /// Application-wide inputs (F-32a).
+    /// Application-wide inputs .
     pub inputs: BTreeMap<String, serde_json::Value>,
-    /// Recorded outputs of earlier steps, keyed by step ID (F-28).
+    /// Recorded outputs of earlier steps, keyed by step ID .
     pub steps: HashMap<String, serde_json::Value>,
 }
 
-/// `release.*` (F-32's context note: `release.{id, application, version}`).
+/// `release.*` (the context note: `release.{id, application, version}`).
 #[derive(Default, Clone, Debug)]
 pub struct ReleaseFields {
     /// The release ID.
@@ -91,15 +91,15 @@ pub struct ReleaseFields {
 pub struct EnvironmentFields {
     /// The environment name.
     pub name: String,
-    /// Per-environment inputs (F-32a).
+    /// Per-environment inputs .
     pub inputs: BTreeMap<String, serde_json::Value>,
 }
 
 impl ExprContext {
-    /// Builds the environment the Program evaluates against (F-32).
+    /// Builds the environment the Program evaluates against .
     pub fn cel_context(&self) -> cel::Context<'static> {
         let mut context = cel::Context::empty();
-        // `now()`-style impurity is not registered (F-27's promise);
+        // `now()`-style impurity is not registered (the promise);
         // Context::empty() keeps the pure core's functions only.
         for (name, value) in self.variables() {
             context.add_variable(name, value);
@@ -129,7 +129,7 @@ impl ExprContext {
             }
         });
         // The documented gates address the semver result as
-        // `semver(v).prerelease()` — CEL resolves `.prerelease()` as a
+        // `semver(the v).prerelease()` — CEL resolves `.prerelease()` as a
         // method whose receiver arrives via the magic `This` wrapper.
         for field in ["major", "minor", "patch", "prerelease"] {
             context.add_function(field, move |receiver: cel::extractors::This<cel::Value>| {
@@ -143,7 +143,7 @@ impl ExprContext {
         context
     }
 
-    /// The variable map of the expression contract (F-32/F-32a).
+    /// The variable map of the expression contract .
     fn variables(&self) -> HashMap<&'static str, Value> {
         let mut map = HashMap::new();
         let mut release: HashMap<Key, Value> = HashMap::new();
@@ -184,7 +184,7 @@ impl ExprContext {
         map
     }
 
-    /// Size and depth checks (F-27's limits; both configurable).
+    /// Size and depth checks (the limits; both configurable).
     fn check(&self, source: &str) -> Result<(), ExprError> {
         if source.len() > DEFAULT_LIMITS.max_expression_length {
             return Err(ExprError::Limit(format!(
@@ -232,7 +232,7 @@ fn json_to_cel(value: &serde_json::Value) -> Value {
     }
 }
 
-/// Evaluates a `when` gate to its boolean (F-26/F-27).
+/// Evaluates a `when` gate to its boolean .
 pub fn eval_gate(source: &str, context: &ExprContext) -> Result<bool, ExprError> {
     context.check(source)?;
     let program = cel::Program::compile(source).map_err(|error| ExprError::Parse {
@@ -254,7 +254,7 @@ pub fn eval_gate(source: &str, context: &ExprContext) -> Result<bool, ExprError>
     }
 }
 
-/// Evaluates a `${{ ... }}`-wrapped parameter value typed (F-32).
+/// Evaluates a `${{ ... }}`-wrapped parameter value typed .
 pub fn eval_param(wrapped: &str, context: &ExprContext) -> Result<serde_json::Value, ExprError> {
     let expression = unwrap_expression(wrapped).ok_or_else(|| ExprError::NotWrapped {
         expression: wrapped.to_owned(),
@@ -276,7 +276,7 @@ pub fn eval_param(wrapped: &str, context: &ExprContext) -> Result<serde_json::Va
     })
 }
 
-/// Slices the inside of a `${{ ... }}`-wrapper (F-32's framing).
+/// Slices the inside of a `${{ ... }}`-wrapper (the framing).
 fn unwrap_expression(wrapped: &str) -> Option<&str> {
     let trimmed = wrapped.trim();
     let inner = trimmed.strip_prefix("${{")?;
@@ -286,7 +286,7 @@ fn unwrap_expression(wrapped: &str) -> Option<&str> {
 
 /// Evaluates a parameter object: any string that is wholly `${{ ... }}`
 /// becomes its typed value; mixed strings substitute each `${{ ... }}`
-/// span interpolated as text (F-28's `with:` and F-147's placeholders).
+/// span interpolated as text ( `with:` and placeholders).
 pub fn interpolate_params(
     params: &serde_json::Value,
     context: &ExprContext,
@@ -322,7 +322,7 @@ pub fn interpolate_params(
 }
 
 /// Mixed-string substitution: each `${{ ... }}` span resolves typed then
-/// renders text (integers without decimals; lists/objects JSON).
+/// renders text (the integers without decimals; lists/objects JSON).
 fn replace_spans(text: &str, context: &ExprContext, out: &mut String) -> Result<(), ExprError> {
     let mut rest = text;
     while let Some(open) = rest.find("${{") {

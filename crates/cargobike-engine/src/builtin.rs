@@ -1,8 +1,7 @@
-//! The four built-in action steps (PRD 3.5..3.8, F-35, F-41..F-42,
-//! A1's idempotency column). Each is stateless, delegates provider calls
-//! and returns the F-28 output schema later steps reference.
+//! The four built-in action steps. Each is stateless, delegates provider calls
+//! and returns the output schema later steps reference.
 //!
-//! §6.7's isolation rules: provider clients are constructed INSIDE the
+//! 's isolation rules: provider clients are constructed INSIDE the
 //! step context lifetime; nothing escapes step scope.
 
 use std::sync::Arc;
@@ -16,9 +15,9 @@ use cargobike_core::provider::{Edit, Provider, ProviderError};
 use cargobike_core::step::{EnvRef, StepContext, StepError, StepOutput, StepType};
 use secrecy::ExposeSecret as _;
 
-/// `builtin/commit-files@1` (F-41, A1): branch then commit fused —
+/// `builtin/commit-files@1` : branch then commit fused —
 /// "already exists at the expected SHA" is success; the edits list is
-/// structural (never text substitution) and the resolved file paths are
+/// structural (the never text substitution) and the resolved file paths are
 /// confined by the registry's globs at provision time.
 pub struct CommitFiles;
 
@@ -43,7 +42,7 @@ impl StepType for CommitFiles {
         let provider = provider_from_ctx(ctx, &repo)?;
         let branch = crate::names::branch_name(release, env);
 
-        // A1: create the branch once; a recovered attempt finds its SHA.
+        // : create the branch once; a recovered attempt finds its SHA.
         let branch_tip = match provider.branch_sha(&repo, &branch).await {
             Ok(sha) => sha,
             Err(ProviderError::NotFound(_)) => {
@@ -61,8 +60,8 @@ impl StepType for CommitFiles {
             Err(other) => return Err(step_failure(other)),
         };
 
-        // F-35's fused half: edits + commit against the branch tip we just
-        // established (A1's expected-parent; a replay run that already
+        // fused half: edits + commit against the branch tip we just
+        // established (the expected-parent; a replay run that already
         // committed will see the committed content — the provider's no-op
         // contract answers the same tip).
         if env.edits.is_empty() {
@@ -91,7 +90,7 @@ impl StepType for CommitFiles {
     }
 }
 
-/// `builtin/change-request@1` (F-48, A1): an open CR with this head
+/// `builtin/change-request@1` : an open CR with this head
 /// branch returns instead of a second.
 pub struct ChangeRequest;
 
@@ -124,7 +123,7 @@ impl StepType for ChangeRequest {
             .unwrap_or("Automated release change request.")
             .to_owned();
         let labels = param_labels(params);
-        // A1: find by head branch first.
+        // : find by head branch first.
         let found = provider
             .find_change_request_by_head(&repo, head)
             .await
@@ -140,7 +139,7 @@ impl StepType for ChangeRequest {
     }
 }
 
-/// The F-28 output schema for CR steps (`steps.<id>.outputs.{...}`).
+/// The output schema for CR steps (`steps.<id>.outputs.{...}`).
 fn cr_output(created: &cargobike_core::provider::ChangeRequest) -> JsonValue {
     json!({
         "number": created.number,
@@ -154,9 +153,9 @@ fn cr_output(created: &cargobike_core::provider::ChangeRequest) -> JsonValue {
     })
 }
 
-/// `builtin/http-call@1` (F-144): the SSRF-guarded client issues the
+/// `builtin/http-call@1` : the SSRF-guarded client issues the
 /// request; headers carry `{ secret: <name> }` references resolved by
-/// the engine so the value never enters a step output (F-146, F-120).
+/// the engine so the value never enters a step output .
 pub struct HttpCall;
 
 #[async_trait]
@@ -211,7 +210,7 @@ impl StepType for HttpCall {
         };
         let response = ctx.http.send(request).await.map_err(http_failure)?;
         if response.status >= 500 {
-            // Server-side failures are transient (F-35's retry counts them).
+            // Server-side failures are transient (the retry counts them).
             return Err(StepError::Transient(format!(
                 "http {method} responded {}",
                 response.status
@@ -232,7 +231,7 @@ impl StepType for HttpCall {
     }
 }
 
-/// `builtin/set-labels@1` (F-35): adds labels to a change request.
+/// `builtin/set-labels@1` : adds labels to a change request.
 pub struct SetLabels;
 
 #[async_trait]
@@ -264,7 +263,7 @@ impl StepType for SetLabels {
     }
 }
 
-/// Registers the four built-ins (3.3's startup install).
+/// Registers the four built-ins (the startup's install).
 pub fn register_builtins(registry: &mut crate::steps::StepRegistry) {
     registry.register(Arc::new(CommitFiles));
     registry.register(Arc::new(ChangeRequest));
@@ -272,7 +271,7 @@ pub fn register_builtins(registry: &mut crate::steps::StepRegistry) {
     registry.register(Arc::new(SetLabels));
 }
 
-/// The step's provider (F-39: resolved by `RepoRef.provider`).
+/// The step's provider (the resolved by `RepoRef.provider`).
 fn provider_from_ctx(ctx: &StepContext, repo: &RepoRef) -> Result<Arc<dyn Provider>, StepError> {
     ctx.providers
         .resolve(repo)
@@ -285,7 +284,7 @@ fn provider_from_ctx(ctx: &StepContext, repo: &RepoRef) -> Result<Arc<dyn Provid
 fn env_ref_missing() -> StepError {
     StepError::Failed {
         code: STEP_FAILED.to_owned(),
-        message: "the environment has no target repo (F-32a)".to_owned(),
+        message: "the environment has no target repo".to_owned(),
     }
 }
 
@@ -361,7 +360,7 @@ fn http_failure(failure: cargobike_core::provider::HttpError) -> StepError {
     }
 }
 
-/// The F-2A provider's edit construction helper (tests use it).
+/// The F-2A provider's edit construction helper (the tests use it).
 pub fn edit(file: &str, field: &str, value: JsonValue) -> Edit {
     Edit {
         file: file.to_owned(),

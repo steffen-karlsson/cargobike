@@ -1,5 +1,5 @@
-//! Lease behaviour (A2/F-71/F-73) against a real database. Requires
-//! `CARGOBIKE_TEST_DATABASE_URL` (skips otherwise).
+//! Lease behaviour against a real database. Requires
+//! `CARGOBIKE_TEST_DATABASE_URL` (the skips otherwise).
 
 #[allow(clippy::print_stderr, clippy::expect_used)]
 #[tokio::test(flavor = "current_thread")]
@@ -58,7 +58,7 @@ async fn test_acquire_release_transfer_behaviour() {
             other_version: Some("1.2.4".to_owned())
         }
     );
-    // F-72's compare input is readable for the supersede guard.
+    // compare input is readable for the supersede guard.
     assert_eq!(
         repository
             .version_of("lease-test", "preview")
@@ -67,7 +67,7 @@ async fn test_acquire_release_transfer_behaviour() {
         Some("1.2.4".to_owned())
     );
 
-    // F-73's atomic supersede transfer: one statement, no window.
+    // atomic supersede transfer: one statement, no window.
     assert_eq!(
         repository
             .transfer("lease-test", "preview", first, second, Some("1.3.0"))

@@ -1,6 +1,6 @@
-//! The CLI's server-facing integration (task 4.9's CLI half): the
+//! The CLI's server-facing integration: the
 //! client verbs against a wiremock server, plus the binary's
-//! end-to-end behaviour (render + exit vocabulary) via assert_cmd.
+//! end-to-end behaviour (the render + exit vocabulary) via assert_cmd.
 //! The GitHub lifecycle's wiremock half lives with 5.2's webhook chain.
 
 use cargobike_cli::client::Client;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-/// The document the mock's server hands out (F-1's root shape).
+/// The document the mock's server hands out (the document's root shape).
 fn release_document(id: &str) -> serde_json::Value {
     serde_json::json!({
         "metadata": {

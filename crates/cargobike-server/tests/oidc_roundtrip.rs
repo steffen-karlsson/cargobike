@@ -13,14 +13,14 @@ fn b64url(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// The paths of the generated RSA key (kept for the whole test) and its
+/// The paths of the generated RSA key (the kept for the whole test) and its
 /// b64url modulus from the DER data.
 struct RsaKeypair {
     key_path: std::path::PathBuf,
     modulus_b64: String,
 }
 
-/// Generates an RSA-2048 keypair via the CLI openssl (macOS and CI
+/// Generates an RSA-2048 keypair via the CLI openssl (the macOS and CI
 /// runners ship it) and extracts the modulus for the JWKS.
 #[allow(clippy::expect_used, clippy::print_stderr)]
 fn generate_rsa() -> RsaKeypair {
@@ -159,7 +159,7 @@ async fn test_oidc_token_passes_and_enforces_claims() {
         "ref": "refs/tags/v1.0.0", "iat": now, "nbf": now.saturating_sub(5), "exp": now + 600,
     });
 
-    // A matching token: 202 + Location (creates via OIDC, US-1/F-93/F-99a).
+    // A matching token: 202 + Location (the creates via OIDC, //).
     let good = craft_jwt(&keypair.key_path, claims_base.clone(), "test-kid");
     let response = client
         .post(format!("{issuer}/api/v1/releases"))
@@ -176,7 +176,7 @@ async fn test_oidc_token_passes_and_enforces_claims() {
     );
     assert!(response.headers().get("Location").is_some());
 
-    // whoami reports the resolved identity and grants (F-106, US-1).
+    // whoami reports the resolved identity and grants .
     let response = client
         .get(format!("{issuer}/api/v1/whoami"))
         .header("Authorization", format!("Bearer {good}"))
@@ -194,7 +194,7 @@ async fn test_oidc_token_passes_and_enforces_claims() {
     );
 
     // A token with claims outside the entry: signature VALID, claims
-    // mismatch ⇒ 403 ForbiddenResource (F-79's gate).
+    // mismatch ⇒ 403 ForbiddenResource (the gate).
     let mismatched = craft_jwt(
         &keypair.key_path,
         serde_json::json!({
@@ -213,7 +213,7 @@ async fn test_oidc_token_passes_and_enforces_claims() {
         .expect("http");
     assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
 
-    // A token for another audience: ⇒ 401 InvalidToken (F-77's aud check).
+    // A token for another audience: ⇒ 401 InvalidToken (the audience check).
     let wrong_aud = craft_jwt(
         &keypair.key_path,
         serde_json::json!({
@@ -235,7 +235,7 @@ async fn test_oidc_token_passes_and_enforces_claims() {
     assert_eq!(body["code"], "InvalidToken");
 
     // A token whose repository_id does not match the application's source
-    // (F-93) still satisfies entry claims? repository_id "999" matching
+    // still satisfies entry claims? repository_id "999" matching
     // owner claim "123456" & source mismatch → the create refuses.
     let spoofed_repo = craft_jwt(
         &keypair.key_path,
@@ -257,11 +257,11 @@ async fn test_oidc_token_passes_and_enforces_claims() {
     assert_eq!(
         status,
         reqwest::StatusCode::FORBIDDEN,
-        "F-93 repo id mismatch refuses; body: {:?}",
+        "the repository claim must match; body: {:?}",
         response.text().await
     );
 
-    // A differently-signed token: ⇒ 401 InvalidToken (F-77's signature
+    // A differently-signed token: ⇒ 401 InvalidToken (the signature
     // check). Runs last: the second keypair overwrites the same pem path,
     // so anything signed after this line uses the foreign key.
     let other = generate_rsa();

@@ -1,4 +1,4 @@
-//! The server client (PRD §5's API surface, F-145's resolution + F-98's
+//! The server client (the API surface's resolution +
 //! refusals materialised at the call site): one bearer token per auth
 //! shape, RFC 9457 problem details on failure.
 
@@ -24,7 +24,7 @@ impl std::fmt::Debug for Client {
 /// Why a call failed; the CLI prints the message + exit code.
 #[derive(Debug, thiserror::Error)]
 pub enum CallError {
-    /// The auth shape could not resolve (file/env/exec).
+    /// The auth shape could not resolve (the file/env/exec).
     #[error("{0}")]
     Auth(String),
     /// The HTTP machinery refused (TLS, DNS, timeout).
@@ -43,7 +43,7 @@ pub enum CallError {
 }
 
 impl Client {
-    /// Builds the resolved target into a client (F-98's refusal already
+    /// Builds the resolved target into a client (the refusal already
     /// ran).
     pub fn new(resolved: &Resolved) -> Result<Self, CallError> {
         let mut http = reqwest::Client::builder()
@@ -140,7 +140,7 @@ impl Client {
     }
 }
 
-/// The bearer token per auth shape (F-93's four surfaces).
+/// The bearer token per auth shape (the four surfaces).
 fn bearer_for(auth: &AuthConfig) -> Result<Option<SecretString>, CallError> {
     Ok(match auth {
         AuthConfig::None | AuthConfig::GithubActions { .. } => None,
@@ -172,7 +172,7 @@ fn bearer_for(auth: &AuthConfig) -> Result<Option<SecretString>, CallError> {
     })
 }
 
-/// The `{ file }`/`{ env }` materialisation (F-146's CLI half).
+/// The `{ file }`/`{ env }` materialisation (the CLI's half).
 fn materialise_ref(reference: &SecretRef) -> Result<SecretString, CallError> {
     match reference {
         SecretRef::File { file } => {
@@ -198,7 +198,7 @@ fn pem_bytes(path: &std::path::Path) -> Result<Vec<u8>, CallError> {
         .map_err(|failure| CallError::Auth(format!("the CA bundle refused: {failure}")))
 }
 
-/// The client failure's exit code (§6.2's client vocabulary).
+/// The client failure's exit code (theirs client vocabulary).
 pub fn exit_code(failure: &CallError) -> i32 {
     match failure {
         CallError::Auth(_) | CallError::Unauthorized(_) => 10,
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_bearer_for_each_auth_shape() {
-        // None && github-actions: no bearer until the 4.7 exchange.
+        // None and github-actions: no bearer until the exchange.
         assert!(bearer_for(&AuthConfig::None).unwrap().is_none());
         assert!(
             bearer_for(&AuthConfig::GithubActions { audience: None })

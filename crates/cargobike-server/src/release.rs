@@ -1,6 +1,6 @@
-//! Release service (PRD 2.4): idempotent create, list with cursor
-//! pagination (F-101), get, cancel (F-60) and terminal-only delete (US-6)
-//! under optimistic concurrency (If-Match / resource_version, F-9).
+//! Release service: idempotent create, list with cursor
+//! pagination , get, cancel and terminal-only delete
+//! under optimistic concurrency (If-Match / resource_version, ).
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -12,7 +12,7 @@ pub struct ReleaseRepository {
     pool: PgPool,
 }
 
-/// Row storage shape (non-macro query; sqlx 0.9 needs a live DATABASE_URL
+/// Row storage shape (the non-macro query; sqlx 0.9 needs a live DATABASE_URL
 /// or a prepared cache for the macros, so keep the repository macro-free).
 #[derive(sqlx::FromRow)]
 struct Row {
@@ -43,8 +43,8 @@ impl ReleaseRepository {
         Self { pool }
     }
 
-    /// Inserts when no non-terminal release for (application, version)
-    /// exists (F-109); `Ok(Some(existing))` names the active duplicate —
+    /// Inserts when no non-terminal release for (the application, version)
+    /// exists ; `Ok(Some(the existing))` names the active duplicate —
     /// the HTTP layer answers 200 with it; a fresh row answers 202.
     pub async fn create(
         &self,
@@ -105,7 +105,7 @@ impl ReleaseRepository {
             .ok_or_else(|| RepositoryError::NotFound(id.to_string()))
     }
 
-    /// Updates the phase (cancel; F-60); honours resource_version when given.
+    /// Updates the phase (the cancel; ); honours resource_version when given.
     pub async fn set_phase(
         &self,
         id: &Uuid,
@@ -131,7 +131,7 @@ impl ReleaseRepository {
         Ok(())
     }
 
-    /// Deletes a terminal release (US-6); the event log is retained.
+    /// Deletes a terminal release ; the event log is retained.
     pub async fn delete_terminal(&self, id: &Uuid) -> Result<(), RepositoryError> {
         let result = sqlx::query("DELETE FROM releases WHERE id = $1 AND terminal = TRUE")
             .bind(id)
@@ -144,8 +144,8 @@ impl ReleaseRepository {
         Ok(())
     }
 
-    /// Lists releases with the §5.3 filters, newest first, cursor over
-    /// UUIDv7 ids (F-101: limit 1-500, `after`/`before`).
+    /// Lists releases with the filters, newest first, cursor over
+    /// UUIDv7 ids (the limit: 1-500, `after`/`before`).
     #[allow(clippy::too_many_arguments)] // the query surface is the query surface
     pub async fn list(
         &self,

@@ -1,5 +1,5 @@
-//! The Cargobike CLI binary (PRD §9, tasks 4.5-4.8): the context machine
-//! plus the release lifecycle (§5.3's commands). No database
+//! The Cargobike CLI binary: the context machine
+//! plus the release lifecycle (theirs commands). No database
 //! dependencies; the server's API is the only peer.
 
 use std::path::PathBuf;
@@ -14,16 +14,16 @@ use uuid::Uuid;
 #[derive(Parser, Clone)]
 #[command(name = "cargobike", about = "Talk to a Cargobike release server")]
 struct Cli {
-    /// The config file (F-124: `CARGOBIKE_CONFIG`,
+    /// The config file ( `CARGOBIKE_CONFIG`,
     /// `~/.config/cargobike/config.yaml`).
     #[arg(long, global = true, env = "CARGOBIKE_CONFIG")]
     config: Option<String>,
 
-    /// The server base URL (F-145: the flag overrides the context).
+    /// The server base URL (the flag overrides the context).
     #[arg(long, global = true, env = "CARGOBIKE_URL")]
     url: Option<String>,
 
-    /// Bless plain `http://` for development hosts (F-98).
+    /// Bless plain `http://` for development hosts .
     #[arg(long, global = true)]
     allow_http: bool,
 
@@ -32,7 +32,7 @@ struct Cli {
     #[arg(long, global = true, env = "CARGOBIKE_CONTEXT")]
     context: Option<String>,
 
-    /// The output format (F-145: the flag overrides the defaults).
+    /// The output format (the flag overrides the defaults).
     #[arg(short = 'o', long, global = true)]
     output: Option<OutputFormat>,
 
@@ -42,12 +42,12 @@ struct Cli {
 
 #[derive(Clone, Subcommand)]
 enum Command {
-    /// Named server contexts (§9.7).
+    /// Named server contexts .
     Context {
         #[command(subcommand)]
         command: ContextCommand,
     },
-    /// The release lifecycle (§5.3, US-1..US-6).
+    /// The release lifecycle (, ..).
     Release {
         #[command(subcommand)]
         command: ReleaseCommand,
@@ -58,7 +58,7 @@ enum Command {
 enum ContextCommand {
     /// Lists the config's contexts (the current one marked).
     List,
-    /// Switches the current context (rewrites the config file).
+    /// Switches the current context (the rewrites the config file).
     Use {
         /// The context name to activate.
         name: String,
@@ -67,22 +67,22 @@ enum ContextCommand {
 
 #[derive(Clone, Subcommand)]
 enum ReleaseCommand {
-    /// Creates a release (US-1; the server answers 202 or the duplicate's
-    /// 200 with the existing release, F-109).
+    /// Creates a release (; the server answers 202 or the duplicate's
+    /// 200 with the existing release, ).
     Create {
-        /// The application name (its allowlist decides who may release).
+        /// The application name (the its allowlist decides who may release).
         application: String,
-        /// The release version (its template's versioning scheme).
+        /// The release version (the its template's versioning scheme).
         version: String,
-        /// Wait until the release reaches a terminal phase (coarse
-        /// polling until 4.7's SSE watch).
+        /// Wait until the release reaches a terminal phase (the coarse
+        /// polling; the SSE watch replaces this later).
         #[arg(long)]
         wait: bool,
-        /// The wait's cap (humantime, e.g. `30m`); exit 3 on expiry.
+        /// The wait's cap (the humantime, e.g. `30m`); exit 3 on expiry.
         #[arg(long)]
         timeout: Option<String>,
     },
-    /// Lists releases (F-101's cursor paging; newest first).
+    /// Lists releases (the cursor paging; newest first).
     List {
         /// Filter by the application name.
         #[arg(short = 'a', long)]
@@ -93,7 +93,7 @@ enum ReleaseCommand {
         /// Filter by the version string.
         #[arg(long)]
         version: Option<String>,
-        /// The page size (1-500, F-101).
+        /// The page size (1-500, ).
         #[arg(long, default_value = "50")]
         limit: u32,
     },
@@ -102,13 +102,13 @@ enum ReleaseCommand {
         /// The release ID (UUIDv7).
         id: Uuid,
     },
-    /// Cancels a pending release (US-6; the server's cleanup starts).
+    /// Cancels a pending release (; the server's cleanup starts).
     Cancel {
         /// The release ID (UUIDv7).
         id: Uuid,
     },
     /// Deletes a terminal release's row (the event log is retained
-    /// F-114); terminal-only releases.
+    /// ); terminal-only releases.
     Delete {
         /// The release ID (UUIDv7).
         id: Uuid,
@@ -167,7 +167,7 @@ fn load_config(cli: &Cli) -> Result<config::ConfigFile, (i32, String)> {
     config::load(&path).map_err(|failure| (1, failure.0))
 }
 
-/// F-145's walk with the `-o` output overriding the defaults.
+/// walk with the `-o` output overriding the defaults.
 fn resolve_target(config: &config::ConfigFile, cli: &Cli) -> Result<Resolved, (i32, String)> {
     let resolved = config::resolve(config, cli.url.clone(), cli.allow_http, cli.context.clone())
         .map_err(|failure| (1, failure.0))?;
@@ -180,7 +180,7 @@ fn resolve_target(config: &config::ConfigFile, cli: &Cli) -> Result<Resolved, (i
     })
 }
 
-/// The (exit, message) pair a client failure becomes.
+/// The (the exit, message) pair a client failure becomes.
 fn call_failure(failure: CallError) -> (i32, String) {
     (exit_code(&failure), failure.to_string())
 }
@@ -202,7 +202,7 @@ fn home_dir() -> PathBuf {
         })
 }
 
-/// The verbs (§5.3's shapes: flat bodies; the problem details surfaced).
+/// The verbs (theirs shapes: flat bodies; the problem details surfaced).
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 async fn release_verb(command: ReleaseCommand, client: &Client) -> Result<i32, (i32, String)> {
     let url = "/api/v1/releases".to_owned();
@@ -313,7 +313,7 @@ async fn poll_until_terminal(
     }
 }
 
-// A clippy-friendly shim around std::time::Instant (no clock trait).
+// A clippy-friendly shim around std::time::Instant (the no clock trait).
 fn current_time() -> Instant {
     Instant::now()
 }
