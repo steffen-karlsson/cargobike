@@ -7,11 +7,14 @@
 //! Webhooks are the latency optimisation; the reconciler is the
 //! correctness floor (F-55).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use cargobike_core::provider::Provider as _ProviderContract;
 use cargobike_core::registry::ProviderRegistry;
+use uuid::Uuid;
 
 use crate::signals::{InterpreterError, Signal, merge_signal_key, merge_topic};
 
@@ -50,12 +53,60 @@ pub mod humantime_serde_wrap {
     }
 }
 
-/// The reconciler's services (providers + the correlation read side).
+/// F-69's release scan seam: the sweep joins only releases that are
+/// *currently* `PendingApproval` — a signal to a finished release finds
+/// no listener, but the provider calls would be waste (F-55's budget).
+/// The server's release repository backs this seam in production; tests
+/// mount the in-memory fixture.
+#[async_trait]
+pub trait PendingReleaseSource: Send + Sync {
+    /// The release IDs in the PendingApproval phase (F-101's cursor:
+    /// newest first, IDs smaller than the cursor).
+    async fn pending_approval_ids(
+        &self,
+        batch_size: u32,
+        cursor: Option<Uuid>,
+    ) -> Result<Vec<Uuid>, String>;
+}
+
+/// The test fixture for the scan seam (release ids in a set).
+pub struct InMemoryPendingReleaseSource {
+    existing_id_set: std::sync::RwLock<HashSet<Uuid>>,
+}
+
+impl InMemoryPendingReleaseSource {
+    /// The seam over the named pending set.
+    pub fn fixture(ids: &[Uuid]) -> Arc<dyn PendingReleaseSource + Send + Sync> {
+        Arc::new(Self {
+            existing_id_set: std::sync::RwLock::new(ids.iter().copied().collect()),
+        })
+    }
+}
+
+#[async_trait]
+impl PendingReleaseSource for InMemoryPendingReleaseSource {
+    async fn pending_approval_ids(
+        &self,
+        batch_size: u32,
+        _cursor: Option<Uuid>,
+    ) -> Result<Vec<Uuid>, String> {
+        let read = self.existing_id_set.read();
+        let Ok(set) = read else {
+            return Err("the fixture set is poisoned".to_owned());
+        };
+        Ok(set.iter().copied().take(batch_size as usize).collect())
+    }
+}
+
+/// The reconciler's services (providers, the correlation read side, the
+/// release scan).
 pub struct ReconcilerServices {
     /// Providers (F-39).
     pub providers: Arc<ProviderRegistry>,
     /// CR correlation rows (F-63's sweep input).
     pub correlations: Arc<crate::correlation::CorrelationRepository>,
+    /// The PendingApproval scan (F-69's join through this seam).
+    pub releases: Arc<dyn PendingReleaseSource + Send + Sync>,
 }
 
 /// Registers the reconciler BEFORE launch (F-15's registry snapshot).
@@ -76,21 +127,44 @@ async fn loop_fn(
 ) -> dbos::Result<(), InterpreterError> {
     loop {
         let _slept = dbos::sleep::<InterpreterError>(args.interval).await;
-        let swept = sweep(&services).await.unwrap_or_else(|failure| {
-            tracing::warn!(%failure, "reconcile sweep failed; the next sweep retries");
-            0
-        });
+        let swept = sweep(&services, args.batch_size)
+            .await
+            .unwrap_or_else(|failure| {
+                tracing::warn!(%failure, "reconcile sweep failed; the next sweep retries");
+                0
+            });
         tracing::debug!(corrected = swept, "reconcile sweep complete");
     }
 }
 
-/// One sweep: find `PendingApproval` releases, check their CR states, and
-/// send the signals only (F-67: never writes release status). The release
-/// scans + ETag/GraphQL batching (F-69) wire up with the release service;
-/// this build ships the sweep's scan + send halves via a direct SQL read
-/// of the shared releases table (A.14: the engine holds sqlx).
-async fn sweep(services: &ReconcilerServices) -> Result<u32, InterpreterError> {
+/// One sweep: join the PendingApproval releases, then check their CR
+/// states and send the signals only (F-67: never writes release status).
+async fn sweep(services: &ReconcilerServices, batch_size: u32) -> Result<u32, InterpreterError> {
     const SWEEP_PAGE: u32 = 200;
+    // F-69's scan: consulted once per sweep; the join is in-memory.
+    let mut pending: HashSet<Uuid> = HashSet::new();
+    let mut release_cursor: Option<Uuid> = None;
+    loop {
+        let batch = services
+            .releases
+            .pending_approval_ids(batch_size.max(1), release_cursor)
+            .await
+            .map_err(|sqlx_failure| {
+                InterpreterError::Step(cargobike_core::step::StepError::Failed {
+                    code: cargobike_core::error::STEP_FAILED.to_owned(),
+                    message: format!("the release scan failed to read: {sqlx_failure}"),
+                })
+            })?;
+        let exhausted = batch.len() < batch_size.max(1) as usize;
+        release_cursor = batch.last().copied();
+        pending.extend(batch);
+        if exhausted {
+            break;
+        }
+    }
+    if pending.is_empty() {
+        return Ok(0);
+    }
     let mut sent = 0_u32;
     let mut cursor: Option<(String, String, i64)> = None;
     loop {
@@ -108,6 +182,10 @@ async fn sweep(services: &ReconcilerServices) -> Result<u32, InterpreterError> {
             break;
         }
         for row in &rows {
+            // The join: only live releases' correlations speak (F-69).
+            if !pending.contains(&row.release_id) {
+                continue;
+            }
             let repo = cargobike_core::model::RepoRef::new(&row.provider, &row.repo_id);
             let Ok(provider) = services.providers.resolve(&repo) else {
                 continue; // the provider is gone; the correlation is stale
