@@ -83,6 +83,17 @@ pub enum EditFormat {
     Toml,
 }
 
+/// Why an edit application refused (F-41).
+#[derive(Debug, thiserror::Error)]
+pub enum EditError {
+    /// The base document did not parse in the edit's format.
+    #[error("the document did not parse: {0}")]
+    InvalidDocument(String),
+    /// The dot-notation path does not exist in the document.
+    #[error("the edit path is invalid: {0}")]
+    InvalidPath(String),
+}
+
 /// A structured file edit (F-41): a dot-notation path into a YAML/JSON
 /// document or a key path into TOML — never text substitution.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
