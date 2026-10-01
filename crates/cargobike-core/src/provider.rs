@@ -61,6 +61,8 @@ pub struct ProviderCaps {
     pub branch_protection: bool,
     /// Tag-protection checks for `require_tag_protection` (F-82).
     pub tag_protection: bool,
+    /// Branch delete (F-75's cleanup path).
+    pub branch_delete: bool,
     /// Signature verification of webhook deliveries (F-51).
     pub webhook_verification: bool,
     /// Parsing of webhook deliveries (F-46).
@@ -231,6 +233,13 @@ pub trait Provider: Send + Sync {
 
     /// Merges the base branch into `branch` (F-46 `update_branch`).
     async fn update_branch(&self, repo: &RepoRef, branch: &str) -> ProviderResult<()>;
+
+    /// Deletes a release branch (F-75's cleanup), gated on
+    /// [`ProviderCaps::branch_delete`].
+    async fn delete_branch(&self, repo: &RepoRef, branch: &str) -> ProviderResult<()> {
+        let _ = (repo, branch);
+        Err(ProviderError::Unsupported)
+    }
 
     /// The repository's default branch (branch creation base; A1).
     async fn default_branch(&self, repo: &RepoRef) -> ProviderResult<String>;
