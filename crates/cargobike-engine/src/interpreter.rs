@@ -18,7 +18,7 @@ use cargobike_core::step::{HttpService, StepContext, StepOutput};
 use cargobike_core::template::{OnModified, OnTimeout};
 use tracing::Span;
 
-use crate::expr::{ExprContext, eval_gate};
+use crate::expr::{ExprContext, eval_gate, interpolate_params};
 use crate::leases::LeaseRepository;
 
 use crate::signals::{InterpreterError, Signal, approval_topic, merge_topic};
@@ -223,16 +223,8 @@ async fn run_step(
             let _slept = dbos::sleep::<InterpreterError>(*duration).await;
             StepFlow::Continue
         }
-        StepBody::Action { uses, .. } => {
-            dispatch_action(
-                snapshot,
-                environment,
-                step_id.as_str(),
-                uses,
-                context,
-                services,
-            )
-            .await
+        StepBody::Action { .. } => {
+            dispatch_action(snapshot, environment, step, context, services).await
         }
     }
 }
@@ -410,34 +402,66 @@ pub fn get_by_dot<'tree>(
     Some(current)
 }
 
-/// Action steps dispatch into their registered type (F-35; PRD §6.7's
-/// isolation rules: the client is constructed inside the step).
+/// The F-32a provisioned view (name/repo/edits/commit_message) from the
+/// snapshot's per-environment inputs.
+fn environment_env_ref(
+    snapshot: &ReleaseSnapshot,
+    environment: &ResolvedEnvironment,
+) -> cargobike_core::step::EnvRef {
+    cargobike_core::step::EnvRef {
+        name: environment.name.clone(),
+        repo: snapshot.repo_of(&environment.name),
+        edits: snapshot.edits_of(&environment.name),
+        commit_message: environment
+            .env_inputs
+            .get("commit_message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        branch_format: None,
+    }
+}
+
 async fn dispatch_action(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
-    step_id: &str,
-    uses: &str,
-    _context: &ExprContext,
+    step: &ResolvedStep,
+    context: &ExprContext,
     services: &InterpreterServices,
 ) -> StepFlow {
-    let Some(action) = services.steps.resolve(uses).ok() else {
-        return StepFlow::Error(InterpreterError::Step(
-            cargobike_core::step::StepError::Failed {
-                code: cargobike_core::error::STEP_FAILED.to_owned(),
-                message: format!("the step `{uses}` is not installed (F-35)"),
-            },
-        ));
+    let uses = match &step.body {
+        StepBody::Action { uses, .. } => uses.clone(),
+        _ => return StepFlow::Continue,
     };
-    let step_context = services.step_context(&snapshot.release.id, &environment.name, step_id);
+    let action = match services.steps.resolve(&uses) {
+        Ok(found_step) => found_step,
+        Err(registry_error) => {
+            return StepFlow::Error(InterpreterError::Step(
+                cargobike_core::step::StepError::Failed {
+                    code: cargobike_core::error::STEP_FAILED.to_owned(),
+                    message: format!("the step `{uses}` is not installed (F-35): {registry_error}"),
+                },
+            ));
+        }
+    };
+    let step_context = services.step_context(&snapshot.release.id, &environment.name, &step.id);
     let release_view = snapshot.read_release();
-    let environment_spec = snapshot.env_spec(&environment.name);
+    // F-32a's provisioned view: repo/edits/commit_message from env inputs.
+    let environment_view = environment_env_ref(snapshot, environment);
+    // F-28's `with`: parameters evaluate against the documented context;
+    // the release version is a step-edit's default (F-41, F-147).
+    let with = match interpolate_params(&step.params(), context) {
+        Ok(with) => with,
+        Err(error) => {
+            return StepFlow::Error(InterpreterError::Step(
+                cargobike_core::step::StepError::Failed {
+                    code: cargobike_core::error::STEP_FAILED.to_owned(),
+                    message: format!("the parameters failed to evaluate: {error}"),
+                },
+            ));
+        }
+    };
     let output = action
-        .execute(
-            &step_context,
-            &release_view,
-            &environment_spec,
-            &serde_json::Value::Null,
-        )
+        .execute(&step_context, &release_view, &environment_view, &with)
         .await;
     match output {
         Ok(StepOutput::Continue(_)) => StepFlow::Continue,

@@ -63,6 +63,16 @@ pub struct ResolvedStep {
     pub body: StepBody,
 }
 
+impl ResolvedStep {
+    /// The action parameters as the template gives them (`with`).
+    pub fn params(&self) -> serde_json::Value {
+        match &self.body {
+            StepBody::Action { with, .. } => with.clone(),
+            _ => serde_json::Value::Null,
+        }
+    }
+}
+
 /// One environment's resolved step sequence.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedEnvironment {

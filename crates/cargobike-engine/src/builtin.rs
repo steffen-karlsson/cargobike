@@ -1,0 +1,404 @@
+//! The four built-in action steps (PRD 3.5..3.8, F-35, F-41..F-42,
+//! A1's idempotency column). Each is stateless, delegates provider calls
+//! and returns the F-28 output schema later steps reference.
+//!
+//! §6.7's isolation rules: provider clients are constructed INSIDE the
+//! step context lifetime; nothing escapes step scope.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde_json::{Value as JsonValue, json};
+
+use cargobike_core::error::STEP_FAILED;
+use cargobike_core::model::{CrState, Release, RepoRef};
+use cargobike_core::provider::{Edit, EditFormat, Provider, ProviderError};
+use cargobike_core::step::{EnvRef, StepContext, StepError, StepOutput, StepType};
+use secrecy::ExposeSecret as _;
+
+/// `builtin/commit-files@1` (F-41, A1): branch then commit fused —
+/// "already exists at the expected SHA" is success; the edits list is
+/// structural (never text substitution) and the resolved file paths are
+/// confined by the registry's globs at provision time.
+pub struct CommitFiles;
+
+#[async_trait]
+impl StepType for CommitFiles {
+    fn name(&self) -> &str {
+        "builtin/commit-files"
+    }
+
+    fn version(&self) -> &str {
+        "1"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &StepContext,
+        release: &Release,
+        env: &EnvRef,
+        _params: &JsonValue,
+    ) -> Result<StepOutput, StepError> {
+        let repo = env.repo.clone().ok_or_else(env_ref_missing)?;
+        let provider = provider_from_ctx(ctx, &repo)?;
+        let branch = crate::names::branch_name(release, env);
+
+        // A1: create the branch once; a recovered attempt finds its SHA.
+        match provider.branch_sha(&repo, &branch).await {
+            Ok(sha) => Ok(StepOutput::Continue(
+                json!({ "branch": branch, "sha": sha }),
+            )),
+            Err(ProviderError::NotFound(_)) => {
+                let base = provider.default_branch(&repo).await.map_err(step_failure)?;
+                let base_sha = provider
+                    .branch_sha(&repo, &base)
+                    .await
+                    .map_err(step_failure)?;
+                provider
+                    .create_branch(&repo, &branch, &base_sha)
+                    .await
+                    .map_err(step_failure)?;
+                Ok(StepOutput::Continue(
+                    json!({ "branch": branch, "sha": base_sha }),
+                ))
+            }
+            Err(other) => Err(step_failure(other)),
+        }
+    }
+}
+
+/// The edits application: provided via the provider in §6's fused path.
+/// The commit itself is part of the NEXT built-in when this one is
+/// accompanied — for v1.0 the composite commit is registered here.
+pub struct ApplyCommit;
+
+#[async_trait]
+impl StepType for ApplyCommit {
+    fn name(&self) -> &str {
+        "builtin/apply-commit"
+    }
+
+    fn version(&self) -> &str {
+        "1"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &StepContext,
+        release: &Release,
+        env: &EnvRef,
+        params: &JsonValue,
+    ) -> Result<StepOutput, StepError> {
+        let repo = env.repo.clone().ok_or_else(env_ref_missing)?;
+        let provider = provider_from_ctx(ctx, &repo)?;
+        let branch = param_str(params, "branch").ok_or_else(|| param_missing("branch"))?;
+        let edits = env.edits.clone();
+        if edits.is_empty() {
+            // F-7: no changes needed ⇒ Skipped (only valid before any side effect).
+            return Ok(StepOutput::SkipEnvironment);
+        }
+        let expected_parent = param_str(params, "sha");
+        let message = env
+            .commit_message
+            .clone()
+            .unwrap_or_else(|| default_commit_message(release, env));
+        let committed = provider
+            .commit_files(&repo, branch, &edits, &message, expected_parent)
+            .await
+            .map_err(step_failure)?;
+        Ok(StepOutput::Continue(json!({
+            "branch": committed.branch,
+            "sha": committed.sha,
+        })))
+    }
+}
+
+/// `builtin/change-request@1` (F-48, A1): an open CR with this head
+/// branch returns instead of a second.
+pub struct ChangeRequest;
+
+#[async_trait]
+impl StepType for ChangeRequest {
+    fn name(&self) -> &str {
+        "builtin/change-request"
+    }
+
+    fn version(&self) -> &str {
+        "1"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &StepContext,
+        release: &Release,
+        env: &EnvRef,
+        params: &JsonValue,
+    ) -> Result<StepOutput, StepError> {
+        let repo = env.repo.clone().ok_or_else(env_ref_missing)?;
+        let provider = provider_from_ctx(ctx, &repo)?;
+        let head = param_str(params, "branch").ok_or_else(|| param_missing("branch"))?;
+        let defaults = provider.default_branch(&repo).await.map_err(step_failure)?;
+        let base = param_str(params, "base").unwrap_or(&defaults).to_owned();
+        let title = param_str(params, "title")
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{}: {}", env.name, release.spec.version));
+        let body_text = param_str(params, "body")
+            .unwrap_or("Automated release change request.")
+            .to_owned();
+        let labels = param_labels(params);
+        // A1: find by head branch first.
+        let found = provider
+            .find_change_request_by_head(&repo, head)
+            .await
+            .map_err(step_failure)?;
+        if let Some(existing) = found {
+            return Ok(StepOutput::Continue(cr_output(&existing)));
+        }
+        let created = provider
+            .create_change_request(&repo, head, base.as_str(), &title, &body_text, &labels)
+            .await
+            .map_err(step_failure)?;
+        Ok(StepOutput::Continue(cr_output(&created)))
+    }
+}
+
+/// The F-28 output schema for CR steps (`steps.<id>.outputs.{...}`).
+fn cr_output(created: &cargobike_core::provider::ChangeRequest) -> JsonValue {
+    json!({
+        "number": created.number,
+        "url": created.url,
+        "head_sha": created.head_sha,
+        "state": match created.state {
+            CrState::Open => "open",
+            CrState::Closed => "closed",
+            CrState::Merged => "merged",
+        },
+    })
+}
+
+/// `builtin/http-call@1` (F-144): the SSRF-guarded client issues the
+/// request; headers carry `{ secret: <name> }` references resolved by
+/// the engine so the value never enters a step output (F-146, F-120).
+pub struct HttpCall;
+
+#[async_trait]
+impl StepType for HttpCall {
+    fn name(&self) -> &str {
+        "builtin/http-call"
+    }
+
+    fn version(&self) -> &str {
+        "1"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &StepContext,
+        _release: &Release,
+        _env: &EnvRef,
+        params: &JsonValue,
+    ) -> Result<StepOutput, StepError> {
+        let url = param_str(params, "url")
+            .ok_or_else(|| param_missing("url"))?
+            .to_owned();
+        let method = param_str(params, "method").unwrap_or("POST").to_uppercase();
+        let mut headers: Vec<(String, String)> = Vec::new();
+        if let Some(map) = params.get("headers").and_then(JsonValue::as_object) {
+            for (name, value) in map {
+                if let Some(secret_reference) = value.get("secret").and_then(JsonValue::as_str) {
+                    let resolved = ctx
+                        .credentials
+                        .resolve(secret_reference)
+                        .map_err(step_failure_library)?;
+                    headers.push((name.clone(), resolved.expose_secret().to_owned()));
+                } else if let Some(value) = value.as_str() {
+                    headers.push((name.clone(), value.to_owned()));
+                }
+            }
+        }
+        let body_bytes = match params.get("body") {
+            Some(JsonValue::Null) | None => None,
+            Some(value) => Some(
+                serde_json::to_vec(value).map_err(|error| StepError::Failed {
+                    code: STEP_FAILED.to_owned(),
+                    message: format!("the body failed to encode: {error}"),
+                })?,
+            ),
+        };
+        let request = cargobike_core::step::HttpRequest {
+            url,
+            method: method.clone(),
+            headers,
+            body: body_bytes,
+        };
+        let response = ctx.http.send(request).await.map_err(http_failure)?;
+        if response.status >= 500 {
+            // Server-side failures are transient (F-35's retry counts them).
+            return Err(StepError::Transient(format!(
+                "http {method} responded {}",
+                response.status
+            )));
+        }
+        if let Some(expected) = params.get("expect_status").and_then(JsonValue::as_u64) {
+            if response.status != expected as u16 {
+                return Err(StepError::Failed {
+                    code: STEP_FAILED.to_owned(),
+                    message: format!(
+                        "http {method} responded {} (expected {expected})",
+                        response.status
+                    ),
+                });
+            }
+        }
+        Ok(StepOutput::Continue(json!({ "status": response.status })))
+    }
+}
+
+/// `builtin/set-labels@1` (F-35): adds labels to a change request.
+pub struct SetLabels;
+
+#[async_trait]
+impl StepType for SetLabels {
+    fn name(&self) -> &str {
+        "builtin/set-labels"
+    }
+
+    fn version(&self) -> &str {
+        "1"
+    }
+
+    async fn execute(
+        &self,
+        ctx: &StepContext,
+        _release: &Release,
+        env: &EnvRef,
+        params: &JsonValue,
+    ) -> Result<StepOutput, StepError> {
+        let repo = env.repo.clone().ok_or_else(env_ref_missing)?;
+        let provider = provider_from_ctx(ctx, &repo)?;
+        let number = param_u64(params, "cr_number").ok_or_else(|| param_missing("cr_number"))?;
+        let labels = param_labels(params);
+        provider
+            .add_labels(&repo, number, &labels)
+            .await
+            .map_err(step_failure)?;
+        Ok(StepOutput::Continue(json!({ "added": labels })))
+    }
+}
+
+/// Registers the four built-ins (3.3's startup install).
+pub fn register_builtins(registry: &mut crate::steps::StepRegistry) {
+    registry.register(Arc::new(CommitFiles));
+    registry.register(Arc::new(ApplyCommit));
+    registry.register(Arc::new(ChangeRequest));
+    registry.register(Arc::new(HttpCall));
+    registry.register(Arc::new(SetLabels));
+}
+
+/// The step's provider (F-39: resolved by `RepoRef.provider`).
+fn provider_from_ctx(ctx: &StepContext, repo: &RepoRef) -> Result<Arc<dyn Provider>, StepError> {
+    ctx.providers
+        .resolve(repo)
+        .map_err(|error| StepError::Failed {
+            code: STEP_FAILED.to_owned(),
+            message: error.to_string(),
+        })
+}
+
+fn env_ref_missing() -> StepError {
+    StepError::Failed {
+        code: STEP_FAILED.to_owned(),
+        message: "the environment has no target repo (F-32a)".to_owned(),
+    }
+}
+
+fn param_missing(name: &str) -> StepError {
+    StepError::Failed {
+        code: STEP_FAILED.to_owned(),
+        message: format!("the `{name}` parameter is required"),
+    }
+}
+
+fn param_str<'a>(params: &'a JsonValue, name: &str) -> Option<&'a str> {
+    params.get(name).and_then(JsonValue::as_str)
+}
+
+fn param_u64(params: &JsonValue, name: &str) -> Option<u64> {
+    params.get(name).and_then(JsonValue::as_u64)
+}
+
+fn param_labels(params: &JsonValue) -> Vec<String> {
+    params
+        .get("labels")
+        .and_then(JsonValue::as_array)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn default_commit_message(release: &Release, env: &EnvRef) -> String {
+    format!(
+        "Release {} {} to {}",
+        release.spec.application, release.spec.version, env.name
+    )
+}
+
+fn step_failure(failure: ProviderError) -> StepError {
+    match failure {
+        ProviderError::NotFound(object) => StepError::Failed {
+            code: STEP_FAILED.to_owned(),
+            message: format!("{object}: not found"),
+        },
+        other => StepError::Transient(other.to_string()),
+    }
+}
+
+fn step_failure_library(failure: cargobike_core::error::LibraryError) -> StepError {
+    match failure {
+        cargobike_core::error::LibraryError::UnknownSecret(name) => StepError::Failed {
+            code: STEP_FAILED.to_owned(),
+            message: format!("failed to resolve secret: no secret named `{name}`"),
+        },
+        other => StepError::Failed {
+            code: STEP_FAILED.to_owned(),
+            message: other.to_string(),
+        },
+    }
+}
+
+fn http_failure(failure: cargobike_core::provider::HttpError) -> StepError {
+    match failure {
+        cargobike_core::provider::HttpError::Timeout
+        | cargobike_core::provider::HttpError::Connect(_) => {
+            StepError::Transient(failure.to_string())
+        }
+        other => StepError::Failed {
+            code: STEP_FAILED.to_owned(),
+            message: other.to_string(),
+        },
+    }
+}
+
+/// The F-2A provider's edit construction helper (tests use it).
+pub fn edit(file: &str, field: &str, value: JsonValue) -> Edit {
+    Edit {
+        file: file.to_owned(),
+        format: Some(inferred_format(file)),
+        field: field.to_owned(),
+        value: Some(value),
+    }
+}
+
+/// F-41's extension-based inference.
+pub fn inferred_format(file: &str) -> EditFormat {
+    match file.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("json") => EditFormat::Json,
+        Some("toml") => EditFormat::Toml,
+        _ => EditFormat::Yaml,
+    }
+}

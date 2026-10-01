@@ -121,7 +121,7 @@ mod tests {
             &self,
             _ctx: &cargobike_core::step::StepContext,
             _release: &cargobike_core::model::Release,
-            _spec: &cargobike_core::template::EnvironmentSpec,
+            _env: &cargobike_core::step::EnvRef,
             _params: &serde_json::Value,
         ) -> Result<cargobike_core::step::StepOutput, cargobike_core::step::StepError> {
             Ok(cargobike_core::step::StepOutput::Continue(
@@ -182,7 +182,7 @@ mod tests {
             &self,
             _ctx: &cargobike_core::step::StepContext,
             _release: &cargobike_core::model::Release,
-            _spec: &cargobike_core::template::EnvironmentSpec,
+            _env: &cargobike_core::step::EnvRef,
             _params: &serde_json::Value,
         ) -> Result<cargobike_core::step::StepOutput, cargobike_core::step::StepError> {
             Ok(cargobike_core::step::StepOutput::Continue(

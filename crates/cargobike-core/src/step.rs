@@ -15,9 +15,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::Span;
 
-use crate::model::Release;
 use crate::registry::ProviderRegistry;
-use crate::template::EnvironmentSpec;
 
 use crate::provider::HttpError;
 
@@ -123,6 +121,37 @@ pub enum StepError {
     Cancelled,
 }
 
+/// The environment's provisioned view for a step run (F-32a's
+/// well-known values as the snapshot supplies them).
+#[derive(Clone, Debug)]
+pub struct EnvRef {
+    /// Environment name.
+    pub name: String,
+    /// Target repo (F-10/F-11: opaque, resolved in the registry).
+    pub repo: Option<crate::model::RepoRef>,
+    /// Structural edits for `commit-files` (F-41).
+    pub edits: Vec<crate::provider::Edit>,
+    /// The registry's commit message (F-143); placeholders resolved at
+    /// provision time.
+    pub commit_message: Option<String>,
+    /// The engine's branch format, stamped by the provisioner (A1).
+    pub branch_format: Option<String>,
+}
+
+impl EnvRef {
+    /// An environment view without a provisioned repo (templates whose
+    /// steps take their own repo parameter).
+    pub fn named(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            repo: None,
+            edits: Vec::new(),
+            commit_message: None,
+            branch_format: None,
+        }
+    }
+}
+
 /// One executable step type, versioned (F-36, F-37). The trait keeps the
 /// types typed at the call site; the interpreter registers instances
 /// under `builtin/<name>@<version>` or sidecar-derived names (F-33).
@@ -138,8 +167,8 @@ pub trait StepType: Send + Sync {
     async fn execute(
         &self,
         ctx: &StepContext,
-        release: &Release,
-        env: &EnvironmentSpec,
+        release: &crate::model::Release,
+        env: &EnvRef,
         params: &serde_json::Value,
     ) -> Result<StepOutput, StepError>;
 }
