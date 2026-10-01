@@ -314,6 +314,7 @@ dependencies = [
  "jsonwebtoken",
  "moka",
  "pretty_assertions",
+ "rand_core 0.6.4",
  "reqwest",
  "secrecy",
  "serde",

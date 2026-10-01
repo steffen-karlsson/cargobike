@@ -60,7 +60,12 @@ async fn run(args: ServerArgs) {
             std::process::exit(2);
         });
     tracing::info!(%listen, "cargobike-server listening");
-    if let Err(error) = axum::serve(listener, router).await {
+    if let Err(error) = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    {
         tracing::error!(%error, "serve failed");
         std::process::exit(1);
     }

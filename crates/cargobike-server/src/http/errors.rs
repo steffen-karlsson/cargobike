@@ -5,7 +5,7 @@
 
 use axum::Json;
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use serde_json::json;
 
 /// HTTP error codes (§10.2) lives in the api crate's vocabulary later;
@@ -14,6 +14,8 @@ pub const RELEASE_NOT_FOUND: &str = "ReleaseNotFound";
 pub const INTERNAL_ERROR: &str = "InternalError";
 pub const INVALID_REQUEST: &str = "InvalidRequest";
 pub const STATE_CONFLICT: &str = "StateConflict";
+const CANONICAL_FORBIDDEN_SLUG: &str = "forbidden-resource";
+const FORBIDDEN_RESOURCE: &str = "ForbiddenResource";
 
 /// An API error with the RFC 9457 shape baked in (F-103).
 #[derive(Debug)]
@@ -45,7 +47,7 @@ impl ApiError {
     }
 }
 
-impl IntoResponse for ApiError {
+impl axum::response::IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = json!({
             "type": format!("https://cargobike.dev/errors/{}", self.slug),
@@ -56,6 +58,18 @@ impl IntoResponse for ApiError {
             "code": self.code,
         });
         (self.status, Json(body)).into_response()
+    }
+}
+
+impl ApiError {
+    /// A 403 problem (§10.2 `ForbiddenResource`).
+    pub fn forbidden(detail: impl Into<String>) -> Self {
+        Self::new(
+            axum::http::StatusCode::FORBIDDEN,
+            FORBIDDEN_RESOURCE,
+            CANONICAL_FORBIDDEN_SLUG,
+            detail,
+        )
     }
 }
 
@@ -72,6 +86,7 @@ pub fn internal(error: impl std::fmt::Display) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
 
     #[test]
     fn test_problem_details_bear_type_title_status_detail_code() {

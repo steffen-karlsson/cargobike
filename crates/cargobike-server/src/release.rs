@@ -157,7 +157,7 @@ impl ReleaseRepository {
         after: Option<Uuid>,
         before: Option<Uuid>,
     ) -> Result<(Vec<serde_json::Value>, Option<Uuid>), RepositoryError> {
-        let sql = "SELECT document FROM releases WHERE \
+        let sql = "SELECT id, application, version, phase, terminal, resource_version, document FROM releases WHERE \
                ($1::text IS NULL OR application = $1::text) \
                AND ($2::text IS NULL OR phase = $2::text) \
                AND ($3::text IS NULL OR version = $3::text) \

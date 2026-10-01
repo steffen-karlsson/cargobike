@@ -41,4 +41,7 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 workspace = true
 
 [dev-dependencies]
+argon2 = { workspace = true }
+reqwest = { workspace = true }
+rand_core = "0.6"
 pretty_assertions = { workspace = true }

@@ -27,6 +27,8 @@ pub struct AppState {
     pub ready: AtomicBool,
     /// Release reads/writes (2.3/2.4).
     pub releases: ReleaseRepository,
+    /// Auth context (2.5/2.6).
+    pub auth: Arc<crate::auth::AuthState>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -51,6 +53,11 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
             get(get_release).delete(delete_release),
         )
         .route("/api/v1/releases/{id}/cancel", post(cancel_release))
+        .route("/api/v1/whoami", get(whoami))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require_auth,
+        ))
         .with_state(state)
 }
 
@@ -68,8 +75,12 @@ struct ListParams {
 
 async fn list_releases(
     State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     axum::extract::Query(params): axum::extract::Query<ListParams>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    if !caller.has_grant("release:read") {
+        return Err(ApiError::forbidden("The `release:read` grant is required."));
+    }
     let since = match &params.since {
         Some(text) => Some(
             sqlx::types::time::OffsetDateTime::parse(
@@ -113,8 +124,10 @@ async fn list_releases(
 /// (F-110).
 async fn create_release(
     State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<axum::response::Response, ApiError> {
+    let _ = &caller; // authorization below (F-99a)
     let application = body
         .get("application")
         .and_then(serde_json::Value::as_str)
@@ -140,15 +153,24 @@ async fn create_release(
         })?
         .to_owned();
 
-    let (exists, phase) = create_authority(&state, &application, &version)?;
-    if !exists || phase.is_none() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "ApplicationNotFound",
-            "application-not-found",
-            format!("The application `{application}` is not in the registry."),
-        ));
-    }
+    let app = match crate::auth::authorize_create(&state.config, &caller, &application) {
+        Ok(app) => app,
+        Err(crate::auth::AuthError::ForbiddenResource) => {
+            return match state.config.application(&application) {
+                Some(_) => Err(ApiError::forbidden(
+                    "The caller is not authorized to release this application.",
+                )),
+                None => Err(ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "ApplicationNotFound",
+                    "application-not-found",
+                    format!("The application `{application}` is not in the registry."),
+                )),
+            };
+        }
+        Err(error) => return Err(auth_to_api(&error)),
+    };
+    let _ = app;
 
     let id = Uuid::now_v7();
     let now = sqlx::types::time::OffsetDateTime::now_utc();
@@ -194,17 +216,6 @@ async fn create_release(
         axum::Json(document),
     )
         .into_response())
-}
-
-fn create_authority(
-    _state: &AppState,
-    _application: &str,
-    _version: &str,
-) -> Result<(bool, Option<String>), ApiError> {
-    // milestone 2.5/2.6: per-trust-entry authentication + release:create
-    // grant; 2.7: registry lookup (template registry-only, F-5). Until the
-    // registry milestone lands there is no unauthorized create path.
-    Ok((true, Some("Pending".to_owned())))
 }
 
 fn source_ref(_state: &AppState, application: &str) -> serde_json::Value {
@@ -354,13 +365,42 @@ pub async fn boot(
         tracing::warn!("{literal}");
     }
     let pool = crate::db::connect(&config).await?;
+    let auth = Arc::new(crate::auth::AuthState::new(Arc::clone(&config))?);
     let state = Arc::new(AppState {
         config: (*config).clone(),
         ready: AtomicBool::new(false),
         releases: ReleaseRepository::new(pool.clone()),
+        auth,
     });
     elect_leader(&pool, config.leader_election.enabled, &state.ready)
         .await
         .map_err(|e| crate::config::ConfigError::Parse(format!("leader election failed: {e}")))?;
     Ok((api_router(Arc::clone(&state)), state))
+}
+
+/// F-106: the resolved identity + grants (§9.6 summary in JSON).
+async fn whoami(
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "origin": caller.origin,
+        "issuer": caller.issuer,
+        "subject": caller.subject,
+        "display_name": caller.display_name,
+        "grants": caller.grants,
+        "bootstrap": caller.bootstrap,
+    }))
+}
+
+/// Maps an auth failure to the problem response when it surfaces in a
+/// handler (rather than the middleware).
+fn auth_to_api(error: &crate::auth::AuthError) -> ApiError {
+    use crate::auth::AuthError;
+    let (status, slug) = match error {
+        AuthError::MissingToken => (StatusCode::UNAUTHORIZED, "missing-token"),
+        AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "invalid-token"),
+        AuthError::TokenExpired => (StatusCode::UNAUTHORIZED, "token-expired"),
+        AuthError::ForbiddenResource => (StatusCode::FORBIDDEN, "forbidden-resource"),
+    };
+    ApiError::new(status, error.code(), slug, format!("{error}"))
 }
