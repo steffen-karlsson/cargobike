@@ -159,11 +159,14 @@ impl ReleaseSnapshot {
     /// The release record view (F-1's three root properties; status is
     /// the interpreter's view — attempts/remotes stay server-side).
     pub fn read_release(&self) -> cargobike_core::model::Release {
-        let now = time::OffsetDateTime::now_utc();
+        // Deterministic per release (F-15's purity): every attempt and
+        // replay of the workflow derives the SAME step-visible release
+        // view (the random id/`github/0` stub betrayed A1's naming).
+        let id = uuid::Uuid::parse_str(&self.release.id).unwrap_or_else(|_| uuid::Uuid::now_v7());
         let metadata = cargobike_core::model::ReleaseMetadata {
-            id: uuid::Uuid::now_v7(),
-            created_at: now,
-            updated_at: now,
+            id,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
             resource_version: 1,
             retried_from: None,
             labels: BTreeMap::new(),
@@ -172,7 +175,12 @@ impl ReleaseSnapshot {
         let spec = cargobike_core::model::ReleaseSpec {
             application: self.release.application.clone(),
             version: self.release.version.clone(),
-            source: CoreRepoRef::new("github", "0"),
+            source: self
+                .template
+                .environments
+                .first()
+                .and_then(|found| self.repo_of(&found.name))
+                .unwrap_or_else(|| CoreRepoRef::new("github", "0")),
             template: format!("{}@{}", self.template.name, self.template.version),
         };
         let status = cargobike_core::model::ReleaseStatus {
