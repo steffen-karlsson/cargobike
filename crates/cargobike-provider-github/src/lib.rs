@@ -101,6 +101,12 @@ impl GithubProvider {
         Ok(Self { github })
     }
 
+    /// A provider over a prebuilt octocrab client (the tests point one
+    /// at a mocked server; production builds with [`Self::new`]).
+    pub fn from_octocrab(github: octocrab::Octocrab) -> Self {
+        Self { github }
+    }
+
     /// The immutable-ID repo reference for octocrab's handlers.
     fn repo_by_id(
         &self,
@@ -615,7 +621,9 @@ impl Provider for GithubProvider {
             .graphql(&payload)
             .await
             .map_err(request_failure)?;
-        if response.get("data").is_none() {
+        // octocrab unwraps the response's data member; a GraphQL errors
+        // member is the mutation's refusal.
+        if response.get("errors").is_some() {
             return Err(ProviderError::Request(format!(
                 "the auto-merge refused to enable: {response:?}"
             )));

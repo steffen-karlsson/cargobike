@@ -30,7 +30,7 @@ pub fn verify_and_normalise(
     let expected = signature
         .strip_prefix("sha256=")
         .ok_or_else(|| ProviderError::Request("the signature is not a sha256 digest".to_owned()))?;
-    // /: the compare is HMAC's verify_slice (the constant-time on
+    // the compare is HMAC's verify_slice (the constant-time on
     // the raw tag bytes; the hex was only the delivery's encoding).
     let verified = secrets
         .iter()
@@ -53,7 +53,7 @@ pub fn verify_and_normalise(
 /// normalisation over the delivery body.
 pub fn normalise(event_name: &str, body: &[u8]) -> Result<NormalisedEvent, ProviderError> {
     match event_name {
-        // : tag pushes as release candidates.
+        // tag pushes as release candidates.
         "push" => {
             let delivery: serde_json::Value =
                 serde_json::from_slice(body).map_err(|failure| unreadable(&failure))?;
@@ -88,7 +88,7 @@ pub fn normalise(event_name: &str, body: &[u8]) -> Result<NormalisedEvent, Provi
                 provider_event: event_name.to_owned(),
             })
         }
-        // : the event a release's wait was listening for.
+        // the event a release's wait was listening for.
         "pull_request" => {
             let delivery: serde_json::Value =
                 serde_json::from_slice(body).map_err(|failure| unreadable(&failure))?;

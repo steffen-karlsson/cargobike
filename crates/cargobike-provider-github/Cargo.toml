@@ -23,3 +23,8 @@ cargobike-core = { path = "../cargobike-core" }
 jsonwebtoken.workspace = true
 http = "1.5.0"
 globset.workspace = true
+
+[dev-dependencies]
+wiremock = "0.6.5"
+tokio = { workspace = true }
+base64 = "0.22"
