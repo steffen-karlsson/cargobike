@@ -13,8 +13,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 humantime = { workspace = true }
+cel = { workspace = true }
 serde_yaml_ng = "0.10"
 time = { workspace = true }
+cel = { workspace = true }
 
 [dev-dependencies]
 rstest = { workspace = true }
