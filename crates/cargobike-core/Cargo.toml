@@ -1,0 +1,28 @@
+[package]
+name = "cargobike-core"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Cargobike core model: release model, version schemes, provider and step traits"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+semver = { workspace = true }
+strum = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+secrecy = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+pretty_assertions = { workspace = true }
+serde_yaml_ng = "0.10"
+
+[lints]
+workspace = true

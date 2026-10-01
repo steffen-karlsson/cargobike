@@ -1,0 +1,45 @@
+name: service
+version: "1"
+description: |
+  Standard two-environment release: preview then production.
+  Production requires human approval.
+inputs: {}                          # application-wide inputs (none needed here)
+environment_inputs:                 # per-environment, supplied by the registry
+  repo:
+    type: repo
+    description: Target deployment repository
+  edits:
+    type: edits
+    description: List of file edits {file, format, field, value?}
+
+step_groups:
+  - name: deploy
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+        with:
+          repo: ${{ env.inputs.repo }}
+          edits: ${{ env.inputs.edits }}
+        retry: { attempts: 3, backoff: exponential, max_delay: 1m }
+      - id: cr
+        uses: builtin/change-request@1
+        with:
+          branch: ${{ steps.edit.outputs.branch }}
+      - wait: merge
+        timeout: 7d
+        on_modified: fail
+        on_timeout: fail
+
+environments:
+  - name: preview
+    steps:
+      - include: deploy
+
+  - name: production
+    when: 'semver(release.version).prerelease() == ""'
+    concurrency: supersede
+    steps:
+      - include: deploy
+      - wait: approval
+        timeout: 72h
+        on_timeout: cancel
