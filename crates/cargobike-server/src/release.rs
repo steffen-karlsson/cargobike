@@ -144,6 +144,47 @@ impl ReleaseRepository {
         Ok(())
     }
 
+    /// Lists releases with the §5.3 filters, newest first, cursor over
+    /// UUIDv7 ids (F-101: limit 1-500, `after`/`before`).
+    #[allow(clippy::too_many_arguments)] // the query surface is the query surface
+    pub async fn list(
+        &self,
+        application: Option<&str>,
+        phase: Option<&str>,
+        version: Option<&str>,
+        since: Option<sqlx::types::time::OffsetDateTime>,
+        limit: u32,
+        after: Option<Uuid>,
+        before: Option<Uuid>,
+    ) -> Result<(Vec<serde_json::Value>, Option<Uuid>), RepositoryError> {
+        let sql = "SELECT document FROM releases WHERE \
+               ($1::text IS NULL OR application = $1::text) \
+               AND ($2::text IS NULL OR phase = $2::text) \
+               AND ($3::text IS NULL OR version = $3::text) \
+               AND ($4::timestamptz IS NULL OR created_at >= $4) \
+               AND ($5::uuid IS NULL OR id < $5::uuid) \
+               AND ($6::uuid IS NULL OR id > $6::uuid) \
+               ORDER BY id DESC LIMIT $7";
+
+        let rows = sqlx::query_as::<_, Row>(sql)
+            .bind(application)
+            .bind(phase)
+            .bind(version)
+            .bind(since)
+            .bind(after)
+            .bind(before)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| RepositoryError::Internal(error.to_string()))?;
+        let items: Vec<serde_json::Value> = rows.into_iter().map(|row| row.into_json()).collect();
+        let cursor = items
+            .last()
+            .and_then(|doc| doc["metadata"]["id"].as_str())
+            .and_then(|v| Uuid::parse_str(v).ok());
+        Ok((items, cursor))
+    }
+
     /// The row lookup used by the idempotent create.
     async fn fetch_row(
         &self,

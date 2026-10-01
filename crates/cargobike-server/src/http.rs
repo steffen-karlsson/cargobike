@@ -45,10 +45,7 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/startup", get(startup))
         .route("/api/v1/clientconfig", get(clientconfig))
-        .route(
-            "/api/v1/releases",
-            get(list_release_stub).post(create_release),
-        )
+        .route("/api/v1/releases", get(list_releases).post(create_release))
         .route(
             "/api/v1/releases/{id}",
             get(get_release).delete(delete_release),
@@ -57,16 +54,58 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
         .with_state(state)
 }
 
-/// A placeholder for milestone 2.4b's list implementation.
-async fn list_release_stub(
-    State(_state): State<Arc<AppState>>,
+/// Lists releases (§5.3): filters + the latest cursor (F-101).
+#[derive(serde::Deserialize)]
+struct ListParams {
+    application: Option<String>,
+    phase: Option<String>,
+    version: Option<String>,
+    since: Option<String>,
+    limit: Option<u32>,
+    after: Option<Uuid>,
+    before: Option<Uuid>,
+}
+
+async fn list_releases(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<ListParams>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
-    Err(ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        crate::http::errors::INTERNAL_ERROR,
-        "not-implemented",
-        "release list lands with milestone 2.4b",
-    ))
+    let since = match &params.since {
+        Some(text) => Some(
+            sqlx::types::time::OffsetDateTime::parse(
+                text,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .map_err(|error| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    crate::http::errors::INVALID_REQUEST,
+                    "field-invalid",
+                    format!("failed to parse `since` as RFC 3339: {error}"),
+                )
+            })?,
+        ),
+        None => None,
+    };
+    let limit = params.limit.unwrap_or(50).clamp(1, 500); // F-101's documented bound
+    let (items, cursor) = state
+        .releases
+        .list(
+            params.application.as_deref(),
+            params.phase.as_deref(),
+            params.version.as_deref(),
+            since,
+            limit,
+            params.after,
+            params.before,
+        )
+        .await
+        .map_err(repository_to_api)?;
+    Ok(axum::Json(serde_json::json!({
+        "items": items,
+        "cursor": cursor,
+        "has_more": cursor.is_some() && usize::try_from(limit).is_ok(),
+    })))
 }
 
 /// Create is `{application, version}` only (F-3); duplicates answer 200
