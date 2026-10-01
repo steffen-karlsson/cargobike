@@ -68,7 +68,7 @@ enum ContextCommand {
 #[derive(Clone, Subcommand)]
 enum ReleaseCommand {
     /// Creates a release (; the server answers 202 or the duplicate's
-    /// 200 with the existing release, ).
+    /// 200 with the existing release).
     Create {
         /// The application name (the its allowlist decides who may release).
         application: String,
@@ -93,7 +93,7 @@ enum ReleaseCommand {
         /// Filter by the version string.
         #[arg(long)]
         version: Option<String>,
-        /// The page size (1-500, ).
+        /// The page size (1-500).
         #[arg(long, default_value = "50")]
         limit: u32,
     },
@@ -108,7 +108,7 @@ enum ReleaseCommand {
         id: Uuid,
     },
     /// Deletes a terminal release's row (the event log is retained
-    /// ); terminal-only releases.
+    ///); terminal-only releases.
     Delete {
         /// The release ID (UUIDv7).
         id: Uuid,

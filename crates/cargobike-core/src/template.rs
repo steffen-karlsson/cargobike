@@ -119,7 +119,7 @@ pub struct StepSpec {
     /// Action step registry name, `builtin/commit-files@1` .
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uses: Option<String>,
-    /// Control step kind (`merge`, `approval`, `sleep` — ).
+    /// Control step kind (`merge`, `approval`, `sleep` —).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait: Option<WaitKind>,
     /// `include:` a `step_groups` entry by name .

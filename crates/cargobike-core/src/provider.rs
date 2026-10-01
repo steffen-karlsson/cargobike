@@ -28,7 +28,7 @@ pub enum ProviderError {
     NotFound(&'static str),
 }
 
-/// Errors of the SSRF-guarded HTTP seam ([`crate::step::HttpService`], ).
+/// Errors of the SSRF-guarded HTTP seam ([`crate::step::HttpService`]).
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
     /// The egress policy refused the host address (the deny-list).
@@ -74,7 +74,7 @@ pub struct ProviderCaps {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EditFormat {
-    /// YAML document (the format-preserving edits, see ).
+    /// YAML document (the format-preserving edits, see).
     #[default]
     Yaml,
     /// JSON document (the pointer-style edits).
@@ -223,18 +223,18 @@ pub trait Provider: Send + Sync {
         comment: &str,
     ) -> ProviderResult<()>;
 
-    /// Lists open CRs (the reconciliation batching uses provider paging; ).
+    /// Lists open CRs (the reconciliation batching uses provider paging;).
     async fn list_open_change_requests(&self, repo: &RepoRef)
     -> ProviderResult<Vec<ChangeRequest>>;
 
-    /// Reads a file at `ref` (the merge verification reads base files; ).
+    /// Reads a file at `ref` (the merge verification reads base files;).
     async fn read_file(&self, repo: &RepoRef, path: &str, git_ref: &str)
     -> ProviderResult<Vec<u8>>;
 
-    /// Comments on a CR (the supersede notices; ).
+    /// Comments on a CR (the supersede notices;).
     async fn comment(&self, repo: &RepoRef, cr_number: u64, body: &str) -> ProviderResult<()>;
 
-    /// Adds labels to a CR (`builtin/set-labels@1`; ).
+    /// Adds labels to a CR (`builtin/set-labels@1`;).
     async fn add_labels(
         &self,
         repo: &RepoRef,
@@ -252,7 +252,7 @@ pub trait Provider: Send + Sync {
         Err(ProviderError::Unsupported)
     }
 
-    /// The repository's default branch (the branch creation base; ).
+    /// The repository's default branch (the branch creation base;).
     async fn default_branch(&self, repo: &RepoRef) -> ProviderResult<String>;
 
     /// The SHA of a branch tip ( "already exists at expected SHA").

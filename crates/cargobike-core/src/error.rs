@@ -38,7 +38,7 @@ impl ReleaseError {
     }
 }
 
-/// Typed internal error used by this crate (`thiserror`, ).
+/// Typed internal error used by this crate (`thiserror`).
 /// Message style: `failed to <action>: <cause>`.
 #[derive(Debug, thiserror::Error)]
 pub enum LibraryError {

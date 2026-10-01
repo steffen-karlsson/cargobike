@@ -162,7 +162,7 @@ pub struct CiContext {
 pub struct WorkflowInfo {
     /// Interpreter workflow name, always `"cargobike.interpret.v1"`.
     pub id: String,
-    /// Template the interpreter reads (the registry-only, ).
+    /// Template the interpreter reads (the registry-only).
     pub template_name: String,
     /// Template version, snapshotted .
     pub template_version: String,
@@ -209,7 +209,7 @@ pub enum EnvironmentPhase {
 }
 
 impl EnvironmentPhase {
-    /// Whether the environment has concluded (the per ).
+    /// Whether the environment has concluded (the per).
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -262,7 +262,7 @@ pub struct ChangeRequestRef {
 pub enum CrState {
     /// Open, awaiting merge.
     Open,
-    /// Closed without merging (⇒ `ApprovalRejected`, ).
+    /// Closed without merging (⇒ `ApprovalRejected`).
     Closed,
     /// Merged into the base branch .
     Merged,
@@ -312,7 +312,7 @@ mod tests {
     #[case::canceled(Phase::Canceled, true)]
     #[case::superseded(Phase::Superseded, true)]
     #[case::completed(Phase::Completed, true)]
-    fn test_phase_terminality_matches_f74(#[case] phase: Phase, #[case] terminal: bool) {
+    fn test_phase_terminality_matches(#[case] phase: Phase, #[case] terminal: bool) {
         assert_eq!(phase.is_terminal(), terminal);
     }
 
@@ -326,7 +326,7 @@ mod tests {
     #[case::failed(EnvironmentPhase::Failed, true)]
     #[case::canceled(EnvironmentPhase::Canceled, true)]
     #[case::superseded(EnvironmentPhase::Superseded, true)]
-    fn test_environment_phase_terminality_matches_f7(
+    fn test_environment_phase_terminality_matches(
         #[case] phase: EnvironmentPhase,
         #[case] terminal: bool,
     ) {

@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum NormalisedEvent {
-    /// A tag push: release creation candidates (`event: tag` triggers, ).
+    /// A tag push: release creation candidates (`event: tag` triggers).
     TagPush(TagPush),
     /// A change request reached a customer state (the correlation).
     ChangeRequestClosed {
         /// CR number.
         number: u64,
-        /// State the CR reached (`merged` or `closed`; ).
+        /// State the CR reached (`merged` or `closed`;).
         merged: bool,
     },
     /// Any other event: persisted, acknowledged, ignored .
@@ -29,11 +29,11 @@ pub enum NormalisedEvent {
 #[serde(rename_all = "kebab-case")]
 pub struct TagPush {
     /// Tag name, e.g. `v1.2.3` (the version extraction happens per
-    /// `versioning.tag_format` in the server, ).
+    /// `versioning.tag_format` in the server).
     pub tag: String,
     /// Commit SHA the tag points at, verified against the provider .
     pub sha: String,
-    /// Repository the push landed in (the immutable ID; ).
+    /// Repository the push landed in (the immutable ID;).
     pub repository_id: String,
     /// Pusher display name (the actor; the reconciler uses the same).
     pub sender: String,

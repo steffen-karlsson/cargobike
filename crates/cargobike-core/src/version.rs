@@ -5,13 +5,13 @@
 //! supersession. Validation per scheme:
 //!
 //! - [`VersionScheme::SemVer`] — the `semver` crate; patch beats
-//!   minor beats major; prerelease ordering applies (gates read
-//!   `semver(release.version).prerelease()`).
+//! minor beats major; prerelease ordering applies (gates read
+//! `semver(release.version).prerelease`).
 //! - [`VersionScheme::CalVer`] — a fixed layout of the tokens
-//!   `YYYY`, `0Y`, `MM`, `0M`, `DD`, `0D`, `MICRO`; pure numeric ordering.
+//! `YYYY`, `0Y`, `MM`, `0M`, `DD`, `0D`, `MICRO`; pure numeric ordering.
 //! - [`VersionScheme::Opaque`] — printable, slash-free, never empty;
-//!   ordering is lexicographic (a stable, deterministic fallback used
-//!   when no timestamps exist in tests).
+//! ordering is lexicographic (a stable, deterministic fallback used
+//! when no timestamps exist in tests).
 use std::cmp::Ordering;
 
 use semver::Version as SemVerVersion;
@@ -87,10 +87,10 @@ impl VersionScheme {
     ///
     /// - Semver: `semver::Version::parse` (the build metadata and prerelease allowed).
     /// - Calver: every `.`-separated segment must match its layout token
-    ///   exactly (`YYYY` ⇒ 4 digits, `0Y`/`0M`/`0D` ⇒ 2 digits, `MM`/`DD`
-    ///   ⇒ 1 or 2 digits, `MICRO` ⇒ 1+ digits).
+    /// exactly (`YYYY` ⇒ 4 digits, `0Y`/`0M`/`0D` ⇒ 2 digits, `MM`/`DD`
+    /// ⇒ 1 or 2 digits, `MICRO` ⇒ 1+ digits).
     /// - Opaque: non-empty, printable ASCII, no `/` (the version flows into
-    ///   branch names and CR titles).
+    /// branch names and CR titles).
     pub fn validate(&self, version: &str) -> Result<(), VersionError> {
         if version.is_empty() {
             return Err(VersionError::Empty);
@@ -128,11 +128,11 @@ impl VersionScheme {
     /// single argument comes first, i.e. `order(a, b)`.
     ///
     /// - Semver: the `semver` crate's total ordering (the prerelease < release,
-    ///   identifiers counted, build metadata ignored).
+    /// identifiers counted, build metadata ignored).
     /// - CalVer: numeric segment-by-segment comparison.
     /// - Opaque: lexicographic on bytes — a stable, deterministic
-    ///   fallback; production guards may consult creation time when
-    ///   the bytes cannot decide.
+    /// fallback; production guards may consult creation time when
+    /// the bytes cannot decide.
     pub fn order(&self, a: &str, b: &str) -> Result<Ordering, VersionError> {
         self.validate(a)?;
         self.validate(b)?;
@@ -243,7 +243,7 @@ mod tests {
         "2026.10.1",
     )]
     #[case::opaque_lexicographic(VersionScheme::Opaque, "1.2.3", "2.0.0")]
-    fn test_ordering_follows_f72(#[case] scheme: VersionScheme, #[case] a: &str, #[case] b: &str) {
+    fn test_ordering_follows(#[case] scheme: VersionScheme, #[case] a: &str, #[case] b: &str) {
         assert_eq!(scheme.order(a, b).expect("both valid"), Ordering::Less);
     }
 }

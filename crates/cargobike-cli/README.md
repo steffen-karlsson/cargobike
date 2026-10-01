@@ -4,7 +4,7 @@ _The release lifecycle in your terminal (and CI): no database, server API only._
 
 ## Purpose
 
-`cargobike-cli` builds the `cargobike` binary (G-10: no DB dependencies). It
+`cargobike-cli` builds the `cargobike` binary (: no DB dependencies). It
 talks to a Cargobike server over the REST API, resolves its target from named
 contexts with a strict precedence (flag > env > context > `defaults` >
 built-in), authenticates with one of four auth shapes, renders output as
@@ -14,10 +14,10 @@ Components:
 
 | Module | Contents |
 |---|---|
-| `config` | The CLI config file (`CARGOBIKE_CONFIG`, default `~/.config/cargobike/config.yaml` or `$XDG_CONFIG_HOME/cargobike/config.yaml`): contexts, auth types (`none`, `api-key`, `exec`, `github-actions`), `ca_file`, `defaults.output`; the `http://` refusal rule (`--allow-http` override, F-98) and the precedence walk |
+| `config` | The CLI config file (`CARGOBIKE_CONFIG`, default `~/.config/cargobike/config.yaml` or `$XDG_CONFIG_HOME/cargobike/config.yaml`): contexts, auth types (`none`, `api-key`, `exec`, `github-actions`), `ca_file`, `defaults.output`; the `http://` refusal rule (`--allow-http` override) and the precedence walk |
 | `client` | `reqwest`-backed API caller: bearer per auth shape, RFC 9457 error surfacing, exit-code mapping (10 auth / 11 unreachable / 12 invalid response) |
 | `ci` | GitHub Actions auto-detection: `GITHUB_REPOSITORY`/`GITHUB_SHA`/`GITHUB_RUN_ID` context struct, the OIDC request environment, the audience resolution (default `cargobike`) |
-| `render` | Output rendering: table rows (`metadata.id`, `spec.application`, `spec.version`, `status.phase`) or full documents as JSON/YAML (F-108) |
+| `render` | Output rendering: table rows (`metadata.id`, `spec.application`, `spec.version`, `status.phase`) or full documents as JSON/YAML |
 | `main` | clap wiring: global flags with env fallbacks, `context list/use`, the release verbs, `create --wait` polling |
 
 ## Status
@@ -37,9 +37,9 @@ cargobike context use production
 
 # The release lifecycle.
 cargobike release create my-service 1.2.3
-cargobike release create my-service 1.2.3 --wait --timeout 30m   # polls to terminal
+cargobike release create my-service 1.2.3 --wait --timeout 30m # polls to terminal
 cargobike release list -a my-service --phase PendingApproval --limit 50
-cargobike release get 0192f0d0-... 
+cargobike release get 0192f0d0-...
 cargobike release cancel 0192f0d0-...
 cargobike release delete 0192f0d0-...
 
@@ -50,7 +50,7 @@ cargobike release list -o yaml
 # CI: no config file needed (auth: github-actions auto-detected).
 CARGOBIKE_URL=https://cargobike.example.com cargobike release create my-service 1.2.3
 
-# Development against localhost: plain http is allowed only there (F-98).
+# Development against localhost: plain http is allowed only there .
 cargobike --url http://localhost:8080 release list
 ```
 
@@ -66,7 +66,7 @@ cargo test -p cargobike-cli
 ```
 
 - `tests/cli_server.rs`: client verbs against a wiremock server, plus the
-  binary's end-to-end via `assert_cmd` (rendered rows, exit codes 10/11/12).
+ binary's end-to-end via `assert_cmd` (rendered rows, exit codes 10/11/12).
 - Unit tests per module (config precedence, URL refusals, auth shapes, exec
-  token contract, CI detection).
+ token contract, CI detection).
 [`AGENTS.md`](AGENTS.md) holds the contribution rules.

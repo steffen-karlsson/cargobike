@@ -52,7 +52,7 @@ impl ProviderRegistry {
     }
 }
 
-/// Resolves named secrets (`{ secret: <name> }`, ) to their values.
+/// Resolves named secrets (`{ secret: <name> }`) to their values.
 ///
 /// The value is returned as [`SecretString`] so a step can use it without
 /// producing it in logs or step outputs .

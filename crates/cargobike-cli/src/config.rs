@@ -191,7 +191,7 @@ pub fn refusal_error(url: &str) -> ConfigError {
     ))
 }
 
-/// Whether the URL's host is local (the http rule's exception, ).
+/// Whether the URL's host is local (the http rule's exception).
 pub fn is_local_host(host: &str) -> bool {
     matches!(
         host.to_ascii_lowercase().as_str(),
@@ -293,7 +293,7 @@ defaults:
     }
 
     #[test]
-    fn test_url_refusals_match_f98() {
+    fn test_url_refusals_match() {
         // Local http passes without a flag.
         assert_eq!(
             resolved_url("http://localhost:8080", false).as_deref(),
@@ -375,7 +375,7 @@ defaults:
 /// selected; `default_url` when neither the flag nor env supplied one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
-    /// The effective URL (the refusal-checked, ).
+    /// The effective URL (the refusal-checked).
     pub url: String,
     /// The effective auth.
     pub auth: AuthConfig,

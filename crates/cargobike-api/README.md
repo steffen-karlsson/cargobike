@@ -8,10 +8,10 @@ _Shared DTOs, the OpenAPI surface, and the typed client (planned)._
 that cross the server/CLI boundary (PRD §11.2, §16 ordering rule 12):
 
 - request/response DTOs (`cargobike-api::dto`), reused by the server's axum
-  handlers and the CLI's typed client,
-- the OpenAPI surface definitions (with `utoipa`, F-104),
+ handlers and the CLI's typed client,
+- the OpenAPI surface definitions (with `utoipa`),
 - a typed HTTP client wrapper so the CLI calls the API with compile-checked
-  shapes instead of hand-rolled JSON pointers.
+ shapes instead of hand-rolled JSON pointers.
 
 Keeping DTOs here prevents the "defined independently in the server and the
 CLI" drift the PRD calls out as a duplication risk (§16, task 2.0a).
@@ -36,8 +36,8 @@ Not usable yet. The planned shape:
 use cargobike_api::dto::{CreateReleaseRequest, ReleaseDocument};
 
 let request = CreateReleaseRequest {
-    application: "my-service".into(),
-    version: "1.2.3".into(),
+ application: "my-service".into,
+ version: "1.2.3".into,
 };
 let release: ReleaseDocument = client.create_release(&request).await?;
 ```

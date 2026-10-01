@@ -47,7 +47,7 @@ impl CancelToken {
     }
 }
 
-/// An outbound HTTP request issued by a step (`builtin/http-call@1`, ).
+/// An outbound HTTP request issued by a step (`builtin/http-call@1`).
 #[derive(Clone, Debug)]
 pub struct HttpRequest {
     /// Absolute URL; the engine's guard applies `network.egress` policy before
