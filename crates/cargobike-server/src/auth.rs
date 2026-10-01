@@ -135,13 +135,17 @@ fn verify_api_keys<'a>(
     })
 }
 
-/// The auth context the middleware consults (JWKS cache lands with the
-/// OIDC milestone).
+/// The auth context the middleware consults (F-77: JWKS cached, refetch
+/// on unknown `kid` is rate-limited by the moka TTL window).
 pub struct AuthState {
     /// The server config snapshot.
     pub config: Arc<crate::config::Config>,
     /// The localhost bootstrap key, when provided (F-86).
     bootstrap: Option<secrecy::SecretString>,
+    /// Cached JWKS documents keyed by URL (F-77).
+    jwks: moka::sync::Cache<String, Arc<jsonwebtoken::jwk::JwkSet>>,
+    /// The outbound client used for JWKS fetches only.
+    client: reqwest::Client,
 }
 
 /// The bootstrap-key environment variables (F-86).
@@ -172,13 +176,46 @@ impl AuthState {
         Ok(Self {
             config,
             bootstrap: plaintext.map(secrecy::SecretString::from),
+            jwks: moka::sync::Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(300))
+                .build(),
+            client: reqwest::Client::builder()
+                .user_agent("cargobike")
+                .build()
+                .map_err(|error| {
+                    crate::config::ConfigError::Parse(format!("http client: {error}"))
+                })?,
         })
     }
 
+    /// The JWKS document for an entry, cached by URL (F-77's `jwks_url`
+    /// override when the issuer lacks usable discovery).
+    async fn jwks_for(&self, url: &str) -> Result<Arc<jsonwebtoken::jwk::JwkSet>, AuthError> {
+        if let Some(cached) = self.jwks.get(url) {
+            return Ok(cached);
+        }
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .ok()
+            .and_then(|response| response.error_for_status().ok())
+            .ok_or(AuthError::InvalidToken)?;
+        let fresh = response
+            .json::<jsonwebtoken::jwk::JwkSet>()
+            .await
+            .ok()
+            .ok_or(AuthError::InvalidToken)?;
+        let fresh = Arc::new(fresh);
+        self.jwks.insert(url.to_owned(), Arc::clone(&fresh));
+        Ok(fresh)
+    }
+
     /// Resolves a Bearer-credential caller: API keys first (F-85), then
-    /// the bootstrap key from loopback peers only (F-86). OIDC tokens
-    /// answer `InvalidToken` until the JWKS milestone lands.
-    pub fn resolve_bearer(
+    /// the bootstrap key from loopback peers only (F-86), then OIDC
+    /// validation per trust entry (F-77..F-79).
+    pub async fn resolve_bearer(
         &self,
         presented: &str,
         peer: Option<std::net::IpAddr>,
@@ -208,7 +245,96 @@ impl AuthState {
                 });
             }
         }
-        Err(AuthError::InvalidToken)
+        self.decode_oidc(presented).await
+    }
+
+    /// The OIDC validation path (F-77..F-79). The first trust entry whose
+    /// full validation passes wins; a strictly expired token is surfaced
+    /// as its own 401 code; claim mismatches surface 403.
+    async fn decode_oidc(&self, token: &str) -> Result<AuthedCaller, AuthError> {
+        let header = jsonwebtoken::decode_header(token).map_err(|_| AuthError::InvalidToken)?;
+        let mut expired = false;
+        for entry in &self.config.auth.oidc {
+            let matches_algorithm = entry
+                .algorithms
+                .as_ref()
+                .map(|names| {
+                    names
+                        .iter()
+                        .any(|name| name == &format!("{:?}", header.alg))
+                })
+                .unwrap_or_else(|| {
+                    ALGORITHM_ALLOWLIST
+                        .iter()
+                        .any(|a| *a == format!("{:?}", header.alg))
+                });
+            if !matches_algorithm {
+                continue;
+            }
+            let jwks_url = entry.jwks_url.clone().unwrap_or_else(|| {
+                format!(
+                    "{}/.well-known/jwks.json",
+                    entry.issuer.trim_end_matches('/')
+                )
+            });
+            let jwks = self.jwks_for(&jwks_url).await?;
+            // Key selection by `kid`; a single-key document needs none.
+            let jwk = jwks
+                .keys
+                .iter()
+                .find(|jwk| jwk.common.key_id.as_deref() == header.kid.as_deref())
+                .or_else(|| (jwks.keys.len() == 1).then(|| &jwks.keys[0]));
+            let Some(jwk) = jwk else { continue };
+            let Ok(key) = jsonwebtoken::DecodingKey::from_jwk(jwk) else {
+                continue;
+            };
+            let mut validation = jsonwebtoken::Validation::new(header.alg);
+            validation.set_issuer(std::slice::from_ref(&entry.issuer));
+            validation.set_audience(std::slice::from_ref(&entry.audience));
+            validation.leeway = entry
+                .clock_skew
+                .as_deref()
+                .and_then(|skew| humantime::parse_duration(skew).ok())
+                .map(|skew| skew.as_secs())
+                .unwrap_or(60); // F-77's documented default skew is 60s
+            let Ok(decoded) = jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation)
+            else {
+                expired = true; // an ExpiredSignature anywhere in the chain surfaces 401 token-expired
+                continue;
+            };
+            let claims = decoded.claims;
+            // F-79's matching; F-80's unconstrained guard double-checks the
+            // config-validated entry (defence in depth at runtime).
+            if entry.claims.is_empty() && !entry.allow_unconstrained {
+                return Err(AuthError::InvalidToken);
+            }
+            claim_match(&entry.claims, &claims).ok_or(AuthError::ForbiddenResource)?;
+            return Ok(AuthedCaller {
+                origin: entry.name.clone(),
+                issuer: entry.issuer.clone(),
+                subject: claims
+                    .get("sub")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                display_name: claims
+                    .get("display_name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                grants: entry.grants.clone(),
+                repository_id: claims
+                    .get("repository_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                bootstrap: false,
+            });
+        }
+        if expired {
+            Err(AuthError::TokenExpired)
+        } else {
+            Err(AuthError::InvalidToken)
+        }
     }
 }
 
@@ -263,7 +389,8 @@ pub async fn require_auth(
     let Some(presented) = presented else {
         return problem(request.uri().path(), AuthError::MissingToken);
     };
-    match state.auth.resolve_bearer(&presented, Some(peer.ip())) {
+    let resolved = state.auth.resolve_bearer(&presented, Some(peer.ip())).await;
+    match resolved {
         Ok(caller) => {
             request.extensions_mut().insert(caller);
             next.run(request).await
