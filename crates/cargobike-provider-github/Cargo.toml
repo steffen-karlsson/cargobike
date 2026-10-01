@@ -16,7 +16,6 @@ hex = "0.4"
 hmac = "0.12"
 octocrab = "0.54.2"
 secrecy = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 thiserror = { workspace = true }
