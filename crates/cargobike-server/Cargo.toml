@@ -1,0 +1,11 @@
+[package]
+name = "cargobike-server"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Cargobike server: axum API, auth, webhooks, extension host"
+publish = false
+
+[lints]
+workspace = true

@@ -1,0 +1,42 @@
+# cargo-deny: licence policy, duplicate-version bans, advisories, sources (PRD A.13).
+# CI runs it via EmbarkStudios/cargo-deny-action; `make audit` still runs cargo audit.
+
+[graph]
+# The CLI/server targets plus the wasi target core must compile for (PRD T4).
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "wasm32-wasip2" },
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    # serde_yml is RUSTSEC-2025-0068; serde_yaml is archived (PRD A.15).
+    { name = "serde_yml", version = "*" },
+    { name = "serde_yaml", version = "*" },
+    { name = "openssl", version = "*" },
+    { name = "native-tls", version = "*" },
+]
+
+[advisories]
+version = 2
+yanked = "warn"

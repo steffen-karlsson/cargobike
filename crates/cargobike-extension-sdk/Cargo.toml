@@ -1,0 +1,11 @@
+[package]
+name = "cargobike-extension-sdk"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "WIT and guest bindings for Cargobike extensions"
+publish = false
+
+[lints]
+workspace = true

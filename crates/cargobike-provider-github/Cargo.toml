@@ -1,0 +1,11 @@
+[package]
+name = "cargobike-provider-github"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "GitHub provider implementation for Cargobike"
+publish = false
+
+[lints]
+workspace = true

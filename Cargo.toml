@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cargobike-core",
+    "crates/cargobike-api",
+    "crates/cargobike-engine",
+    "crates/cargobike-server",
+    "crates/cargobike-cli",
+    "crates/cargobike-extension-sdk",
+    "crates/cargobike-provider-github",
+]
+# Spikes are throwaway prototypes with their own dependency set.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Durable release orchestration. Durable delivery, one pedal at a time."
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["serde", "serde-well-known"] }
+uuid = { version = "1", features = ["v7", "std", "serde"] }
+semver = "1"
+globset = "0.4"
+strum = { version = "0.27", features = ["derive"] }
+async-trait = "0.1"
+tracing = "0.1"
+secrecy = { version = "0.10", features = ["serde"] }
+bytes = "1"
+tokio-util = "0.7"
+
+# Shared dev-dependencies (unit tests live in #[cfg(test)] mod tests, PRD 20.4)
+rstest = "0.26"
+pretty_assertions = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[workspace.lints.rust]
+dead_code = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"

@@ -1,0 +1,11 @@
+[package]
+name = "cargobike-engine"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Cargobike durable interpreter over DBOS (depends on core only)"
+publish = false
+
+[lints]
+workspace = true

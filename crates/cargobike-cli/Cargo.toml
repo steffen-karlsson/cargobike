@@ -1,0 +1,11 @@
+[package]
+name = "cargobike-cli"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Cargobike CLI client (no database dependencies)"
+publish = false
+
+[lints]
+workspace = true

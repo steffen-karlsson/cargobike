@@ -1,0 +1,5 @@
+# Tests use unwrap()/expect() as assertion helpers; §20.4 forbids them in
+# non-test code, where the workspace lints (§11.3) still deny them.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

@@ -1,0 +1,11 @@
+[package]
+name = "cargobike-api"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Cargobike API DTOs, OpenAPI surface and typed client"
+publish = false
+
+[lints]
+workspace = true
