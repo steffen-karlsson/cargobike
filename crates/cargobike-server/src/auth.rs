@@ -5,7 +5,6 @@
 //! OIDC-token validation against JWKS is the next milestone; tokens
 //! answer `InvalidToken` until then.
 
-use secrecy::ExposeSecret;
 use std::sync::Arc;
 
 use crate::http::AppState;
@@ -115,13 +114,19 @@ impl AuthError {
 }
 
 /// Constant-time argon2 verify across the stored hashes (F-85; two keys
-/// can be active at once for rotation).
+/// can be active at once for rotation). Expired keys (F-85's `expires`)
+/// never verify: rotation is meant to dislodge them.
 fn verify_api_keys<'a>(
     entries: &'a [crate::config::ApiKeyEntry],
     presented: &str,
 ) -> Option<&'a crate::config::ApiKeyEntry> {
     let verifier = argon2::Argon2::default();
+    let now = time::OffsetDateTime::now_utc();
     entries.iter().find(|entry| {
+        if !entry_is_active(entry, &now) {
+            tracing::warn!(key = %entry.name, "an expired API key was not used");
+            return false;
+        }
         argon2::password_hash::PasswordHash::new(&entry.hash)
             .ok()
             .is_some_and(|stored| {
@@ -135,18 +140,67 @@ fn verify_api_keys<'a>(
     })
 }
 
+/// An active key: `expires` (a date, or an RFC 3339 stamp) has not
+/// passed. Unparsable expires texts never validate (fail closed).
+fn entry_is_active(entry: &crate::config::ApiKeyEntry, now: &time::OffsetDateTime) -> bool {
+    let Some(text) = &entry.expires else {
+        return true;
+    };
+    let date = time::Date::parse(
+        text,
+        &time::macros::format_description!("[year]-[month]-[day]"),
+    )
+    .ok()
+    .map(|date| date.with_time(time::Time::MIDNIGHT).assume_utc())
+    .or_else(|| {
+        time::OffsetDateTime::parse(
+            text,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .ok()
+    });
+    match date {
+        Some(parsable_expiry) => *now < parsable_expiry,
+        None => false,
+    }
+}
+
 /// The auth context the middleware consults (F-77: JWKS cached, refetch
 /// on unknown `kid` is rate-limited by the moka TTL window). Trust
 /// entries come from the shared watch, so SIGHUP reloads reach auth too.
 pub struct AuthState {
     /// The shared config source (F-129: hot reload swaps this).
     config: tokio::sync::watch::Receiver<Arc<crate::config::Config>>,
-    /// The localhost bootstrap key, when provided (F-86).
-    bootstrap: Option<secrecy::SecretString>,
+    /// The localhost bootstrap key hashed at startup (F-86: the PHC
+    /// string persists in the process only; verification is argon2).
+    bootstrap: Option<String>,
     /// Cached JWKS documents keyed by URL (F-77).
     jwks: moka::sync::Cache<String, Arc<jsonwebtoken::jwk::JwkSet>>,
     /// The outbound client used for JWKS fetches only.
     client: reqwest::Client,
+}
+
+/// The salt's randomness: 16 bytes from the OS (Argon2's PHC b64).
+fn rand_materials() -> [u8; 16] {
+    let mut bytes = [0_u8; 16];
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
+use rand_core::RngCore as _;
+
+/// Constant-time argon2 verify against a startup-hashed at-rest value
+/// (the bootstrap key; F-86/A.5).
+fn verify_password_at_rest(hashed: &str, presented: &str) -> bool {
+    match argon2::password_hash::PasswordHash::new(hashed) {
+        Ok(stored) => argon2::password_hash::PasswordVerifier::verify_password(
+            &argon2::Argon2::default(),
+            presented.as_bytes(),
+            &stored,
+        )
+        .is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// The bootstrap-key environment variables (F-86).
@@ -179,7 +233,16 @@ impl AuthState {
         );
         Ok(Self {
             config,
-            bootstrap: plaintext.map(secrecy::SecretString::from),
+            // F-86: hash AT startup; the plaintext does not survive past
+            // this line (the argon2 PHC string is the kept form).
+            bootstrap: plaintext.map(|plaintext| {
+                use argon2::password_hash::{PasswordHasher, SaltString};
+                let salt = SaltString::encode_b64(&rand_materials()).ok().unwrap_or_else(|| SaltString::from_b64(&"cargobike-bootstrap-salt-000000000000000").expect("the fallback salt"));
+                argon2::Argon2::default()
+                    .hash_password(plaintext.as_bytes(), &salt)
+                    .map(|hashed| hashed.to_string())
+                    .unwrap_or_default()
+            }),
             jwks: moka::sync::Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(300))
                 .build(),
@@ -241,9 +304,11 @@ impl AuthState {
                 bootstrap: false,
             });
         }
-        if let Some(bootstrap) = &self.bootstrap {
+        if let Some(bootstrap_hash) = &self.bootstrap {
             let is_local = peer.map(|ip| ip.is_loopback()).unwrap_or(false);
-            if is_local && bootstrap.expose_secret() == presented {
+            // F-86: the bootstrap key was hashed at startup; the verify
+            // is the same argon2 path, constant against key material.
+            if is_local && verify_password_at_rest(bootstrap_hash, presented) {
                 return Ok(AuthedCaller {
                     origin: "bootstrap".to_owned(),
                     issuer: "bootstrap".to_owned(),

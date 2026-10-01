@@ -244,9 +244,13 @@ use axum::response::IntoResponse;
 /// F-60: cancel is a dedicated endpoint starting a cleanup workflow (F-75).
 async fn cancel_release(
     State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let _ = state;
+    // F-99: canceling is a grant (US-5).
+    if !caller.has_grant("release:cancel") {
+        return Err(ApiError::forbidden("The `release:cancel` grant is required."));
+    }
     let now = sqlx::types::time::OffsetDateTime::now_utc();
     state
         .releases
@@ -258,8 +262,13 @@ async fn cancel_release(
 
 async fn get_release(
     State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    // F-99: reading is a grant too (US-3).
+    if !caller.has_grant("release:read") {
+        return Err(ApiError::forbidden("The `release:read` grant is required."));
+    }
     let document = state.releases.get(&id).await.map_err(repository_to_api)?;
     Ok(axum::Json(document))
 }
@@ -267,8 +276,13 @@ async fn get_release(
 /// Terminal-only delete (US-6); event log retained (F-114).
 async fn delete_release(
     State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    // F-99: deletion is a grant (US-6).
+    if !caller.has_grant("release:delete") {
+        return Err(ApiError::forbidden("The `release:delete` grant is required."));
+    }
     state
         .releases
         .delete_terminal(&id)
