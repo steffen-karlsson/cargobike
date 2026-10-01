@@ -435,6 +435,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "cargobike-core",
+ "globset",
  "hex",
  "hmac 0.12.1",
  "http",

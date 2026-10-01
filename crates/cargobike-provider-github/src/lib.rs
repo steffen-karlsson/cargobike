@@ -510,10 +510,131 @@ impl Provider for GithubProvider {
         }
         Ok(requests)
     }
+
+    async fn delete_branch(&self, repo: &CoreRepoRef, branch: &str) -> ProviderResult<()> {
+        let handler = self.git_by_id(repo)?;
+        handler
+            .delete_ref(&Reference::Branch(branch.to_owned()))
+            .await
+            .map_err(request_failure)?;
+        Ok(())
+    }
+
+    async fn check_branch_protection(
+        &self,
+        repo: &CoreRepoRef,
+        branch: &str,
+    ) -> ProviderResult<cargobike_core::provider::BranchProtection> {
+        let (owner, name) = owner_name(self, repo).await?;
+        let protection = self
+            .github
+            .repos(owner, name)
+            .branches()
+            .protection(branch)
+            .get()
+            .await
+            .map_err(request_failure)?;
+        Ok(cargobike_core::provider::BranchProtection {
+            requires_reviews: protection.required_pull_request_reviews.is_some(),
+            required_review_count: protection
+                .required_pull_request_reviews
+                .and_then(|reviews| reviews.required_approving_review_count)
+                .map(|count| count as u16),
+        })
+    }
+
+    async fn check_tag_protection(
+        &self,
+        repo: &CoreRepoRef,
+        tag_pattern: &str,
+    ) -> ProviderResult<bool> {
+        let (owner, name) = owner_name(self, repo).await?;
+        let rulesets = self
+            .github
+            .repos(owner.clone(), name.clone())
+            .rulesets()
+            .list()
+            .send()
+            .await
+            .map_err(request_failure)?;
+        Ok(rulesets
+            .iter()
+            .filter(|ruleset| {
+                ruleset.target == Some(octocrab::models::rulesets::RulesetTarget::Tag)
+                    && ruleset.enforcement == octocrab::models::rulesets::RulesetEnforcement::Active
+            })
+            .any(|ruleset| pattern_protects(tag_pattern, ruleset)))
+    }
+
+    async fn enable_auto_merge(&self, repo: &CoreRepoRef, number: u64) -> ProviderResult<()> {
+        let (owner, name) = owner_name(self, repo).await?;
+        let full_name = format!("{owner}/{name}");
+        let payload = serde_json::json!({
+            "query": "mutation($gh_pr: ID!) { enablePullRequestAutoMerge(pullRequestId: $gh_pr, mergeMethod: MERGE) { pullRequest { number } } }",
+            "variables": { "gh_pr": format!("{full_name}:pr:{number}") }
+        });
+        let response: serde_json::Value = self
+            .github
+            .graphql(&payload)
+            .await
+            .map_err(request_failure)?;
+        if response.get("data").is_none() {
+            return Err(ProviderError::Request(format!(
+                "the auto-merge refused to enable: {response:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn create_tag(&self, repo: &CoreRepoRef, tag: &str, sha: &str) -> ProviderResult<()> {
+        let handler = self.git_by_id(repo)?;
+        handler
+            .create_tag(tag, format!("release {tag}"), sha, "commit")
+            .send()
+            .await
+            .map_err(request_failure)?;
+        Ok(())
+    }
+
+    async fn create_release(
+        &self,
+        repo: &CoreRepoRef,
+        tag: &str,
+        name: &str,
+        body: &str,
+    ) -> ProviderResult<()> {
+        let (owner, repo_name) = owner_name(self, repo).await?;
+        self.github
+            .repos(owner, repo_name)
+            .releases()
+            .create(tag)
+            .name(name)
+            .body(body)
+            .send()
+            .await
+            .map_err(request_failure)?;
+        Ok(())
+    }
 }
 
-/// REST owner/name-pair handlers need the full name; the immutable ID
-/// resolves when the verified label is absent (F-10).
+/// Whether the ruleset actively protects the trigger's tag pattern
+/// (F-82). The include list is GitHub glob syntax: `~ALL` covers every
+/// ref; otherwise inclusion requires the pattern EQUALS (breadth
+/// comparison between globs is not well-defined, so the conservative
+/// false refuses over-broad cases — documented).
+fn pattern_protects(pattern: &str, ruleset: &octocrab::models::rulesets::Ruleset) -> bool {
+    let Some(conditions) = &ruleset.conditions else {
+        return false;
+    };
+    let Some(ref_name) = &conditions.ref_name else {
+        return false;
+    };
+    ref_name
+        .include
+        .iter()
+        .any(|glob| glob == "~ALL" || glob == pattern)
+}
+
 /// The octocrab repository ID out of the immutable string id (F-10; R6).
 fn reference_id(repo: &CoreRepoRef) -> Result<octocrab::models::RepositoryId, ProviderError> {
     let parsed: u64 = repo.id.parse().map_err(|_| {
@@ -522,8 +643,6 @@ fn reference_id(repo: &CoreRepoRef) -> Result<octocrab::models::RepositoryId, Pr
     Ok(parsed.into())
 }
 
-/// REST owner/name-pair handlers need the full name; the immutable ID
-/// resolves when the verified label is absent (F-10).
 async fn owner_name(
     provider: &GithubProvider,
     repo: &CoreRepoRef,
