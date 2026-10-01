@@ -296,6 +296,17 @@ dependencies = [
 [[package]]
 name = "cargobike-engine"
 version = "0.1.0"
+dependencies = [
+ "cargobike-core",
+ "humantime",
+ "pretty_assertions",
+ "rstest",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "thiserror",
+ "time",
+]
 
 [[package]]
 name = "cargobike-extension-sdk"
