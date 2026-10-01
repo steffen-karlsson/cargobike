@@ -9,3 +9,17 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive", "env"] }
+serde.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+url = "2.5.8"
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[[bin]]
+name = "cargobike"
+path = "src/main.rs"
