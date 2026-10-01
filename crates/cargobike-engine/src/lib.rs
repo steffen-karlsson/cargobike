@@ -6,6 +6,7 @@
 
 pub mod builtin;
 pub mod cleanup;
+pub mod correlation;
 pub mod expr;
 pub mod interpreter;
 pub mod leases;

@@ -27,6 +27,7 @@ regex = "1"
 sqlx = { workspace = true }
 uuid = { workspace = true }
 secrecy = { workspace = true }
+
 semver = { workspace = true }
 
 [dev-dependencies]

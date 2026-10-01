@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use cargobike_core::provider::Provider as _ProviderContract;
 use cargobike_core::registry::ProviderRegistry;
 
 use crate::signals::{InterpreterError, Signal, merge_signal_key, merge_topic};
@@ -49,10 +50,12 @@ pub mod humantime_serde_wrap {
     }
 }
 
-/// The reconciler's services (providers + the read side of releases).
+/// The reconciler's services (providers + the correlation read side).
 pub struct ReconcilerServices {
     /// Providers (F-39).
     pub providers: Arc<ProviderRegistry>,
+    /// CR correlation rows (F-63's sweep input).
+    pub correlations: Arc<crate::correlation::CorrelationRepository>,
 }
 
 /// Registers the reconciler BEFORE launch (F-15's registry snapshot).
@@ -87,11 +90,81 @@ async fn loop_fn(
 /// this build ships the sweep's scan + send halves via a direct SQL read
 /// of the shared releases table (A.14: the engine holds sqlx).
 async fn sweep(services: &ReconcilerServices) -> Result<u32, InterpreterError> {
-    let _ = services;
-    // The scan forms in the server crate's next milestone; the signal
-    // half is exercised in tests with the wire-level sweep test there.
-    tracing::debug!("sweep deferred: release scan wires up with the release service");
-    Ok(0)
+    const SWEEP_PAGE: u32 = 200;
+    let mut sent = 0_u32;
+    let mut cursor: Option<(String, String, i64)> = None;
+    loop {
+        let rows = services
+            .correlations
+            .page(SWEEP_PAGE, cursor.clone())
+            .await
+            .map_err(|sqlx_failure| {
+                InterpreterError::Step(cargobike_core::step::StepError::Failed {
+                    code: cargobike_core::error::STEP_FAILED.to_owned(),
+                    message: format!("the correlation sweep failed to read: {sqlx_failure}"),
+                })
+            })?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in &rows {
+            let repo = cargobike_core::model::RepoRef::new(&row.provider, &row.repo_id);
+            let Ok(provider) = services.providers.resolve(&repo) else {
+                continue; // the provider is gone; the correlation is stale
+            };
+            let Ok(change_request) =
+                _ProviderContract::get_change_request(&*provider, &repo, row.cr_number as u64)
+                    .await
+            else {
+                continue; // unavailable this cycle: the next sweep retries (F-55)
+            };
+            let merged = matches!(change_request.state, cargobike_core::model::CrState::Merged);
+            let closed = matches!(change_request.state, cargobike_core::model::CrState::Closed);
+            if !(merged || closed) {
+                continue; // still open: nothing to send
+            }
+            let (key, topic, message) = reconciler_send_form(row, merged);
+            let options = dbos::SendOptions {
+                topic: Some(topic.as_ref() as &str),
+                idempotency_key: Some(key.as_str()),
+                ..dbos::SendOptions::default()
+            };
+            let _result: dbos::Result<(), dbos::EngineOnly> =
+                dbos::send_with(&row.workflow_id, &message, options).await;
+            sent += 1;
+        }
+        if let Some(last) = rows.last().cloned() {
+            cursor = Some((last.provider, last.repo_id, last.cr_number));
+        }
+        if rows.len() < SWEEP_PAGE as usize {
+            break;
+        }
+    }
+    Ok(sent)
+}
+
+/// The signal half of one row: topic + idempotency key + envelope (owned;
+/// the caller builds the borrow-bearing `SendOptions` across its await).
+fn reconciler_send_form(
+    row: &crate::correlation::CorrelationRow,
+    merged: bool,
+) -> (String, Arc<str>, Signal) {
+    let topic: Arc<str> = Arc::from(merge_topic(&row.environment, &row.step_id).as_str());
+    let key = crate::signals::merge_signal_key(
+        &row.provider,
+        &format!(
+            "reconcile/{}/{}/{}",
+            row.release_id, row.environment, row.cr_number
+        ),
+    );
+    (
+        key,
+        topic,
+        Signal::MergeComplete {
+            merged,
+            by_way_of: format!("reconciler/cr-{}", row.cr_number),
+        },
+    )
 }
 
 /// The signal the reconciler emits for a CR state (F-67/F-20a). The
