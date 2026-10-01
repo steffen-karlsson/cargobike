@@ -141,20 +141,22 @@ async fn supersede(
 }
 
 /// Steps the interpreter calls when the environment is terminal-ok
-/// (F-71's release the lease on complete/skip).
+/// (F-71's release the lease on complete/skip). The queue's WAKE send
+/// needs queued-environment identities (F-71's "the previous holder or
+/// the reconciler" — the membership lives in the release store, so the
+/// wake path lands with the executor/reconciler wiring); until then the
+/// queued release's `QUEUE_WAKE_TIMEOUT` retry is the wake mechanism.
 pub async fn release_lease(
     leases: &LeaseRepository,
     snapshot: &ReleaseSnapshot,
     environment: &crate::template::ResolvedEnvironment,
 ) -> Result<(), InterpreterError> {
     let release_id = uuid::Uuid::try_parse(&snapshot.release.id).map_err(step_failure)?;
-    match leases
+    leases
         .release(&snapshot.release.application, &environment.name, release_id)
         .await
-    {
-        Ok(_) => Ok(()),
-        Err(failure) => Err(sqlx_failure(failure)),
-    }
+        .map_err(sqlx_failure)?;
+    Ok(())
 }
 
 fn sqlx_failure(failure: sqlx::Error) -> InterpreterError {

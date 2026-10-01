@@ -156,13 +156,36 @@ async fn run_environment(
         match run_step(snapshot, environment, step, &mut context, services).await {
             StepFlow::Continue => {}
             StepFlow::Skip => {
-                // F-71: the lease releases on skip as well.
-                let _ = crate::concurrency::release_lease(&services.leases, snapshot, environment)
-                    .await;
+                // F-71: the lease releases on skip, waking the queue.
+                if let Err(release_failure) =
+                    crate::concurrency::release_lease(&services.leases, snapshot, environment).await
+                {
+                    tracing::warn!(
+                        %release_failure,
+                        release = %snapshot.release.id,
+                        environment = %environment.name,
+                        "queue release failed on skip"
+                    );
+                }
                 return finished(environment, EnvironmentPhase::Skipped, None);
             }
-            StepFlow::Error(failure) => return error_to_outcome(environment, failure),
+            StepFlow::Error(failure) => {
+                // F-74: a failed environment KEEPS the lease for the fork
+                // resume; the supersede chain releases it server-side.
+                return error_to_outcome(environment, failure);
+            }
         }
+    }
+    // F-71: the lease releases on complete, waking the queue.
+    if let Err(release_failure) =
+        crate::concurrency::release_lease(&services.leases, snapshot, environment).await
+    {
+        tracing::warn!(
+            %release_failure,
+            release = %snapshot.release.id,
+            environment = %environment.name,
+            "queue release failed on complete"
+        );
     }
     finished(environment, EnvironmentPhase::Completed, None)
 }
