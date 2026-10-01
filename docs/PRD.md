@@ -366,7 +366,7 @@ handle at-least-once execution.
 | F-5 | The template is registry-only: the application entry declares the template. The caller cannot select a template |
 | F-6 | `status.phase` is one of: `Pending`, `Running`, `PendingApproval`, `Failed`, `Canceled`, `Superseded`, `Completed` |
 | F-7 | `status.environments` is a per-environment status array: `{name, phase, change_request, started_at, completed_at}`. Environment phases include `Skipped` (gate false or no changes) and `Waiting` (held by concurrency policy) |
-| F-8 | `status.error` contains `{code, message}` when the release has failed. Error codes: `StepFailed`, `ApprovalTimeout`, `ApprovalRejected`, `VersionNotVerified`, `ConcurrencyRejected`, `ChangeRequestModified` |
+| F-8 | `status.error` contains `{code, message}` when the release has failed. Error codes: `StepFailed`, `MergeTimeout`, `ApprovalTimeout`, `ApprovalRejected`, `VersionNotVerified`, `ConcurrencyRejected`, `ChangeRequestModified` |
 | F-9 | `metadata` includes typed timestamps (`created_at`, `updated_at`), `resource_version` for optimistic concurrency (honoured via `If-Match`), `retried_from`, free-form labels/annotations, and `attempts[]` listing workflow IDs |
 | F-10 | Repositories are opaque: `RepoRef { provider, id }`. The `id` field is a string (the provider's immutable ID, e.g. GitHub repository ID), used for authorization. An optional `path` (e.g. `my-org/my-repo`) may be declared as a **verified label**: the server checks it against the provider at startup. On mismatch, the affected application is marked unavailable (visible in `GET /api/v1/applications` and `cargobike application list`) and retried in the background; the server does not fail. The strict, fail-on-error check runs in `cargobike validate --resolve`. The `path` is otherwise fetched from the provider at runtime via `get_repo_path`. Target repos must also declare `id` |
 | F-11 | Source and target are separate: `spec.source` (where the version came from) is resolved from the application registry, not caller-supplied. Target repos are declared per environment in the registry |
@@ -897,7 +897,7 @@ pub struct ChangeRequestRef {
 pub enum CrState { Open, Closed, Merged }
 
 pub struct ReleaseError {
-    pub code: String,                // StepFailed, ApprovalTimeout,
+    pub code: String,                // StepFailed, MergeTimeout, ApprovalTimeout,
                                       // ApprovalRejected, VersionNotVerified,
                                       // ConcurrencyRejected, ChangeRequestModified
     pub message: String,
@@ -2785,4 +2785,4 @@ codegen-units = 1
 | **CEL** | Common Expression Language |
 | **Fork** | A DBOS operation that creates a workflow inheriting recorded step results |
 | **CiContext** | Generic CI context (provider, repository, repository_id, workflow_ref, run_id, run_url) |
-| **RepoRef** | Opaque repository reference: `{provider, id}` where `id` is a string (the immutable provider ID). `path` is fetched from the provider at runtime |
+| **RepoRef** | Opaque repository reference: `{provider, id}` where `id` is a string (the immutable provider ID). An optional `path` is a verified label checked at startup (F-10); otherwise fetched from the provider at runtime |
