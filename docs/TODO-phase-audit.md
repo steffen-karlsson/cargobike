@@ -175,10 +175,14 @@
 
 ## 9. Test coverage vs §14 (what's untested that must be)
 
-- [ ] **Provider lifecycle over wiremock (4.9)**: `cargobike-provider-github`
-  has no tests/ dir and no dev-dependencies (wiremock). Full lifecycle against a
-  mocked GitHub API (create-branch → commit → CR → merge verify → close) is
-  untested; only webhook signature/normalisation unit tests exist.
+- [x] **Provider lifecycle over wiremock (4.9)**:
+  `crates/cargobike-provider-github/tests/lifecycle_wiremock.rs` runs the full
+  lifecycle against a mocked GitHub API (metadata by immutable id, branch
+  create/read, fused edit+commit plus its no-op replay, pull create-twice,
+  labels, comments, statuses, protection checks, GraphQL auto-merge, tag and
+  release, branch delete). Found + fixed a real bug en route: the GraphQL
+  result check now looks for the `errors` member (octocrab unwraps `data`
+  itself).
 - [ ] `testcontainers` Postgres (PRD 1.4/2.9): absent from dev-deps; DB tests
   *skip* when `CARGOBIKE_TEST_DATABASE_URL` is unset, so a bare `cargo test`
   quietly zeroes integration coverage. Make `make test` self-sufficient.
@@ -191,15 +195,18 @@
   doesn't exist yet (Phase 5.5, but keep the CLI-side covered by 4.6/4.9 too).
 - [ ] Watch exit-code matrix (US-4) incl. Skipped-success and reconnects —
   blocked by the watch command.
-- [ ] Crash harness covers the action-step path only; waits (merge/approval)
-  and reproducer for fork (`ForkFrom::LastFailure`) are untested (F-23,
-  US-7 dependent).
-- [ ] F-120 secrets-in-DBOS-state scan test (a test scanning the step-output
-  table for known secret values) — not yet present anywhere.
+- [ ] Fork reproducer (`ForkFrom::LastFailure`, retry) is untested (US-7
+  dependent). A stalled wait's wake/verify/complete half is covered in-process
+  by the reconciler suite (`tests/engine_integration/`); a cross-process kill
+  during a wait remains unprobed (the milestone hook fires at action steps
+  only).
+- [x] F-120 secrets-in-DBOS-state scan test — the secrets invariant in
+  `tests/engine_integration/`: a real interpreter pass records the returned
+  request to prove the secret's flow, then scans `operation_outputs` and
+  `workflow_status` (inputs/output/error) for the material.
 - [ ] ETag/refetch-on-unknown-kid rate limiting unit tests.
-- [ ] `${VAR:-default}` interpolation test (F-89): only plain `${VAR}` is
-  tested; confirm shellexpand's grammar covers `:-` (it may not — then
-  hand-roll before shipping).
+- [x] `${VAR:-default}` interpolation test (F-89): shellexpand 3.1.2 covers
+  the default syntax; the server config test suite asserts it.
 
 ## 10. Standing documentation tasks (from the project instructions)
 

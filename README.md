@@ -42,12 +42,12 @@ server stay free of database crates; the engine depends on core only.
 Requirements: Rust 1.85 (edition 2024), PostgreSQL 16+.
 
 ```bash
-make build          # the workspace
-make lint           # fmt-check + clippy (-D warnings)
-make test           # all crates; DB-backed tests need a database, see below
+make build # the workspace
+make lint # fmt-check + clippy (-D warnings)
+make test # all crates; DB-backed tests need a database, see below
 
 # A local Postgres for integration/crash tests:
-scripts/spike-postgres.sh start   # trust auth on 127.0.0.1:54329
+scripts/spike-postgres.sh start # trust auth on 127.0.0.1:54329
 export CARGOBIKE_TEST_DATABASE_URL=postgres://localhost:54329/postgres
 ```
 
@@ -56,15 +56,15 @@ Run the server and CLI against it:
 ```bash
 # A minimal dev config (env-only bootstrap, §13.2: no registry/release create).
 printf 'server: {}\ndatabase: { url: postgres://localhost:54329/postgres }\nauth: {}\n' \
-  > /tmp/cb-dev-config.yaml
+ > /tmp/cb-dev-config.yaml
 CARGOBIKE_SERVER_CONFIG=/tmp/cb-dev-config.yaml \
-  CARGOBIKE_SERVER_BOOTSTRAP_API_KEY=devkey \
-  cargo run -p cargobike-server
+ CARGOBIKE_SERVER_BOOTSTRAP_API_KEY=devkey \
+ cargo run -p cargobike-server
 
 cargo run -p cargobike-cli -- release list --url http://localhost:8080
 ```
 
-(The bootstrap API key grants `*` from localhost only, F-86; env-only mode
+(The bootstrap API key grants `*` from localhost only, ; env-only mode
 cannot create releases until an application registry is configured — PRD
 §13.2.) For the engine alone, the crash/lease harnesses demonstrate the
 durable pipeline end to end:
@@ -75,19 +75,19 @@ durable pipeline end to end:
 Currently mid-implementation against the PRD's phased plan:
 
 - **Phases 1–4** (foundation, server core + auth, pipeline engine, GitHub
-  provider + CLI) are built — with a shared template the release kinds in
-  [`templates/service.yaml`](templates/service.yaml).
+ provider + CLI) are built — with a shared template the release kinds in
+ [`templates/service.yaml`](templates/service.yaml).
 - The server↔engine wiring and the remaining Phase 4 CLI surfaces are tracked
-  item-by-item in **[`docs/TODO-phase-audit.md`](docs/TODO-phase-audit.md)**,
-  alongside the known gaps before Phase 5.
+ item-by-item in **[`docs/TODO-phase-audit.md`](docs/TODO-phase-audit.md)**,
+ alongside the known gaps before Phase 5.
 - **Phase 5** (webhooks, SSE watch, event log, extensions, OpenAPI) is next.
 
 ## Documentation
 
-- [`docs/PRD.md`](docs/PRD.md) — the product requirements (single source of
-  truth for behaviour, F-IDs cited across the code)
+- [`docs/PRD.md`](docs/PRD.md) — the product requirements (the single
+  source of truth for behaviour)
 - [`docs/TODO-phase-audit.md`](docs/TODO-phase-audit.md) — code-vs-PRD audit
-  and the open item list
+ and the open item list
 - [`docs/examples.md`](docs/examples.md) — user-facing worked examples
 - [`docs/spike-dbos.md`](docs/spike-dbos.md) — DBOS Rust SDK spike findings
 - Per-crate docs — see the table above
