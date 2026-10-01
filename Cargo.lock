@@ -335,6 +335,7 @@ dependencies = [
 name = "cargobike-engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "cargobike-core",
  "cel",
  "humantime",

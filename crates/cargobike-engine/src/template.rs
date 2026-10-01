@@ -111,6 +111,8 @@ impl From<serde_yaml_ng::Error> for TemplateError {
 
 /// Compiles a template from its YAML source against the application's
 /// version scheme (F-27a's gate checks happen here, before any release).
+/// Structural only: the `uses:`-against-registry check needs the server's
+/// installed steps and lives in [`compile_with`].
 pub fn compile(
     source: &str,
     version_scheme: &VersionScheme,
@@ -118,6 +120,56 @@ pub fn compile(
     let template: PipelineTemplate = serde_yaml_ng::from_str(source)?;
     validate(&template, version_scheme)?;
     resolve(template)
+}
+
+/// Compilation that also validates every `uses:` against the installed
+/// step types (F-35: unregistered steps refuse at compile time).
+pub fn compile_with(
+    source: &str,
+    version_scheme: &VersionScheme,
+    registry: &crate::steps::StepRegistry,
+) -> Result<CompiledTemplate, TemplateError> {
+    let template: PipelineTemplate = serde_yaml_ng::from_str(source)?;
+    validate(&template, version_scheme)?;
+    check_uses(&template, registry)?;
+    resolve(template)
+}
+
+/// Every action step's `uses:` must resolve in the registry (F-35); the
+/// environment's declared steps include the ones `include:` pulls in.
+fn check_uses(
+    template: &PipelineTemplate,
+    registry: &crate::steps::StepRegistry,
+) -> Result<(), TemplateError> {
+    fn uses_of(step: &cargobike_core::template::StepSpec) -> Option<String> {
+        step.uses.clone()
+    }
+    let resolve_uses = |uses: &str| {
+        registry
+            .resolve(uses)
+            .ok()
+            .map(|_step| ())
+            .ok_or_else(|| {
+                TemplateError::Invalid(format!(
+                    "the step `{uses}` is not installed (F-35: templates compile against installed step types)"
+                ))
+            })
+    };
+    for group in &template.step_groups {
+        for step in &group.steps {
+            if let Some(uses) = uses_of(step) {
+                resolve_uses(&uses)?;
+            }
+        }
+    }
+    for environment in &template.environments {
+        for step in &environment.steps {
+            if let Some(uses) = uses_of(step) {
+                resolve_uses(&uses)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Structural validation before resolution (F-25..F-34).
