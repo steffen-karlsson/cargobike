@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt-check
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # Integration phases (2.9 onward) use testcontainers; the service is
+      # for sqlx migrations and any DBOS-facing tests that prefer a fixed URL.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["54329:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: test
+        run: cargo test --all-targets
+        env:
+          CARGOBIKE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:54329/postgres
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: ./Cargo.toml
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - name: build core for wasm32-wasip2 (T4)
+        run: cargo build -p cargobike-core --target wasm32-wasip2
+
+  build-matrix:
+    # linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 (PRD 15.2).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest          # linux/amd64
+          - os: ubuntu-24.04-arm       # linux/arm64
+          - os: macos-13               # darwin/amd64
+          - os: macos-latest           # darwin/arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --workspace
+
+  spike:
+    # PRD task 1.1's runtime verification, repeatable in CI only (docker).
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: dbos spike
+        working-directory: spikes/dbos-spike
+        run: cargo test
