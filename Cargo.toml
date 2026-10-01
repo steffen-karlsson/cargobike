@@ -43,6 +43,10 @@ shellexpand = "3"
 humantime = "2"
 humantime-serde = "1"
 serde_yaml_ng = "0.10"
+jsonwebtoken = "10"
+argon2 = "0.5"
+moka = { version = "0.12", features = ["sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "migrate", "uuid", "time", "macros"] }
 
 

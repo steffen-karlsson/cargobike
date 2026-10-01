@@ -16,6 +16,7 @@ time = { workspace = true }
 uuid = { workspace = true }
 strum = { workspace = true }
 secrecy = { workspace = true }
+globset = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 
@@ -29,7 +30,15 @@ humantime-serde = { workspace = true }
 serde_yaml_ng = { workspace = true }
 sqlx = { workspace = true }
 
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+moka = { workspace = true }
+reqwest = { workspace = true }
+
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
