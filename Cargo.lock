@@ -341,12 +341,16 @@ dependencies = [
  "humantime",
  "pretty_assertions",
  "rstest",
+ "secrecy",
  "semver",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sqlx",
  "thiserror",
  "time",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
