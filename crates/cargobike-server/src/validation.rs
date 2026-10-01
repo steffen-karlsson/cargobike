@@ -148,11 +148,19 @@ fn check_releaser_references(config: &crate::config::Config) -> Result<(), Valid
 }
 
 /// A `ref` claim glob can plausibly match the tag format (F-99a(b)): the
-/// glob's literal prefix must cover the tag format's literal prefix.
+/// claim glob's literal prefix must cover the COMPOSED tag ref's literal
+/// prefix — a real tag lives at `refs/tags/{tag_format}`, so
+/// `refs/tags/v*` covers `v{version}`; `release-*` does not.
 fn ref_may_match_tag(claim_glob: &str, tag_format: &str) -> bool {
-    let claim_prefix = claim_glob.split(['*', '?', '[']).next().unwrap_or("");
-    let tag_prefix = tag_format.split('{').next().unwrap_or("");
-    tag_prefix.starts_with(claim_prefix)
+    // The claim glob's literal prefix is everything before its first
+    // wildcard or escape; the tag's real ref is `refs/tags/<format>`
+    // (F-99a(b)'s composed form), so the claim prefix must cover it.
+    if claim_glob == "~ALL" {
+        return true;
+    }
+    let claim_prefix = claim_glob.split(['*', '?', '[', '\\']).next().unwrap_or("");
+    let tag_ref_prefix = format!("refs/tags/{}", tag_format.split('{').next().unwrap_or(""));
+    tag_ref_prefix.starts_with(claim_prefix)
 }
 
 /// F-96: every environment with an `approval` block must have a template
@@ -370,6 +378,21 @@ fn check_group_references(config: &crate::config::Config) -> Result<(), Validati
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_ref_may_match_tag_composes_the_refs_tags_prefix() {
+        use super::*;
+
+        // The PRD §13.1's canonical pair: okay (F-99a(b)'s agree case).
+        assert!(ref_may_match_tag("refs/tags/v*", "v{version}"));
+        assert!(ref_may_match_tag("refs/tags/**", "v{version}"));
+        // The F-99a(b)'s documented misconfiguration: the prefixes
+        // cannot fit (`release-` never covers `refs/tags/v`).
+        assert!(!ref_may_match_tag("refs/tags/release-*", "v{version}"));
+        assert!(!ref_may_match_tag("refs/tags/v*", "release-{version}"));
+        // `~ALL` covers everything.
+        assert!(ref_may_match_tag("~ALL", "v{version}"));
+    }
+
     use super::*;
     use serde_yaml_ng::from_str;
 
@@ -395,9 +418,28 @@ mod tests {
 
     #[test]
     fn test_api_key_approvers_refuse_machines_by_default_f99b() {
-        let yaml = "server: {}\ndatabase: { url: postgres://x }\nauth:\n  api_keys:\n    - name: key\n      hash: \"$argon2id$v=19$m=32768,t=3,p=4$ZGVw\"\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    releasers:\n      - api_key: key\n    environments:\n      production:\n        approval:\n          required: 1\n          approvers:\n            - api_key: key\n";
-        let config = config(yaml);
-        assert!(check_releaser_references(&config).is_ok());
+        // The F-96's template invariant first requires a wait-approval
+        // step, so the F-99b refusal needs a REAL template at a temp
+        // directory; validate() walks the whole surface.
+        let directory = std::env::temp_dir().join("cb-validation-f99b");
+        let _ = std::fs::create_dir_all(&directory);
+        let template_path = directory.join("service.yaml");
+        std::fs::write(
+            &template_path,
+            "name: service\nversion: \"1\"\nenvironments:\n  - name: production\n    steps:\n      - id: wait-0\n        wait: approval\n        timeout: 1m\n",
+        )
+        .expect("the template");
+        let yaml = "server: {}\ndatabase: { url: postgres://x }\ntemplates:\n  directory: TEMP\nauth:\n  api_keys:\n    - name: key\n      hash: \"$argon2id$v=19$m=32768,t=3,p=4$ZGVw\"\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    releasers:\n      - api_key: key\n    environments:\n      production:\n        approval:\n          required: 1\n          approvers:\n            - api_key: key\n".replace("TEMP", directory.to_str().expect("temp path"));
+        let config = config(&yaml);
+        let failure = validate(&config);
+        assert!(
+            failure
+                .as_ref()
+                .is_err_and(|value| value.to_string().contains("allow_machine_approvers")),
+            "F-99b's refusal is the validate's outcome: {failure:?}"
+        );
+        let _ = std::fs::remove_file(&template_path);
+        let _ = std::fs::remove_dir(&directory);
     }
 
     #[test]

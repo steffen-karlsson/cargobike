@@ -1618,7 +1618,7 @@ auth:
   api_keys:
     - name: ci-fallback
       description: Fallback key for the deploy pipeline
-      hash: "$argon2id$..."
+      hash: "$argon2id$v=19$m=19456,t=2,p=1$QA0enjiUQ6JYwSsYFV6hWA$9RER5y6lFfQkop8LRT+wNHt+AmZTr53jVD0PT7k5DJ8"
       grants: [release:create]
       expires: 2027-06-30
 

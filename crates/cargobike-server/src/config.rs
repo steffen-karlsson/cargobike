@@ -1064,6 +1064,14 @@ mod tests {
         assert_eq!(config.applications.len(), 1);
         assert_eq!(config.providers.len(), 2);
         assert!(config.application("my-service").is_some());
+        // The documented config must also BOOT (the F-99a(b) registry
+        // cross-checks run here, not just the parser's grammar). The
+        // example points at /etc/cargobike/templates; the test points
+        // the SAME registry entries at the workspace's canonical
+        // template (F-32's verbatim value).
+        let mut config = config;
+        config.templates.directory = [env!("CARGO_MANIFEST_DIR"), "/../../templates"].concat();
+        crate::validation::validate(&config).expect("13.1 config validates");
     }
 
     #[test]
