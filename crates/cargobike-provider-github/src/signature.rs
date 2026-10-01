@@ -1,0 +1,33 @@
+//! The GitHub signature digest (F-51): HMAC-SHA256 keyed by the
+//! webhook secret over the RAW delivery body, hex-comparable against
+//! `X-Hub-Signature-256`.
+
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+/// The delivery's digest, lowercase hex; HMAC accepts every key length,
+/// so construction failure is unreachable.
+pub fn hmac_sha256_hex(secret_key: &[u8], body: &[u8]) -> String {
+    let mut mac = match Hmac::<Sha256>::new_from_slice(secret_key) {
+        Ok(mac) => mac,
+        Err(error) => unreachable!("HMAC accepts any key length: {error}"),
+    };
+    mac.update(body);
+    let tag = mac.finalize().into_bytes();
+    hex::encode(tag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rfc_4231_case_2_vector() {
+        // HMAC-SHA256(key = "Jefe", data = "what do ya want for nothing?")
+        let digest = hmac_sha256_hex(b"Jefe", b"what do ya want for nothing?");
+        assert_eq!(
+            digest,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+}
