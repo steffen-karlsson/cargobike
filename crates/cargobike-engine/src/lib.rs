@@ -12,6 +12,8 @@ pub mod crash;
 pub mod expr;
 pub mod interpreter;
 pub mod leases;
+#[cfg(feature = "t1-crash-hooks")]
+pub mod mock;
 pub mod names;
 pub mod reconciler;
 pub mod signals;

@@ -119,7 +119,7 @@ async fn run_environment(
     environment: &ResolvedEnvironment,
     services: &InterpreterServices,
 ) -> EnvironmentOutcome {
-    let context = snapshot.context(&environment.name);
+    let mut context = snapshot.context(&environment.name);
     if let Some(when) = &environment.when {
         match eval_gate(when, &context) {
             Ok(false) => return finished(environment, EnvironmentPhase::Skipped, None),
@@ -153,7 +153,7 @@ async fn run_environment(
         }
     }
     for step in &environment.steps {
-        match run_step(snapshot, environment, step, &context, services).await {
+        match run_step(snapshot, environment, step, &mut context, services).await {
             StepFlow::Continue => {}
             StepFlow::Skip => {
                 // F-71: the lease releases on skip as well.
@@ -224,7 +224,7 @@ async fn run_step(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
     step: &ResolvedStep,
-    context: &ExprContext,
+    context: &mut ExprContext,
     services: &InterpreterServices,
 ) -> StepFlow {
     let step_id: String = step.id.clone();
@@ -456,7 +456,7 @@ async fn dispatch_action(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
     step: &ResolvedStep,
-    context: &ExprContext,
+    context: &mut ExprContext,
     services: &InterpreterServices,
 ) -> StepFlow {
     let uses = match &step.body {
@@ -536,7 +536,15 @@ async fn dispatch_action(
     });
     match inner {
         Ok(execution_result) => match execution_result {
-            Ok(StepOutput::Continue(_)) => StepFlow::Continue,
+            Ok(StepOutput::Continue(outputs)) => {
+                // F-28: the recorded outputs (`steps.<id>.outputs.*`) are
+                // durable WITH the step's checkpoint — the context only
+                // gains them after the run.
+                context
+                    .steps
+                    .insert(step.id.clone(), serde_json::json!({ "outputs": outputs }));
+                StepFlow::Continue
+            }
             Ok(StepOutput::SkipEnvironment) => StepFlow::Skip,
             Ok(StepOutput::Stop(reason)) => StepFlow::Error(InterpreterError::Step(
                 cargobike_core::step::StepError::Failed {

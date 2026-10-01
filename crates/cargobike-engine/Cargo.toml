@@ -30,8 +30,11 @@ secrecy = { workspace = true }
 
 semver = { workspace = true }
 
+anyhow = "1"
+
 [features]
 t1-crash-hooks = []
+anyhow_harness = []
 
 [dev-dependencies]
 rstest = { workspace = true }
@@ -39,3 +42,7 @@ pretty_assertions = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "engine-harness"
+path = "src/bin/engine-harness.rs"
