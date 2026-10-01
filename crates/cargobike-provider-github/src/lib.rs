@@ -246,25 +246,50 @@ impl Provider for GithubProvider {
                 )));
             }
         }
-        // Full-file replacements into the tree (the edits' files are
-        // always readable as text; the tree entry carries content).
-        let mut entries = Vec::with_capacity(edits.len());
+        // Group the edits by file: one tree entry per file (the
+        // same-file multi-edits previously raced as separate entries);
+        // values arrive provision-stamped. A1's replay no-op: when a
+        // file's edited document equals its current content, the
+        // commit already answered - such files contribute no entry.
+        let mut grouped: std::collections::BTreeMap<String, Vec<cargobike_core::provider::Edit>> =
+            std::collections::BTreeMap::new();
         for edit in edits {
-            let base_document = self.read_file(repo, edit.file.as_str(), branch).await?;
-            let format = edit.format.unwrap_or(EditFormat::Yaml);
-            let desired = edit.value.clone().unwrap_or(serde_json::Value::Null);
-            let body =
-                apply_to_document(&base_document, std::slice::from_ref(edit), format, &desired)
-                    .map_err(|failure| ProviderError::Request(failure.to_string()))?;
-            let text = String::from_utf8(body).map_err(|_| {
-                ProviderError::Request(format!("the edited `{}` is not valid UTF-8", edit.file))
+            grouped
+                .entry(edit.file.clone())
+                .or_default()
+                .push(edit.clone());
+        }
+        let mut entries = Vec::with_capacity(grouped.len());
+        for (file, edits_of_file) in grouped {
+            let current = self.read_file(repo, file.as_str(), branch).await?;
+            let edit_list = edits_of_file.as_slice();
+            let format = edit_list
+                .first()
+                .and_then(|edit| edit.format)
+                .unwrap_or(EditFormat::Yaml);
+            let document = apply_to_document(&current, edit_list, format, &serde_json::Value::Null)
+                .map_err(|failure| ProviderError::Request(failure.to_string()))?;
+            // The no-op test: re-serialising the untouched current doc
+            // content must differ from the edit's applied text.
+            if document == current {
+                continue; // the desired values are already on the branch
+            }
+            let text = String::from_utf8(document).map_err(|_| {
+                ProviderError::Request(format!("the edited `{file}` is not valid UTF-8"))
             })?;
             entries.push(octocrab::models::git::CreateTreeEntry {
-                path: edit.file.clone(),
+                path: file,
                 mode: "100644".to_owned(),
                 r#type: "blob".to_owned(),
                 sha: None,
                 content: Some(text),
+            });
+        }
+        if entries.is_empty() {
+            // A1: the tree already matches; the branch tip is the answer.
+            return Ok(CommitResult {
+                sha: base_sha,
+                branch: branch.to_owned(),
             });
         }
         let tree = handler
@@ -567,11 +592,23 @@ impl Provider for GithubProvider {
     }
 
     async fn enable_auto_merge(&self, repo: &CoreRepoRef, number: u64) -> ProviderResult<()> {
+        // The mutation keys on the CR's GLOBAL node id; fetch it once
+        // (the REST shape) before the GraphQL exchange.
         let (owner, name) = owner_name(self, repo).await?;
-        let full_name = format!("{owner}/{name}");
+        let pull = self
+            .github
+            .pulls(owner.clone(), name.clone())
+            .get(number)
+            .await
+            .map_err(request_failure)?;
+        let Some(node_id) = pull.node_id else {
+            return Err(ProviderError::Request(format!(
+                "the CR `{number}` carries no node id; auto-merge could not key it"
+            )));
+        };
         let payload = serde_json::json!({
             "query": "mutation($gh_pr: ID!) { enablePullRequestAutoMerge(pullRequestId: $gh_pr, mergeMethod: MERGE) { pullRequest { number } } }",
-            "variables": { "gh_pr": format!("{full_name}:pr:{number}") }
+            "variables": { "gh_pr": node_id }
         });
         let response: serde_json::Value = self
             .github
@@ -584,6 +621,15 @@ impl Provider for GithubProvider {
             )));
         }
         Ok(())
+    }
+
+    async fn verify_webhook(
+        &self,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        secrets: &[secrecy::SecretString],
+    ) -> ProviderResult<cargobike_core::webhook::NormalisedEvent> {
+        crate::webhook::verify_and_normalise(headers, body, secrets)
     }
 
     async fn create_tag(&self, repo: &CoreRepoRef, tag: &str, sha: &str) -> ProviderResult<()> {

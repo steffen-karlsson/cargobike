@@ -153,11 +153,7 @@ fn entry_is_active(entry: &crate::config::ApiKeyEntry, now: &time::OffsetDateTim
     .ok()
     .map(|date| date.with_time(time::Time::MIDNIGHT).assume_utc())
     .or_else(|| {
-        time::OffsetDateTime::parse(
-            text,
-            &time::format_description::well_known::Rfc3339,
-        )
-        .ok()
+        time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339).ok()
     });
     match date {
         Some(parsable_expiry) => *now < parsable_expiry,
@@ -210,6 +206,7 @@ pub const BOOTSTRAP_ENV_FILE: &str = "CARGOBIKE_SERVER_BOOTSTRAP_API_KEY_FILE";
 impl AuthState {
     /// Builds auth state over the shared config watch, with the bootstrap
     /// key taken from the environment.
+    #[allow(clippy::expect_used)] // the fallback salt's constant is valid b64 by construction
     pub fn new(
         config: tokio::sync::watch::Receiver<Arc<crate::config::Config>>,
     ) -> Result<Self, crate::config::ConfigError> {
@@ -237,7 +234,12 @@ impl AuthState {
             // this line (the argon2 PHC string is the kept form).
             bootstrap: plaintext.map(|plaintext| {
                 use argon2::password_hash::{PasswordHasher, SaltString};
-                let salt = SaltString::encode_b64(&rand_materials()).ok().unwrap_or_else(|| SaltString::from_b64(&"cargobike-bootstrap-salt-000000000000000").expect("the fallback salt"));
+                let salt = SaltString::encode_b64(&rand_materials())
+                    .ok()
+                    .unwrap_or_else(|| {
+                        SaltString::from_b64("cargobike-bootstrap-salt-000000000000000")
+                            .expect("the fallback salt")
+                    });
                 argon2::Argon2::default()
                     .hash_password(plaintext.as_bytes(), &salt)
                     .map(|hashed| hashed.to_string())

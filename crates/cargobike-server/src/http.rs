@@ -249,7 +249,9 @@ async fn cancel_release(
 ) -> Result<StatusCode, ApiError> {
     // F-99: canceling is a grant (US-5).
     if !caller.has_grant("release:cancel") {
-        return Err(ApiError::forbidden("The `release:cancel` grant is required."));
+        return Err(ApiError::forbidden(
+            "The `release:cancel` grant is required.",
+        ));
     }
     let now = sqlx::types::time::OffsetDateTime::now_utc();
     state
@@ -281,7 +283,9 @@ async fn delete_release(
 ) -> Result<StatusCode, ApiError> {
     // F-99: deletion is a grant (US-6).
     if !caller.has_grant("release:delete") {
-        return Err(ApiError::forbidden("The `release:delete` grant is required."));
+        return Err(ApiError::forbidden(
+            "The `release:delete` grant is required.",
+        ));
     }
     state
         .releases

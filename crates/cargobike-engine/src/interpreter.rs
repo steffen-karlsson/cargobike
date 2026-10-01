@@ -637,10 +637,25 @@ fn environment_env_ref(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
 ) -> cargobike_core::step::EnvRef {
+    // F-147's provision stamp: an edit without an explicit (or
+    // non-null) value writes the release version; after this point the
+    // edits carry values (the providers stay version-agnostic).
+    let version_value = snapshot.release.version.clone();
+    let edits = snapshot
+        .edits_of(&environment.name)
+        .into_iter()
+        .map(|mut edit| {
+            let stamps_default = edit.value.as_ref().is_none_or(serde_json::Value::is_null);
+            if stamps_default {
+                edit.value = Some(serde_json::Value::String(version_value.clone()));
+            }
+            edit
+        })
+        .collect();
     cargobike_core::step::EnvRef {
         name: environment.name.clone(),
         repo: snapshot.repo_of(&environment.name),
-        edits: snapshot.edits_of(&environment.name),
+        edits,
         commit_message: environment
             .env_inputs
             .get("commit_message")

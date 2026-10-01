@@ -7,8 +7,6 @@ use cargobike_core::provider::ProviderError;
 use cargobike_core::webhook::{NormalisedEvent, TagPush};
 use secrecy::ExposeSecret as _;
 
-use crate::signature::hmac_sha256_hex;
-
 /// The GitHub delivery headers Cargobike requires (F-51).
 const SIGNATURE_HEADER: &str = "x-hub-signature-256";
 const EVENT_HEADER: &str = "x-github-event";
@@ -32,9 +30,11 @@ pub fn verify_and_normalise(
     let expected = signature
         .strip_prefix("sha256=")
         .ok_or_else(|| ProviderError::Request("the signature is not a sha256 digest".to_owned()))?;
+    // A.5/F-51: the compare is HMAC's verify_slice (constant-time on
+    // the raw tag bytes; the hex was only the delivery's encoding).
     let verified = secrets
         .iter()
-        .any(|secret| hmac_sha256_hex(secret.expose_secret().as_bytes(), body) == expected);
+        .any(|secret| digest_matches(secret.expose_secret().as_bytes(), body, expected));
     if !verified {
         // A failed verification is a transport rejection, not an event
         // (F-51: the server answers 401 and FORGETS).
@@ -120,6 +120,22 @@ pub fn normalise(event_name: &str, body: &[u8]) -> Result<NormalisedEvent, Provi
     }
 }
 
+/// The constant-time digest check (A.5): decode the expected tag then
+/// verify slice-against-slice; an unparsable digest is a reject.
+fn digest_matches(secret_key: &[u8], body: &[u8], expected_hex: &str) -> bool {
+    use hmac::Mac as _;
+    use sha2::Sha256;
+    let Ok(expected) = hex::decode(expected_hex) else {
+        return false;
+    };
+    let mut mac = match hmac::Hmac::<Sha256>::new_from_slice(secret_key) {
+        Ok(mac) => mac,
+        Err(error) => unreachable!("HMAC accepts any key length: {error}"),
+    };
+    mac.update(body);
+    mac.verify_slice(&expected).is_ok()
+}
+
 fn unreadable(failure: &serde_json::Error) -> ProviderError {
     ProviderError::Request(format!("the delivery body is unreadable: {failure}"))
 }
@@ -132,6 +148,7 @@ fn malformed(reason: impl std::fmt::Display) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signature::hmac_sha256_hex;
     use secrecy::SecretString;
 
     fn secret(value: &str) -> SecretString {

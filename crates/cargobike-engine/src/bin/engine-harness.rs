@@ -159,7 +159,7 @@ environments:
                 id: release_id.clone(),
                 application: app.clone(),
                 version: "1.0.0".to_owned(),
-                version_scheme: Some(VersionScheme::Semver),
+                version_scheme: VersionScheme::Semver,
             },
             inputs: std::collections::BTreeMap::new(),
             step_type_versions: {
