@@ -103,7 +103,7 @@ mod tests {
                 number: 13,
                 merged: false,
                 // no repo in the payload: correlation errs on the empty side.
-                repository_id: "0".to_owned(),
+                repository_id: String::new(),
                 sender: String::new(),
             }
         );

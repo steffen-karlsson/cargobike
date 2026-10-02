@@ -182,8 +182,22 @@ async fn deliver(
                 idempotency_key: Some(key.as_str()),
                 ..dbos::SendOptions::default()
             };
-            let _sent: dbos::Result<(), dbos::EngineOnly> =
+            let sent: dbos::Result<(), dbos::EngineOnly> =
                 dbos::send_with(&row.workflow_id, &message, options).await;
+            if let Err(failure) = sent {
+                // The correlation points at a workflow this instance
+                // cannot address (a foreign-key refusal on the
+                // nonexistent destination; DBOS's contract). The signal
+                // is not lost: the attempt's own wake timeout and the
+                // reconciler's sweep still look at the CR's actual
+                // state.
+                tracing::warn!(
+                    workflow = %row.workflow_id,
+                    release = %row.release_id,
+                    %failure,
+                    "the webhook's signal could not be addressed; the sweep remains the floor"
+                );
+            }
             Ok(())
         }
         NormalisedEvent::Unrecognised { provider_event } => {

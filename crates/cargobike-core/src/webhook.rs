@@ -53,6 +53,17 @@ pub struct TagPush {
     pub sender: String,
 }
 
+/// The repository id's read: GitHub carries numbers, the other halves
+/// (the config's source, the mock's state, the CR's correlations)
+/// carry strings — accept both, string-encode.
+fn repository_id_of(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Number(number)) => number.to_string(),
+        _ => String::default(),
+    }
+}
+
 /// The delivery verification failure shapes .
 pub type VerifyResult = Result<NormalisedEvent, crate::provider::ProviderError>;
 
@@ -119,12 +130,7 @@ pub fn normalise(event_name: &str, body: &[u8]) -> VerifyResult {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
-                    repository_id: delivery
-                        .get("repository")
-                        .and_then(|repo| repo.get("id"))
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or_default()
-                        .to_string(),
+                    repository_id: repository_id_of(delivery.pointer("/repository/id")),
                     sender: delivery
                         .get("sender")
                         .and_then(|sender| sender.get("login"))
@@ -161,12 +167,12 @@ pub fn normalise(event_name: &str, body: &[u8]) -> VerifyResult {
             else {
                 return Err(malformed("no pull request number"));
             };
-            let repository_id = pull
-                .and_then(|p| p.pointer("/base/repo/id"))
-                .or_else(|| delivery.pointer("/repository/id"))
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default()
-                .to_string();
+            let base_id = repository_id_of(pull.and_then(|p| p.pointer("/base/repo/id")));
+            let repository_id = if base_id.is_empty() {
+                repository_id_of(delivery.pointer("/repository/id"))
+            } else {
+                base_id
+            };
             let sender = delivery
                 .pointer("/sender/login")
                 .or_else(|| delivery.pointer("/pull_request/user/login"))
