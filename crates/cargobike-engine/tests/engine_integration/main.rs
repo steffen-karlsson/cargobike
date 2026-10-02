@@ -20,6 +20,8 @@ const RECONCILER_APP: &str = "reconcile-probe";
 /// The scan instance's app name.
 const SCAN_APP: &str = "secrets-scan";
 const SUPERSEDE_APP: &str = "supersede-probe";
+/// The fork reproducer's app name.
+const FORK_APP: &str = "fork-retry-probe";
 
 /// The correlation stamp carries the sweep's join keys; the merge wait's
 /// step id is the template's auto-generated one (two declared ids
@@ -559,4 +561,159 @@ async fn holder_of(pool: &sqlx::PgPool, application: &str) -> Option<uuid::Uuid>
     .fetch_optional(pool)
     .await
     .expect("the lease readable")
+}
+
+/// The fork reproducer (the F-23 retry): the first attempt fails at the
+/// injected `prod` commit; the retry workflow forks the failed attempt
+/// from the last failure, INHERITS the recorded `stage` commit (its
+/// replay must not re-run), completes, appends the attempt record with
+/// `fork_from`.
+#[tokio::test(flavor = "current_thread")]
+async fn test_fork_retry_reruns_only_the_failed_step() {
+    let _the_db = fixture::db_lock().await;
+    let Some(database_url) = fixture::fixture_database_url() else {
+        return;
+    };
+    let scratch = fixture::scratch_dir();
+    let schema = fixture::schema_for_test("forkretry");
+    let pool = fixture::fixture_pool(&database_url).await;
+
+    let credentials: Arc<dyn cargobike_core::registry::CredentialStore> =
+        Arc::new(cargobike_engine::mock::StubCredentials);
+    let mut config = dbos::Config::new(FORK_APP, &database_url);
+    config.schema = schema;
+    config.app_version = Some("fork-retry-1".to_owned());
+    let instance = dbos::DBOS::new(config);
+    let (services, provider) =
+        fixture::mock_services(&scratch, pool.clone(), &instance, credentials);
+
+    let interpreter = cargobike_engine::register_interpreter(&instance, services)
+        .expect("the interpreter registers before launch");
+    let retry = cargobike_engine::register_retry(
+        &instance,
+        Arc::new(cargobike_engine::RetryServices {
+            statuses: Arc::new(cargobike_engine::SqlReleaseStatusStore::new(pool.clone())),
+            instance: instance.clone(),
+        }),
+    )
+    .expect("the retry workflow registers before launch");
+    instance.launch().await.expect("the instance launches");
+
+    // The rows the interpreter's status writes land in + unique keys.
+    sqlx::query("DELETE FROM releases WHERE application = $1")
+        .bind(FORK_APP)
+        .execute(&pool)
+        .await
+        .expect("this application's rows clear");
+    let release_id = uuid::Uuid::now_v7().to_string();
+    let release_uuid = uuid::Uuid::parse_str(&release_id).expect("the fork's uuid");
+    seed_release(&pool, &release_uuid, FORK_APP, "1.0.0").await;
+
+    // The first attempt: the `prod` commit fails via the injection.
+    provider.fail_next_commit().expect("the inject scripts");
+    let workflow = cargobike_engine::interpreter::interpret_workflow_id(&release_id);
+    let _handle = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs {
+                snapshot: fixture::dual_env_snapshot(
+                    &release_id,
+                    FORK_APP,
+                    "1.0.0",
+                    fixture::DUAL_ENV_TEMPLATE,
+                ),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the first attempt starts");
+
+    // The failed release: terminal, one attempt, stage committed, prod's
+    // step unrecorded.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut document = query_release(&pool, &release_uuid).await;
+    loop {
+        if document
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Failed")
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first attempt never failed: {document}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        document = query_release(&pool, &release_uuid).await;
+    }
+
+    // The retry: the fork inherits the stage's recorded steps.
+    let retry_id = cargobike_engine::retry_workflow_id(&release_id, &workflow);
+    let _retry_handle = retry
+        .start_with(
+            cargobike_engine::RetryArgs {
+                release_id: release_id.clone(),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&retry_id),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the retry starts");
+
+    // The completed release: the fork's id in the new attempt (with
+    // fork_from naming the source), the stage's side effects replayed
+    // without a re-run, and the production env's final outcome.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        document = query_release(&pool, &release_uuid).await;
+        let attempts = document
+            .pointer("/status/attempts")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let fork_ok = attempts.len() == 2
+            && attempts[1]
+                .pointer("/fork_from")
+                .and_then(serde_json::Value::as_str)
+                == Some(workflow.as_str())
+            && attempts[1]
+                .pointer("/workflow_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+            && attempts[1]
+                .pointer("/workflow_id")
+                .and_then(serde_json::Value::as_str)
+                != attempts[0]
+                    .pointer("/workflow_id")
+                    .and_then(serde_json::Value::as_str);
+        if document
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Completed")
+            && fork_ok
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the fork never completed: {document}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // The mock's effects: exactly 2 commits (the stage's once, the prod's
+    // once per the surviving attempt) — the fork re-ran a failing step,
+    // not everything recorded.
+    let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+    assert!(
+        state.commit_runs == 2,
+        "the fork must not re-run the recorded commit (commit_runs = {}): {state:?}",
+        state.commit_runs
+    );
+    instance.shutdown().await;
 }

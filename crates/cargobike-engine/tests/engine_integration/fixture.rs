@@ -116,6 +116,28 @@ environments:
             release: ${{ release.id }}
 "#;
 
+/// A two-environment template: `stage` commits once; `prod` commits
+/// again. The fork reproducer injects a single commit failure into the
+/// `prod` commit so the first attempt fails there and a retry inherits
+/// `stage`'s recorded steps.
+pub const DUAL_ENV_TEMPLATE: &str = r#"
+name: dual
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+environments:
+  - name: stage
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+  - name: prod
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+"#;
+
 /// A compiled probe template with the mock repo + the release edit
 /// staged into its one environment (interpreter-run shape).
 pub fn probe_snapshot(
@@ -161,6 +183,55 @@ pub fn probe_snapshot(
             .map(|name| (name.to_string(), "1".to_owned()))
             .collect(),
         content_hash: "probe".to_owned(),
+    }
+}
+
+/// A compiled two-environment snapshot (the fork reproducer's shape):
+/// every environment gets the mock repo and the staged manifest edit.
+#[allow(clippy::expect_used)]
+pub fn dual_env_snapshot(
+    release_id: &str,
+    application: &str,
+    version: &str,
+    template: &str,
+) -> cargobike_engine::ReleaseSnapshot {
+    let mut compiled = cargobike_engine::template::compile(
+        template,
+        &cargobike_core::version::VersionScheme::Semver,
+    )
+    .expect("the dual template compiles");
+    for environment in compiled.environments.iter_mut() {
+        environment.env_inputs = std::collections::BTreeMap::from([
+            (
+                "repo".to_owned(),
+                serde_json::json!({ "provider": "github", "id": "42" }),
+            ),
+            (
+                "edits".to_owned(),
+                serde_json::json!([
+                    {
+                        "file": "apps/stage/manifest.yaml",
+                        "field": "image.tag",
+                        "value": version,
+                    }
+                ]),
+            ),
+        ]);
+    }
+    cargobike_engine::ReleaseSnapshot {
+        template: compiled,
+        release: cargobike_engine::ReleaseIdentity {
+            id: release_id.to_owned(),
+            application: application.to_owned(),
+            version: version.to_owned(),
+            version_scheme: cargobike_core::version::VersionScheme::Semver,
+        },
+        inputs: std::collections::BTreeMap::new(),
+        step_type_versions: ["builtin/commit-files", "builtin/change-request"]
+            .iter()
+            .map(|name| (name.to_string(), "1".to_owned()))
+            .collect(),
+        content_hash: "dual-probe".to_owned(),
     }
 }
 

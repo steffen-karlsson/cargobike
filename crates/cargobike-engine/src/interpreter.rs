@@ -30,7 +30,13 @@ use crate::steps::StepRegistry;
 use crate::template::{ResolvedEnvironment, ResolvedStep, StepBody};
 
 /// The registered interpreter workflow name .
-pub const INTERPRETER_WORKFLOW: &str = "cargobike.interpret.v1";
+pub const INTERPRETER_WORKFLOW: &str = "cargobike.interpret.v2";
+
+/// The PREVIOUS interpreter's name (registered alongside until the
+/// in-flight rows drain: a v1 workflow under recovery replays through
+/// its own name; its pre-change step rows may refuse the new decode
+/// and surface as a step failure, never a silent re-run).
+pub const INTERPRETER_WORKFLOW_LEGACY: &str = "cargobike.interpret.v1";
 
 /// The interpreter's single durable argument.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -139,7 +145,19 @@ pub fn register_interpreter(
     instance: &dbos::DBOS,
     services: Arc<InterpreterServices>,
 ) -> dbos::Result<dbos::WorkflowRef<InterpretArgs, InterpretResult, InterpreterError>> {
-    instance.register_workflow(INTERPRETER_WORKFLOW, move |args: InterpretArgs| {
+    instance.register_workflow(INTERPRETER_WORKFLOW, {
+        let services = Arc::clone(&services);
+        move |args: InterpretArgs| {
+            let services = Arc::clone(&services);
+            async move { run(args, services).await }
+        }
+    })?;
+    // The legacy registration (§6.8's drain window): a v1 workflow
+    // under recovery replays through its own name. Its pre-change step
+    // rows decode through the same body; anything it decodes fails on
+    // is recorded as the step's failure text rather than silently
+    // re-run.
+    instance.register_workflow(INTERPRETER_WORKFLOW_LEGACY, move |args: InterpretArgs| {
         let services = Arc::clone(&services);
         async move { run(args, services).await }
     })
@@ -163,7 +181,31 @@ async fn run(
             let attempt = attempt.clone();
             async move {
                 store
-                    .attempt_started(release_id, &attempt, time::OffsetDateTime::now_utc())
+                    .attempt_started(release_id, &attempt, time::OffsetDateTime::now_utc(), None)
+                    .await
+            }
+        },
+    )
+    .await?;
+    // Every provisioned environment's record seeds now: the rollup
+    // never reads a doc env list smaller than the template's (the
+    // retry's docs keep theirs; the fork's replays skip this step).
+    let provisioned_names = args
+        .snapshot
+        .template
+        .environments
+        .iter()
+        .map(|env| env.name.clone())
+        .collect::<Vec<_>>();
+    status_write(
+        "status/envs-seeded".to_owned(),
+        release_id,
+        &services.statuses,
+        move |store, release_id| {
+            let provisioned_names = provisioned_names.clone();
+            async move {
+                store
+                    .environments_posted(release_id, &provisioned_names)
                     .await
             }
         },
@@ -215,7 +257,7 @@ type UuidAlias = uuid::Uuid;
 /// application error is held as itself; anything engine-level becomes
 /// a transient step error (a machinery refusal is not the workflow's
 /// semantics).
-fn interpreter_error_of(failure: dbos::Error<InterpreterError>) -> InterpreterError {
+pub(crate) fn interpreter_error_of(failure: dbos::Error<InterpreterError>) -> InterpreterError {
     match failure {
         dbos::Error::Application(failure) => failure,
         other => InterpreterError::Step(cargobike_core::step::StepError::Transient {
@@ -227,7 +269,7 @@ fn interpreter_error_of(failure: dbos::Error<InterpreterError>) -> InterpreterEr
 /// One status write as its own durable step (`weight: avoid the replay
 /// re-writing a recorded fact). The write closure takes its store and
 /// release id arguments so re-runs re-evaluate only the same statement.
-async fn status_write<W, Fut>(
+pub(crate) async fn status_write<W, Fut>(
     label: String,
     release_id: UuidAlias,
     store: &Arc<dyn ReleaseStatusStore>,
@@ -1131,12 +1173,7 @@ async fn dispatch_action(
     // the run exactly-once per attempt (the replays skip the body) and the
     // template's retry policy maps onto `StepOptions` .
     let options = step_options(step);
-    let ran = dbos::step_with::<
-        Result<StepOutput, cargobike_core::step::StepError>,
-        InterpreterError,
-        _,
-        _,
-    >(
+    let ran = dbos::step_with::<StepOutput, InterpreterError, _, _>(
         format!("builtin/{}/{}", environment.name, step.id).as_str(),
         options,
         move || {
@@ -1151,30 +1188,32 @@ async fn dispatch_action(
             let owned_params = with.clone();
             let owned_action = Arc::clone(&action);
             async move {
-                let value = crate::builtin::execute_step_run(
+                // A step's own failure rides the DBOS error column (the
+                // F-23 fork's point-resolution reads `error IS NOT
+                // NULL`; a failure double-wrapped in the value would be
+                // invisible to `ForkFrom::LastFailure`). The deadline's
+                // failures land the same way.
+                match crate::builtin::execute_step_run(
                     &owned_action,
                     &owned_context,
                     &owned_release,
                     &owned_environment,
                     &owned_params,
                 )
-                .await;
-                dbos::Result::Ok(value)
+                .await
+                {
+                    Ok(output) => dbos::Result::Ok(output),
+                    Err(step_failure) => dbos::Result::Err(dbos::Error::Application(
+                        InterpreterError::Step(step_failure),
+                    )),
+                }
             }
         },
     )
     .await;
-    let inner = ran.map_err(|engine_failure| {
-        tracing::error!(%engine_failure, "the durable step engine refused the run");
-        StepFlow::Error(InterpreterError::Step(
-            cargobike_core::step::StepError::Transient {
-                reason: "the durable step engine refused the run".to_owned(),
-            },
-        ))
-    });
-    match inner {
+    match ran {
         Ok(execution_result) => match execution_result {
-            Ok(StepOutput::Continue(outputs)) => {
+            StepOutput::Continue(outputs) => {
                 // the recorded outputs (`steps.<id>.outputs.*`) are
                 // durable WITH the step's checkpoint — the context only
                 // gains them after the run.
@@ -1183,16 +1222,26 @@ async fn dispatch_action(
                     .insert(step.id.clone(), serde_json::json!({ "outputs": outputs }));
                 StepFlow::Continue
             }
-            Ok(StepOutput::SkipEnvironment) => StepFlow::Skip,
-            Ok(StepOutput::Stop(reason)) => StepFlow::Error(InterpreterError::Step(
+            StepOutput::SkipEnvironment => StepFlow::Skip,
+            StepOutput::Stop(reason) => StepFlow::Error(InterpreterError::Step(
                 cargobike_core::step::StepError::Failed {
                     code: cargobike_core::error::STEP_FAILED.to_owned(),
                     message: reason,
                 },
             )),
-            Err(step_failure_value) => StepFlow::Error(InterpreterError::Step(step_failure_value)),
         },
-        Err(engine_flow) => engine_flow,
+        Err(dbos::Error::Application(step_failure)) => match step_failure {
+            InterpreterError::Step(inner) => StepFlow::Error(InterpreterError::Step(inner)),
+            other => StepFlow::Error(other),
+        },
+        Err(engine_failure) => {
+            tracing::error!(%engine_failure, "the durable step engine refused the run");
+            StepFlow::Error(InterpreterError::Step(
+                cargobike_core::step::StepError::Transient {
+                    reason: "the durable step engine refused the run".to_owned(),
+                },
+            ))
+        }
     }
 }
 

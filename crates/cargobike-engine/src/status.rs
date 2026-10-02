@@ -28,7 +28,29 @@ pub trait ReleaseStatusStore: Send + Sync {
         release_id: Uuid,
         workflow_id: &str,
         at: time::OffsetDateTime,
+        fork_from: Option<&str>,
     ) -> Result<(), StatusError>;
+
+    /// The release's whole document (the reads the retry's fork
+    /// resolves: the attempts + the phase). A missing row is
+    /// `StatusError::NotFound`.
+    async fn load_document(&self, release_id: Uuid) -> Result<serde_json::Value, StatusError>;
+
+    /// Seeds every provisioned environment's record (Pending; the
+    /// run's follow-ups update in place). Without it, a document that
+    /// only carries the environments a write touched skews the
+    /// rollup: a partial start could read all-Completed while a later
+    /// environment never ran.
+    async fn environments_posted(
+        &self,
+        release_id: Uuid,
+        names: &[String],
+    ) -> Result<(), StatusError>;
+
+    /// A failed release's in-place retry re-opens it: the terminal
+    /// flag drops so the forked run's own bookkeeping applies again
+    /// (the release's phase follows the attempt's write).
+    async fn release_reopened(&self, release_id: Uuid) -> Result<(), StatusError>;
 
     /// An environment entered execution (running, timestamped); the
     /// release's phase rolls to Running.
@@ -171,16 +193,9 @@ impl SqlReleaseStatusStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+}
 
-    async fn load_document(&self, release_id: Uuid) -> Result<serde_json::Value, StatusError> {
-        sqlx::query_scalar::<_, serde_json::Value>("SELECT document FROM releases WHERE id = $1")
-            .bind(release_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|error| StatusError::Internal(error.to_string()))?
-            .ok_or(StatusError::NotFound(release_id))
-    }
-
+impl SqlReleaseStatusStore {
     /// Writes the document back: the phase/terminal columns follow the
     /// status text, the resource version bumps, the row must exist.
     async fn write_document(
@@ -269,6 +284,67 @@ impl SqlReleaseStatusStore {
 
 #[async_trait]
 impl ReleaseStatusStore for SqlReleaseStatusStore {
+    async fn load_document(&self, release_id: Uuid) -> Result<serde_json::Value, StatusError> {
+        sqlx::query_scalar::<_, serde_json::Value>("SELECT document FROM releases WHERE id = $1")
+            .bind(release_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| StatusError::Internal(error.to_string()))?
+            .ok_or(StatusError::NotFound(release_id))
+    }
+
+    async fn environments_posted(
+        &self,
+        release_id: Uuid,
+        names: &[String],
+    ) -> Result<(), StatusError> {
+        let mut document = self.load_document(release_id).await?;
+        let array = document
+            .pointer("/status/environments")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut environments = array;
+        for name in names {
+            if !environments.iter().any(|item| {
+                item.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
+            }) {
+                environments.push(serde_json::json!({
+                    "name": name,
+                    "phase": "Pending",
+                    "change_request": serde_json::Value::Null,
+                    "started_at": serde_json::Value::Null,
+                    "completed_at": serde_json::Value::Null,
+                }));
+            }
+        }
+        let Some(status) = document.pointer_mut("/status") else {
+            return Err(StatusError::Internal(
+                "the document lacks a status".to_owned(),
+            ));
+        };
+        status["environments"] = serde_json::Value::Array(environments);
+        self.write_document(release_id, &document).await
+    }
+
+    async fn release_reopened(&self, release_id: Uuid) -> Result<(), StatusError> {
+        // The doc's phase must follow (an `environment_terminal` reads
+        // the document's phase too, so a `Failed` text there would
+        // refuse every follow-up write even with the column cleared).
+        sqlx::query(
+            "UPDATE releases SET terminal = FALSE, phase = 'Pending', \
+             document = jsonb_set(jsonb_set(document, '{status,phase}', \
+                 to_jsonb('Pending'::text)), '{status,error}', 'null'::jsonb), \
+             updated_at = $2 WHERE id = $1",
+        )
+        .bind(release_id)
+        .bind(time::OffsetDateTime::now_utc())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StatusError::Internal(error.to_string()))?;
+        Ok(())
+    }
+
     async fn load_environment(
         &self,
         release_id: Uuid,
@@ -335,19 +411,23 @@ impl ReleaseStatusStore for SqlReleaseStatusStore {
         release_id: Uuid,
         workflow_id: &str,
         at: time::OffsetDateTime,
+        fork_from: Option<&str>,
     ) -> Result<(), StatusError> {
         let mut document = self.load_document(release_id).await?;
-        let attempts = document
+        let spawnable = document
             .pointer("/status/attempts")
             .and_then(serde_json::Value::as_array)
             .cloned()
             .unwrap_or_default();
         let attempts = {
-            let mut attempts = attempts;
+            let mut attempts = spawnable;
             attempts.push(serde_json::json!({
                 "workflow_id": workflow_id,
                 "started_at": rfc3339(at),
-                "fork_from": serde_json::Value::Null,
+                "fork_from": fork_from.map(str::to_owned).map_or(
+                    serde_json::Value::Null,
+                    serde_json::Value::String,
+                ),
             }));
             attempts
         };

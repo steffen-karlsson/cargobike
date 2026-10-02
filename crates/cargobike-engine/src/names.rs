@@ -102,7 +102,7 @@ mod tests {
                 },
                 ci: None,
                 workflow: cargobike_core::model::WorkflowInfo {
-                    id: "cargobike.interpret.v1".to_owned(),
+                    id: "cargobike.interpret.v2".to_owned(),
                     template_name: "service".to_owned(),
                     template_version: "1".to_owned(),
                     template_hash: "sha256:x".to_owned(),

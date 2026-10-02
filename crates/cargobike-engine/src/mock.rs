@@ -56,6 +56,10 @@ pub struct MockState {
     pub branches: BTreeMap<String, String>,
     /// File texts: `{branch}/{path}` -> serialized document.
     pub files: BTreeMap<String, String>,
+    /// One-shot commit inject: the NEXT commit refuses (the fork
+    /// reproducer's failing step), then the flag clears.
+    #[serde(default)]
+    pub fail_next_commit: bool,
 }
 
 /// A change request compact enough for the state file.
@@ -147,6 +151,15 @@ impl MockProvider {
         Self {
             scratch: scratch_path,
         }
+    }
+
+    /// Scripts the next commit to fail (the fork reproducer's set-up).
+    pub fn fail_next_commit(&self) -> Result<(), ProviderError> {
+        let path = self.state_file();
+        let mut state = MockState::load(&path);
+        state.fail_next_commit = true;
+        state.save(&path);
+        Ok(())
     }
 
     /// The state file path of this provider's scratch dir.
@@ -273,6 +286,15 @@ impl Provider for MockProvider {
     ) -> ProviderResult<CommitResult> {
         let path = self.state_file();
         let mut state = MockState::load(&path);
+        if state.fail_next_commit {
+            // The injection's own one-shot semantics: recorded BEFORE
+            // the refusal, so the retry's re-run cannot loop on it.
+            state.fail_next_commit = false;
+            state.save(&path);
+            return Err(ProviderError::Request(
+                "the injected commit failure".to_owned(),
+            ));
+        }
         // Group by file: one simulated commit per file (the same
         // grouping the GitHub provider does).
         let mut grouped: BTreeMap<String, Vec<Edit>> = BTreeMap::new();

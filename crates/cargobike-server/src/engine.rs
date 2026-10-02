@@ -46,6 +46,10 @@ pub struct EngineHosting {
     /// The webhook workflow's registration (the receiver's follow-through).
     pub webhook:
         dbos::WorkflowRef<cargobike_engine::WebhookArgs, (), cargobike_engine::InterpreterError>,
+    /// The retry workflow's registration (the failed release's fork;
+    /// its return value is the fork's own workflow id).
+    pub retry:
+        dbos::WorkflowRef<cargobike_engine::RetryArgs, String, cargobike_engine::InterpreterError>,
     /// The per-provider materialised webhook secrets (the receiver's
     /// verification input; the two-secret rotation is the list).
     pub webhook_secrets: std::collections::BTreeMap<String, Vec<secrecy::SecretString>>,
@@ -347,6 +351,19 @@ pub async fn host(
         ))
     })?;
 
+    let retry = cargobike_engine::register_retry(
+        &instance,
+        Arc::new(cargobike_engine::RetryServices {
+            statuses: services.statuses.clone(),
+            instance: instance.clone(),
+        }),
+    )
+    .map_err(|failure| {
+        crate::config::ConfigError::Parse(format!(
+            "the retry workflow refused to register: {failure}"
+        ))
+    })?;
+
     let reconciler = cargobike_engine::reconciler::register_reconciler(
         &instance,
         Arc::new(cargobike_engine::reconciler::ReconcilerServices {
@@ -387,6 +404,7 @@ pub async fn host(
         interpreter,
         cleanup,
         webhook,
+        retry,
         webhook_secrets,
     })
 }
@@ -545,6 +563,7 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                 app,
                 &app.name,
                 &version,
+                None,
             )
             .await
             {

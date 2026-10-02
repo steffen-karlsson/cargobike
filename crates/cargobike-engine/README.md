@@ -24,10 +24,11 @@ What lives here (PRD §16 Phase 3 tasks mapped to modules):
 | `cleanup` | `cargobike.cleanup.v1`: close CR with remarked comment, delete branch, release/transfers lease | 3.13 |
 | `reconciler` | `cargobike.reconcile.v1`: durable loop sending merge/closed signals only (never writes status) | 3.14 |
 | `correlation` | `(provider, repo_id, cr_number) → (release, environment, step, attempt)` rows for webhook correlation | 3.6 |
+| `retry` | `cargobike.retry.v1` (F-23/US-7): the failed release's fork — the resolve reads `ForkFrom::LastFailure` off the rows' error column, the fork inherits the recorded steps below it and re-runs the failed step; the attempt record appends with `fork_from` | US-7 |
 | `webhook` | `cargobike.webhook.v1` (Phase 5.1/5.2): the receiver's durable follow-through — a tag push creates the release(s) via the server's `TagPushCreator` seam (one durable step), a `pull_request.closed` looks up the correlation row and sends the same signal the reconciler sends | 5.1, 5.2 |
 | `names` | Deterministic branch names via `engine.branch_format` format strings | 3.5 |
 | `snapshot` | `ReleaseSnapshot`: compiled template + registry inputs + pinned step-type versions + hash  | 3.9 |
-| `status` | The `ReleaseStatusStore` trait + the sqlx store: the interpreter's status writes (attempt/running/waiting/pending-approval/CR reference/terminal + the release's rollup), conditional updates so a terminal release never re-phases |
+| `status` | The `ReleaseStatusStore` trait + the sqlx store: the interpreter's status writes (attempt/running/waiting/pending-approval/CR reference/terminal + the release's rollup), conditional updates so a terminal release never re-phases; `load_document`/`environments_posted` (every provisioned environment opens `Pending` so a partial start can never roll `Completed`) and `release_reopened` (the F-23 fork's re-arm) |
 | `crash` + `mock` + `bin/engine-harness` | Feature-gated crash hooks (`--features crash-hooks`) and the harness binary; the mock provider is a small honest git host — state files with path-keyed texts, stateful change requests (a merged CR lands the head files on the base branch), and webhook verification that mirrors the production HMAC contract | (the crash-injection harness) |
 
 ## Status

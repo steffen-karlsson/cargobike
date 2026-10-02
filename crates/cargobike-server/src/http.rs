@@ -62,6 +62,7 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
             get(get_release).delete(delete_release),
         )
         .route("/api/v1/releases/{id}/cancel", post(cancel_release))
+        .route("/api/v1/releases/{id}/retry", post(retry_release))
         .route("/api/v1/whoami", get(whoami))
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
@@ -251,7 +252,7 @@ async fn create_release(
         Err(error) => return Err(auth_to_api(&error)),
     };
 
-    let outcome = create_release_core(state.as_ref(), app, &application, &version).await?;
+    let outcome = create_release_core(state.as_ref(), app, &application, &version, None).await?;
     if !outcome.created {
         // a duplicate create answers 200 with the existing release.
         return Ok((StatusCode::OK, axum::Json(outcome.document)).into_response());
@@ -464,6 +465,154 @@ async fn delete_release(
         .await
         .map_err(repository_to_api)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/releases/{id}/retry` (F-23/US-7): the in-place fork
+/// retries a FAILED release from the last failure point (the same ID, a
+/// new attempt appended with `fork_from`); the `--new` body flag copies
+/// the release into a fresh row with `retried_from` set. Both need the
+/// release's terminal state; the fork's re-arm is `Failed`-only.
+async fn retry_release(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
+    Path(id): Path<Uuid>,
+    body: Option<axum::Json<serde_json::Value>>,
+) -> Result<axum::response::Response, ApiError> {
+    use crate::http::errors;
+    if !caller.has_grant("release:create") {
+        return Err(ApiError::forbidden(
+            "The `release:create` grant is required to retry a release.",
+        ));
+    }
+    let fork_new = body
+        .as_ref()
+        .and_then(|json| json.0.get("new"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let document = state.releases.get(&id).await.map_err(repository_to_api)?;
+    let application = document
+        .pointer("/spec/application")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let version = document
+        .pointer("/spec/version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let phase = document
+        .pointer("/status/phase")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    if !fork_new {
+        // The in-place fork: a failed release only (a canceled release's
+        // own books are settled; `--new` is the way back from those).
+        if phase != "Failed" {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                errors::STATE_CONFLICT,
+                "state-conflict",
+                format!(
+                    "A failed release forks in place; this release is `{phase}`. Use `--new` to copy it."
+                ),
+            ));
+        }
+        // The last attempt's workflow id: the fork's source.
+        let Some(source) = document
+            .pointer("/status/attempts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|attempts| attempts.last())
+            .and_then(|attempt| attempt.get("workflow_id"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                errors::STATE_CONFLICT,
+                "state-conflict",
+                "The failed release carries no attempt to fork.",
+            ));
+        };
+        let retry_id = cargobike_engine::retry_workflow_id(id.to_string().as_str(), source);
+        if let Err(failure) = state
+            .engine
+            .retry
+            .start_with(
+                cargobike_engine::RetryArgs {
+                    release_id: id.to_string(),
+                },
+                dbos::StartOptions {
+                    workflow_id: Some(retry_id.as_str()),
+                    ..dbos::StartOptions::default()
+                },
+            )
+            .await
+        {
+            // A started-and-refused retry (the workflow's own guards
+            // re-check: the phase may have moved between the read
+            // and the start) surfaces as a conflict.
+            tracing::warn!(release = %id, %failure, "the retry's start refused");
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                errors::STATE_CONFLICT,
+                "state-conflict",
+                "The retry's start refused; the release may have moved.",
+            ));
+        }
+        let refreshed = state.releases.get(&id).await.map_err(repository_to_api)?;
+        return Ok((StatusCode::ACCEPTED, axum::Json(refreshed)).into_response());
+    }
+
+    // The `--new` copy: any terminal release; the fresh row's
+    // `retried_from` names the original.
+    if !matches!(
+        phase.as_str(),
+        "Failed" | "Canceled" | "Superseded" | "Completed"
+    ) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            errors::STATE_CONFLICT,
+            "state-conflict",
+            format!("The release is still in flight (`{phase}`); retry `--new` after it settles."),
+        ));
+    }
+    let config = state.config.borrow().clone();
+    let Some(app) = config.application(&application) else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            errors::PROVIDER_NOT_FOUND,
+            "application-not-found",
+            format!("The application `{application}` is not in the registry."),
+        ));
+    };
+    let outcome = crate::release::create_release_core(
+        state.as_ref(),
+        app,
+        &application,
+        &version,
+        Some(id.to_string().as_str()),
+    )
+    .await?;
+    let location = format!(
+        "/api/v1/releases/{}",
+        outcome
+            .document
+            .pointer("/metadata/id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    );
+    let status = if outcome.created {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        [("Location", location.as_str())],
+        axum::Json(outcome.document),
+    )
+        .into_response())
 }
 
 /// Maps repository errors to the RFC 9457 vocabulary .

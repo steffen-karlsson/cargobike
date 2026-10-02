@@ -16,6 +16,7 @@ pub mod leases;
 pub mod mock;
 pub mod names;
 pub mod reconciler;
+pub mod retry;
 pub mod signals;
 pub mod snapshot;
 pub mod status;
@@ -32,6 +33,7 @@ pub use interpreter::{
     environment_phase_of, register_interpreter,
 };
 pub use leases::{LeaseAttempt, LeaseRepository, LeaseTransfer};
+pub use retry::{RETRY_WORKFLOW, RetryArgs, RetryServices, register_retry, retry_workflow_id};
 pub use signals::{InterpreterError, Signal};
 pub use snapshot::{ReleaseIdentity, ReleaseSnapshot, duration_text, snapshot_content_hash};
 pub use status::{ReleaseStatusStore, SqlReleaseStatusStore, StatusError, rollup as rollup_phase};

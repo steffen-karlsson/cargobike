@@ -136,7 +136,12 @@
 - [ ] **`cargobike validate` (4.8, US-13) missing** — offline config/template
   validation reusing server `validation.rs` + engine `compile_with`, with
   `miette` diagnostics; no `--resolve` mode yet.
-- [ ] `release retry <id> [--new]` missing (US-7/F-23; server endpoint too).
+- [x] `release retry <id> [--new]` landed: the server's `POST
+  …/releases/{id}/retry` forks the failed attempt in place
+  (`ForkFrom::LastFailure` reads the rows' error column; the attempt
+  record appends with `fork_from`; the re-arm drops the row's
+  terminal flag), `--new` copies to a fresh row with `retried_from`;
+  the CLI verb covers both (guards: 404 / non-failed 409).
 - [ ] `release approve` / approvals-submission UX missing (F-59; server endpoint is Phase 5.5 — keep in phase order).
 - [x] `release list --since` present: an RFC 3339 stamp passes through; a
   humantime duration (`24h`) converts to now-minus (query encoding is a

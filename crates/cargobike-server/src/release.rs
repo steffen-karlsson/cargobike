@@ -420,6 +420,7 @@ pub(crate) async fn create_release_core(
     app: &crate::config::ApplicationEntry,
     application: &str,
     version: &str,
+    retried_from: Option<&str>,
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
     let parts = CoreParts {
         releases: &state.releases,
@@ -432,7 +433,15 @@ pub(crate) async fn create_release_core(
             .into_iter()
             .collect(),
     };
-    create_from_parts(&parts, &state.engine.interpreter, app, application, version).await
+    create_from_parts(
+        &parts,
+        &state.engine.interpreter,
+        app,
+        application,
+        version,
+        retried_from,
+    )
+    .await
 }
 
 /// The create core's separable dependencies (the parts the webhook
@@ -453,16 +462,41 @@ pub(crate) async fn create_from_parts(
     app: &crate::config::ApplicationEntry,
     application: &str,
     version: &str,
+    retried_from: Option<&str>,
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
     let id = Uuid::now_v7();
     let now = sqlx::types::time::OffsetDateTime::now_utc();
+
+    // The provision first: the compiled template's environment list is
+    // the doc's initial shape (every environment opens `Pending`, so a
+    // partial start can never roll the release-phase `Completed` while
+    // a later environment never ran — the rollup otherwise only sees
+    // the environments a write touched).
+    let snapshot = provision_snapshot_parts(parts, app, version, id).await?;
+    let provisions = snapshot
+        .template
+        .environments
+        .iter()
+        .map(|env| {
+            serde_json::json!({
+                "name": env.name,
+                "phase": "Pending",
+                "change_request": serde_json::Value::Null,
+                "started_at": serde_json::Value::Null,
+                "completed_at": serde_json::Value::Null,
+            })
+        })
+        .collect::<Vec<_>>();
+    let retried = retried_from
+        .map(|from| serde_json::Value::String(from.to_owned()))
+        .unwrap_or(serde_json::Value::Null);
     let document = serde_json::json!({
         "metadata": {
             "id": id.to_string(),
             "created_at": format_rfc3339(now),
             "updated_at": format_rfc3339(now),
             "resource_version": 1,
-            "retried_from": serde_json::Value::Null,
+            "retried_from": retried,
             "labels": {},
             "annotations": {},
         },
@@ -479,14 +513,9 @@ pub(crate) async fn create_from_parts(
         "status": {
             "phase": "Pending",
             "error": serde_json::Value::Null,
+            "environments": provisions,
         },
     });
-
-    // The provision: the registry's template compile, the environment's
-    // inputs staged, and the snapshot's hash — the interpreter reads
-    // only that.
-    let snapshot = provision_snapshot_parts(parts, app, version, id).await?;
-
     let existing = parts
         .releases
         .create(&document, id, application, version, "Pending", now)

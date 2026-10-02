@@ -77,6 +77,7 @@ delivery to whichever attempt is current (verified in E2).
 | Gap | Impact | Follows up in |
 |---|---|---|
 | `Client` (standby enqueue) not runtime-verified in the spike | F-133's "standby serves webhooks without executor" path | Phase 5 task 5.1 (with the webhook receiver boots) |
+| Fork point resolution and step-error recording | `ForkFrom::LastFailure` resolves the fork point from `operation_outputs.error IS NOT NULL`; the fork copies `function_id < start_step` (below the failed step) and re-runs the failed step itself | The interpreter's step failures MUST return `dbos::Result::Err(dbos::Error::Application(...))` — a failure double-wrapped in the step's Ok value lands in the output column and is invisible to the fork-point resolution (found by the fork-reproducer test). The v2 interpreter registration moved the numbers honestly: same body, both `cargobike.interpret.v1` and `cargobike.interpret.v2` registered until in-flight rows drain |
 | Queues not exercised (`RegisterQueue` etc.) — leases (A2) use rows + conditional INSERT instead, per A.2 | None; design unchanged | Phase 3 task 3.12 |
 | No signals-and-macros overlap: `select_step!` macro is optional; we do not need it (gates are interpreter logic) | None | — |
 

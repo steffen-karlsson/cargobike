@@ -23,10 +23,10 @@ Components:
 ## Status
 
 Phase 4 scope (4.5/4.6 complete; 4.9's CLI-half tests exist). The OIDC
-exchange, the `-o` honouring, and the auth/CA overrides landed (audit §5's
-ticked items). Pending (audit TODO §5): the `release watch` SSE command
-(4.7), `cargobike validate` (4.8), `release retry`/`release approve`,
-`--since`, `--events`.
+exchange, the `-o` honouring, the auth/CA overrides, `--since`, and
+`release retry` (`--new` included) landed (audit §5's ticked items).
+Pending (audit TODO §5): the `release watch` SSE command (4.7),
+`cargobike validate` (4.8), `release approve`, `--events`.
 
 ## Usage
 
@@ -42,6 +42,8 @@ cargobike release list -a my-service --phase PendingApproval --limit 50
 cargobike release list --since 24h          # updated at-or-after; RFC 3339 also fine
 cargobike release get 0192f0d0-...
 cargobike release cancel 0192f0d0-...
+cargobike release retry 0192f0d0-...          # fork from the last failure (same ID)
+cargobike release retry 0192f0d0-... --new    # a fresh row carrying retried_from
 cargobike release delete 0192f0d0-...
 
 # Output control.

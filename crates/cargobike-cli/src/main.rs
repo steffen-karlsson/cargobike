@@ -128,6 +128,17 @@ enum ReleaseCommand {
         /// The release ID (UUIDv7).
         id: Uuid,
     },
+    /// Retries a failed release: the fork re-runs from the last
+    /// failure (same release ID, a new attempt appended); `--new`
+    /// copies it into a fresh row with `retried_from` instead.
+    Retry {
+        /// The release ID (UUIDv7).
+        id: Uuid,
+        /// Create a NEW release carrying `retried_from` instead of
+        /// forking the failed attempt in place.
+        #[arg(long)]
+        new: bool,
+    },
     /// Deletes a terminal release's row (the event log is retained
     ///); terminal-only releases.
     Delete {
@@ -325,6 +336,19 @@ async fn release_verb(
         ReleaseCommand::Get { id } => {
             let document = client
                 .get_json(&format!("{url}/{id}"))
+                .await
+                .map_err(call_failure)?;
+            let rendered = render::documents(output, &document)
+                .map_err(|failure| (12, failure.to_string()))?;
+            print!("{rendered}");
+            Ok(0)
+        }
+        ReleaseCommand::Retry { id, new } => {
+            let document = client
+                .post_json(
+                    &format!("{url}/{id}/retry"),
+                    serde_json::json!({ "new": new }),
+                )
                 .await
                 .map_err(call_failure)?;
             let rendered = render::documents(output, &document)
