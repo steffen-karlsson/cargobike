@@ -14,7 +14,7 @@ use axum::routing::{get, post};
 use crate::config::{Config, literal_secret_warnings, load};
 use crate::db::RepositoryError;
 use crate::http::errors::ApiError;
-use crate::release::ReleaseRepository;
+use crate::release::{ReleaseRepository, create_release_core};
 use uuid::Uuid;
 
 pub mod errors;
@@ -233,237 +233,25 @@ async fn create_release(
         Err(error) => return Err(auth_to_api(&error)),
     };
 
-    let id = Uuid::now_v7();
-    let now = sqlx::types::time::OffsetDateTime::now_utc();
-    let document = serde_json::json!({
-        "metadata": {
-            "id": id.to_string(),
-            "created_at": format_rfc3339(now),
-            "updated_at": format_rfc3339(now),
-            "resource_version": 1,
-            "retried_from": serde_json::Value::Null,
-            "labels": {},
-            "annotations": {},
-        },
-        "spec": {
-            "application": application,
-            "version": version,
-            "source": {
-                "provider": app.source.provider,
-                "id": app.source.id,
-                "path": app.source.path.as_deref(),
-            },
-            "template": app.template,
-        },
-        "status": {
-            "phase": "Pending",
-            "error": serde_json::Value::Null,
-        },
-    });
-
-    // The provision: the registry's template compile, the environment's
-    // inputs staged, and the snapshot's hash — the interpreter reads
-    // only that.
-    let snapshot = provision_snapshot(state.as_ref(), app, version.as_str(), id).await?;
-
-    let phase_of = "Pending";
-    let existing = state
-        .releases
-        .create(&document, id, &application, &version, phase_of, now)
-        .await
-        .map_err(repository_to_api)?;
-    if let Some(existing_json) = existing {
+    let outcome = create_release_core(state.as_ref(), app, &application, &version).await?;
+    if !outcome.created {
         // a duplicate create answers 200 with the existing release.
-        return Ok((StatusCode::OK, axum::Json(existing_json)).into_response());
+        return Ok((StatusCode::OK, axum::Json(outcome.document)).into_response());
     }
-
-    // The interpreter's start (the workflow id deduplicates; a replayed
-    // create joins the workflow already running).
-    let workflow_id = format!("cargobike/interpret/{id}");
-    if let Err(failure) = state
-        .engine
-        .interpreter
-        .start_with(
-            cargobike_engine::InterpretArgs { snapshot },
-            dbos::StartOptions {
-                workflow_id: Some(workflow_id.as_str()),
-                ..dbos::StartOptions::default()
-            },
-        )
-        .await
-    {
-        tracing::error!(release = %id, %failure, "the interpreter's start refused");
-    }
-    let location = format!("/api/v1/releases/{id}");
+    let location = format!(
+        "/api/v1/releases/{}",
+        outcome
+            .document
+            .pointer("/metadata/id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    );
     Ok((
         StatusCode::ACCEPTED,
         [("Location", location.as_str())],
-        axum::Json(document),
+        axum::Json(outcome.document),
     )
         .into_response())
-}
-
-/// The provision: the release snapshot (the compiled template + the
-/// registry's staged inputs + the pinned step-type versions + the
-/// content hash) — the interpreter's one durable argument.
-async fn provision_snapshot(
-    state: &AppState,
-    app: &crate::config::ApplicationEntry,
-    version: &str,
-    id: Uuid,
-) -> Result<cargobike_engine::ReleaseSnapshot, ApiError> {
-    use crate::http::errors;
-    let application = app.name.clone();
-
-    // The version's scheme validation (the create's version policy's
-    // first cut; the tag/SHA verification rides the provider work).
-    version_scheme_of(app).validate(version).map_err(|error| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            errors::VERSION_NOT_VERIFIED,
-            "version-not-verified",
-            format!(
-                "the version `{version}` does not match the application's versioning rules: {error}"
-            ),
-        )
-    })?;
-    let templates =
-        crate::validation::load_templates(&state.config.borrow().clone()).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                errors::INTERNAL_ERROR,
-                "internal-error",
-                format!("failed to load the templates: {error}"),
-            )
-        })?;
-    let (template_name, template_version) = app.template.split_once('@').ok_or_else(|| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            errors::TEMPLATE_NOT_FOUND,
-            "template-not-found",
-            format!(
-                "the template reference `{}` is not name@version",
-                app.template
-            ),
-        )
-    })?;
-    let template = templates
-        .get(&(template_name.to_owned(), template_version.to_owned()))
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                errors::TEMPLATE_NOT_FOUND,
-                "template-not-found",
-                format!(
-                    "the template `{}` is not in the templates directory",
-                    app.template
-                ),
-            )
-        })?;
-    // The template's staged YAML (the model's shapes held the source).
-    let source = serde_yaml_ng::to_string(template).map_err(|failure| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            errors::INTERNAL_ERROR,
-            "internal-error",
-            format!("the template refused to serialise: {failure}"),
-        )
-    })?;
-    let scheme = version_scheme_of(app);
-    let mut compiled = cargobike_engine::template::compile(&source, &scheme).map_err(|error| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            errors::INTERNAL_ERROR,
-            "internal-error",
-            format!("the template refused to compile: {error}"),
-        )
-    })?;
-
-    // The environments' staged inputs: the registry's repo/edits and
-    // the custom per-environment inputs over the template's shape.
-    let application_inputs = app.inputs.clone().unwrap_or_default();
-    for environment in compiled.environments.iter_mut() {
-        let Some(entry) = app.environments.get(&environment.name) else {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                errors::INTERNAL_ERROR,
-                "internal-error",
-                format!(
-                    "the application entry lacks the template's environment `{}`",
-                    environment.name
-                ),
-            ));
-        };
-        let mut staged = environment.env_inputs.clone();
-        if let Some(repo) = &entry.repo {
-            staged.insert(
-                "repo".to_owned(),
-                serde_json::to_value(repo).unwrap_or_default(),
-            );
-        }
-        if let Some(edits) = &entry.edits {
-            staged.insert(
-                "edits".to_owned(),
-                serde_json::to_value(edits).unwrap_or_default(),
-            );
-        }
-        if let Some(commit_message) = &entry.commit_message {
-            staged.insert(
-                "commit_message".to_owned(),
-                serde_json::json!(commit_message),
-            );
-        }
-        if let Some(inputs) = &entry.inputs {
-            for (name, value) in inputs {
-                staged.insert(name.clone(), value.clone());
-            }
-        }
-        environment.env_inputs = staged;
-    }
-
-    let step_type_versions = state
-        .engine
-        .services
-        .steps
-        .installed()
-        .into_iter()
-        .collect();
-    let release = cargobike_engine::ReleaseIdentity {
-        id: id.to_string(),
-        application,
-        version: version.to_owned(),
-        version_scheme: scheme,
-    };
-    let inputs = application_inputs;
-    let content_hash =
-        cargobike_engine::snapshot_content_hash(&compiled, &release, &inputs, &step_type_versions)
-            .map_err(|failure| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    errors::INTERNAL_ERROR,
-                    "internal-error",
-                    format!("the snapshot's hash failed: {failure}"),
-                )
-            })?;
-    Ok(cargobike_engine::ReleaseSnapshot {
-        template: compiled,
-        release,
-        inputs,
-        step_type_versions,
-        content_hash,
-    })
-}
-
-fn format_rfc3339(at: sqlx::types::time::OffsetDateTime) -> String {
-    match at.format(&time::format_description::well_known::Rfc3339) {
-        Ok(formatted) => formatted,
-        // An OffsetDateTime is always RFC-3339 formattable; a failure would
-        // be a format-crate bug, so surface it as an internal problem detail.
-        Err(error) => {
-            tracing::error!(%error, "failed to format rfc3339");
-            String::new()
-        }
-    }
 }
 
 use axum::response::IntoResponse;
@@ -625,19 +413,6 @@ fn headers_if_match(headers: &axum::http::HeaderMap) -> String {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned()
-}
-
-/// The registry's versioning block to the version scheme.
-fn version_scheme_of(
-    app: &crate::config::ApplicationEntry,
-) -> cargobike_core::version::VersionScheme {
-    match app.versioning.scheme.as_str() {
-        "semver" => cargobike_core::version::VersionScheme::Semver,
-        "calver" => cargobike_core::version::VersionScheme::Calver {
-            calver_format: app.versioning.calver_format.clone(),
-        },
-        _ => cargobike_core::version::VersionScheme::Opaque,
-    }
 }
 
 async fn get_release(
