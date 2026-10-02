@@ -6,50 +6,71 @@
 
 ## 0. The one structural finding (blocks everything below)
 
-- [ ] **The server does not depend on `cargobike-engine` (or on `cargobike-provider-github`).**
-  Everything Phase 3 built — interpreter, signals, leases, reconciler, cleanup —
-  currently runs only inside engine tests and `engine-harness`. The server
-  exposes release rows over HTTP but never boots DBOS, registers
-  `cargobike.interpret.v1`, starts a workflow, or talks to a real provider
-  (PRD §11.2 dependency graph, task 2.4b's own `TODO(2.4b)` in
-  `crates/cargobike-server/src/http.rs`, F-13, F-15, F-21, F-131).
-  Concretely in `cargobike-server`:
-  - [ ] Boot DBOS at startup: register interpreter + cleanup + reconciler before `launch()`; wire `releases` table as the `PendingReleaseSource` adapter (3.14 seam is still the in-memory fixture).
-  - [ ] Start `cargobike.interpret.v1` at create (HTTP 202 path), building the `ReleaseSnapshot` from the registry entry (provision). Today `create_release` writes a doc with only `phase: "Pending"` and no snapshot.
-  - [ ] Cancel endpoint → `DBOS::cancel` + start `cargobike.cleanup.v1` (F-60, F-75). Today it only flips a column.
-  - [ ] Supersede path (engine `concurrency::supersede`) must cancel the old release's workflow and start cleanup with `superseded_by` (F-73); today the lease is transferred but the old release is never cancelled, never marked `Superseded`, and no CR is closed.
-  - [ ] Construct provider instances from `config.providers` (GithubProvider, api_url/GHES, webhook secrets) into the `ProviderRegistry`; construct `CredentialStore` from `config.secrets` (today engine only knows `StubCredentials`); build the real SSRF-guarded HTTP client (F-117).
-  - [ ] Leader-election fence: on lock loss the executor stops (process exit) per F-131/2.8; today no watchdog exists. Same for the standby "serve webhooks without executor" path (needs Phase 5 receiver, note in spike §4 gaps).
-  - [ ] Recovery: app-version filter for workflow recovery (F-22, spike finding).
+- [x] **The server depends on `cargobike-engine` (+ the GitHub provider).**
+  `crate::engine::host` builds the services from the config and boots DBOS
+  at startup: the interpreter, the cleanup workflow and the reconciler
+  loop register before `launch()`; the `releases` table's join over the
+  `cr_correlation` rows is the production signal seam.
+  - [x] The interpreter starts at create: the provision compiles the
+    registry's template, stages the environment's inputs (repo/edits/
+    commit-message/custom), computes the snapshot's content hash, and
+    `start_with` addresses the deduplicating workflow id
+    (`cargobike/interpret/<release_id>`).
+  - [x] The cancel endpoint stops the workflow (`DBOS::cancel` on the
+    attempt's id) and starts the cleanup (targets read the release's
+    recorded CRs; the comment/branch/lease work runs as its own workflow).
+  - [ ] The supersede path (engine `concurrency::supersede`) transfers the
+    lease but does not cancel the old release and does not start the
+    cleanup with `superseded_by` — the engine cannot name the server's
+    instance; the server's `supersede` signal lands later.
+  - [x] The provider instances build from the config
+    (`GithubProvider::new_with_api_url`; the App's identity + a pinned
+    `installation_id`; extension-served providers log and skip until the
+    transport lands). The credentials resolve from the config's `secrets:`
+    section. The HTTP seam is a first-cut egress guard (resolved-IP
+    checks, redirects refused) — the full PRD's SSRF set (proxy, redirect
+    re-check, allow-lists) is with 5.7.
+  - [ ] The leader-election fence: no lock-loss watchdog yet; the
+    standby's webhook-serving path needs the receiver (Phase 5).
+  - [ ] Recovery: the app-version filter is set (the binary's version),
+    but the recovery of pending workflows off a restart is untested here.
 
-## 1. Release status is never written (PRD §4.1/§5.3, F-38)
+## 1. Release status is now written (PRD §4.1/§5.3, F-38)
 
-- [ ] Nothing persists `status.environments`, `status.attempts`, per-env
-  phases, `ChangeRequestRef`s, or the phase rollup. F-38's implicit
-  `set-status` bookkeeping and A1's "conditional `UPDATE ... WHERE phase =
-  <expected>`" are unimplemented; `InterpretResult` has no consumer.
-- [ ] Server `create_release` writes a minimal document (no
-  `status.actor`, `status.workflow`, `status.environments`, `status.attempts`,
-  `spec.source` path labels are there but provisions are not) — violates §5.3
-  model served by `GET /releases/{id}`.
-- **Bug**: `ReleaseRepository::set_phase` updates only the SQL columns, not the
-  JSON document — after `cancel`, `GET /releases/{id}` still reports
-  `"phase": "Pending"` because the served document never changes.
-- [ ] Per-env `Waiting`/`PendingApproval` (F-7) states and
-  `change_request` refs are unrecorded (depends on the set-status bookkeeping).
-- [ ] Snapshot content hash: F-16's canonical hash is unimplemented — engine
-  tests pass `"crash-harness"` / `"sha256:x"` literals; no sha2 in the engine.
+- [x] The engine gained `status.rs`: the `ReleaseStatusStore` trait and
+  its sqlx implementation. The interpreter records the attempt, the
+  environment's running/waiting/pending-approval states, the CR
+  reference, and every terminal phase; the release's phase is the
+  rollup (canceled > superseded > failed > completed only if all
+  terminal-ok > pending-approval > running). The writes run as durable
+  steps and carry the conditional-update guard (`AND NOT terminal`),
+  so the cancel's phase never gets resurrected by a stale write.
+- [x] The release document served by `GET` now carries the live status
+  (`status.environments`, the CR references, the attempts, the
+  `Running` phase).
+- [x] The set_phase document bug is fixed en route: the status store
+  syncs the phase/terminal columns with the document's status text in
+  every write.
+- [x] The snapshot content hash is real: sha256 over the canonical
+  JSON of the template + the release identity + the inputs + the
+  pinned step-type versions (`snapshot_content_hash`).
+- [ ] The remaining status surface: the SSE `watch` (Phase 5), the
+  event-log writes (Phase 5), the attempts' `fork_from` values (the
+  retry work), and the metadata's actor/CiContext half (the caller's
+  identity lands with 4.5's OIDC exchange).
 
 ## 2. Provider-side security checks wired to the engine (PRD §4.5/§4.7/§4.12)
 
 - [ ] **F-65 branch protection**: the `change-request` step never calls
   `Provider::check_branch_protection`; `require_branch_protection` is parsed in
   config but consulted nowhere. Must fail closed by default.
-- [ ] **F-63 correlation stamp**: `CorrelationRepository::stamp` exists but is
-  never called. `StepContext` has no handle to it, so the
-  `(provider, repo_id, cr_number) → (release, environment, step, attempt)`
-  row is never written when a CR opens — webhook correlation (5.2) and the
-  reconciler sweep have no data.
+- [x] **The correlation stamp happens**: the interpreter stamps the
+  `(provider, repo_id, cr_number) → (release, environment, wait-step,
+  attempt)` row right after the change-request step's checkpoint (a
+  durable, idempotent upsert), using the engine context's own workflow
+  id; the environment's status carries the CR reference at the same
+  boundary. The integration stamp the test used to simulate is gone —
+  the engine's write is the path now.
 - [ ] **F-95/F-4 version verification**: no create path validates the version
   against the scheme, resolves the tag from `tag_format`, or checks tag/SHA
   (`VersionNotVerified` is defined and never produced). Server-side verification for
