@@ -109,6 +109,11 @@ enum ReleaseCommand {
         /// Filter by the version string.
         #[arg(long)]
         version: Option<String>,
+        /// Filter to releases updated at-or-after this instant: an RFC
+        /// 3339 stamp (2026-10-02T00:00:00Z) or a humantime duration
+        /// (24h, 90m) relative to now.
+        #[arg(long)]
+        since: Option<String>,
         /// The page size (1-500).
         #[arg(long, default_value = "50")]
         limit: u32,
@@ -219,6 +224,44 @@ fn home_dir() -> PathBuf {
         })
 }
 
+/// The query value's minimal percent-encoding (the reserved set; a
+/// three-liner keeps `urlencoding` out of the appendix).
+fn encode_query_value(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
+}
+
+/// The `--since` arg: an RFC 3339 instant passes through; a duration
+/// (humantime, e.g. `24h`, `30m`) subtracts from the current instant.
+/// Anything else passes through (the server's RFC 3339 parse refusal
+/// surfaces the problem document).
+fn encode_since_arg(text: &str) -> String {
+    if time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339).is_ok() {
+        return encode_query_value(text);
+    }
+    match humantime::parse_duration(text) {
+        Ok(span) => {
+            let now = time::OffsetDateTime::now_utc();
+            let past =
+                now.checked_sub(time::Duration::try_from(span).unwrap_or(time::Duration::ZERO));
+            let stamp = past
+                .unwrap_or(now)
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default();
+            encode_query_value(&stamp)
+        }
+        Err(_) => encode_query_value(text),
+    }
+}
+
 /// The verbs (theirs shapes: flat bodies; the problem details surfaced);
 /// `output` is the resolved format every render obeys.
 #[allow(clippy::print_stdout, clippy::print_stderr)]
@@ -256,17 +299,21 @@ async fn release_verb(
             application,
             phase,
             version,
+            since,
             limit,
         } => {
             let mut query = vec![format!("limit={limit}")];
             if let Some(application) = application {
-                query.push(format!("application={application}"));
+                query.push(format!("application={}", encode_query_value(&application)));
             }
             if let Some(phase) = phase {
-                query.push(format!("phase={phase}"));
+                query.push(format!("phase={}", encode_query_value(&phase)));
             }
             if let Some(version) = version {
-                query.push(format!("version={version}"));
+                query.push(format!("version={}", encode_query_value(&version)));
+            }
+            if let Some(since) = since {
+                query.push(format!("since={}", encode_since_arg(&since)));
             }
             let path = format!("{}?{}", url, query.join("&"));
             let page = client.get_json(&path).await.map_err(call_failure)?;
@@ -374,4 +421,77 @@ fn use_context(path: &PathBuf, config: &config::ConfigFile, name: &str) -> i32 {
     }
     println!("now using the `{name}` context");
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_query_value_percent_encodes_the_reserved_set() {
+        assert_eq!(encode_query_value("my-service"), "my-service");
+        assert_eq!(
+            encode_query_value("2026-10-02T00:00:00Z"),
+            "2026-10-02T00%3A00%3A00Z"
+        );
+        assert_eq!(encode_query_value("a b&c=d"), "a%20b%26c%3Dd");
+    }
+
+    #[test]
+    fn test_since_args_parse_before_the_request() {
+        // RFC 3339 passes through verbatim.
+        assert_eq!(
+            encode_since_arg("2026-10-02T00:00:00Z"),
+            "2026-10-02T00%3A00%3A00Z"
+        );
+        // A humantime duration becomes a parseable RFC 3339 instant.
+        let encoded = encode_since_arg("24h");
+        let decoded = encoded
+            .replace("%3A", ":")
+            .replace("%2B", "+")
+            .replace("%2D", "-");
+        time::OffsetDateTime::parse(&decoded, &time::format_description::well_known::Rfc3339)
+            .expect("a duration since yields an RFC 3339 stamp");
+        // Garbage passes through (the server's refusal is the surface).
+        assert_eq!(encode_since_arg("not-a-time"), "not-a-time");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::print_stderr)]
+    async fn test_the_list_sends_the_since_query() {
+        use cargobike_cli::client::Client;
+        use cargobike_cli::config::{AuthConfig, Resolved};
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/releases"))
+            .and(query_param("since", "2026-10-02T00:00:00Z"))
+            .respond_with(|_: &wiremock::Request| {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [],
+                    "cursor": null
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resolved = Resolved {
+            url: server.uri(),
+            auth: AuthConfig::None,
+            ca_file: None,
+            output: cargobike_cli::config::OutputFormat::Json,
+        };
+        let client = Client::new(&resolved).await.expect("the client builds");
+        let page = client
+            .get_json(&format!(
+                "/api/v1/releases?limit=50&since={}",
+                encode_since_arg("2026-10-02T00:00:00Z")
+            ))
+            .await
+            .expect("the list");
+        assert_eq!(page["items"], serde_json::json!([]));
+    }
 }

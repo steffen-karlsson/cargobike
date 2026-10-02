@@ -126,7 +126,9 @@
   `miette` diagnostics; no `--resolve` mode yet.
 - [ ] `release retry <id> [--new]` missing (US-7/F-23; server endpoint too).
 - [ ] `release approve` / approvals-submission UX missing (F-59; server endpoint is Phase 5.5 — keep in phase order).
-- [ ] `release list --since` missing (US-2 accepted filters; server supports it).
+- [x] `release list --since` present: an RFC 3339 stamp passes through; a
+  humantime duration (`24h`) converts to now-minus (query encoding is a
+  small private helper; the server's refusal surfaces unknown inputs).
 - [ ] `release get --events` flag missing (US-3; server endpoint Phase 5.4).
 - [x] **`-o` obeys the format now (F-108/F-145)**: every verb renders the
   resolved format; `CARGOBIKE_OUTPUT` fills in when the flag is missing
