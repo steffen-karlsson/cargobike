@@ -10,7 +10,10 @@ case "${1:-start}" in
   start)
     rm -rf "$PGDATA"
     "$PGBIN/initdb" -U postgres -A trust -D "$PGDATA" >/dev/null
-    "$PGBIN/pg_ctl" -D "$PGDATA" -o "-p $PORT -c listen_addresses=127.0.0.1" \
+    # max_connections=300: the workspace's test binaries boot several
+    # servers/instances against this fixture in parallel; 100 would
+    # starve runs that are all individually honest.
+    "$PGBIN/pg_ctl" -D "$PGDATA" -o "-p $PORT -c listen_addresses=127.0.0.1 -c max_connections=300" \
       -l /private/tmp/cb-spike-pg.log start >/dev/null
     "$PGBIN/pg_isready" -h 127.0.0.1 -p "$PORT"
     ;;
