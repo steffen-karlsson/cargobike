@@ -80,8 +80,12 @@
   missing: per-shape verification — OIDC creates verify the SHA claim,
   API-key creates verify the tag exists, webhook creates verify the tag
   object's SHA (§3 US-1, §9.3).
-- [ ] **F-82 tag protection check at trigger time** — provider capability
-  implemented (`check_tag_protection`), but no trigger-time enforcement anywhere.
+- [x] **F-82 tag protection enforced at the trigger**: only one trigger
+  exists today (the webhook's tag push); its creator runs
+  `check_tag_protection` and skips fail-closed on the default-true rule
+  (the receiver's E2E asserts it against a protection-incapable
+  provider, and the provider's ruleset logic is wiremock-covered in
+  4.9's lifecycle suite). Launchpad/other triggers: n/a in v1.
 - [ ] **F-10 verified-path labels**: no startup `get_repo_path` check, no
   "app unavailable on mismatch" marking, no background retry, and no
   `cargobike validate --resolve` strict mode.
@@ -148,13 +152,17 @@
   create request (US-1's auto-detect creates no annotations today; server is the
   authority on claims — verify the split before wiring).
 - [ ] List paging: CLI sends no `after` cursor; deep listings stop at page 1.
-- [ ] `~` expansion for `ca_file`/`api_key` file refs (the documented example
-  stores `~/.config/cargobike/local-key` verbatim).
+- [x] `~` expansion for `ca_file`/key/CA file refs: the resolution walk
+  tilde-expands the context's `ca_file`, the flag's `--ca-file`, and the
+  api-key override's `CARGOBIKE_API_KEY_FILE`; the client's secret-ref
+  materialisation expands too (unit + E2E). The config-doc example no
+  longer lies (the README texts note the expansion).
 
 ## 6. GitHub provider gaps (4.1–4.3)
 
-- [ ] **GHES `api_url`** (F-44): `GithubProvider::new` builds on octocrab's
-  default github.com base; config's `api_url` is never applied.
+- [x] **GHES `api_url`** (F-44): the config's `api_url`/`web_url` feed
+  `GithubProvider::new_with_api_url` at the server's provider build
+  (engine.rs); GHES builds verified by the provider's unit tests.
 - [ ] **Per-repo installation lookup (F-122, 4.1)**: `GithubAuth::App` takes one
   static `installation_id`; no repo→installation resolution, no per-repo scoped
   token minting.
