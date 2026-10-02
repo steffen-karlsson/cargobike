@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use cargobike_cli::client::{CallError, Client};
-use cargobike_cli::config::{self, OutputFormat, Resolved};
+use cargobike_cli::config::{self, OutputFormat};
 use cargobike_cli::render;
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
@@ -32,9 +32,25 @@ struct Cli {
     #[arg(long, global = true, env = "CARGOBIKE_CONTEXT")]
     context: Option<String>,
 
-    /// The output format (the flag overrides the defaults).
-    #[arg(short = 'o', long, global = true)]
+    /// The output format (the flag overrides the defaults;
+    /// `CARGOBIKE_OUTPUT` fills in when the flag is missing).
+    #[arg(short = 'o', long, global = true, env = "CARGOBIKE_OUTPUT")]
     output: Option<OutputFormat>,
+
+    /// The auth's type override (`none`, `api-key`, `exec`,
+    /// `github-actions`; `CARGOBIKE_AUTH` fills in).
+    #[arg(long, global = true, env = "CARGOBIKE_AUTH")]
+    auth: Option<String>,
+
+    /// The Actions token's audience override (`CARGOBIKE_AUDIENCE`
+    /// fills in; the built-in default is `cargobike`).
+    #[arg(long, global = true, env = "CARGOBIKE_AUDIENCE")]
+    audience: Option<String>,
+
+    /// A custom CA bundle for the server (GHES and private CAs;
+    /// `CARGOBIKE_CA_FILE` fills in; the `~`-prefixed paths join HOME).
+    #[arg(long, global = true, env = "CARGOBIKE_CA_FILE")]
+    ca_file: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -149,35 +165,36 @@ fn real_main() -> i32 {
     }
 }
 
-/// The release verb: resolve the target, then run it under tokio.
+/// The release verb: resolve the target, then run it under tokio (the
+/// client's construction waits: the Actions' token's exchange is a
+/// request).
 fn run_release(command: ReleaseCommand, cli: &Cli) -> Result<i32, (i32, String)> {
     let config = load_config(cli)?;
-    let resolved = resolve_target(&config, cli)?;
-    let client = Client::new(&resolved).map_err(call_failure)?;
+    let overrides = config::Overrides {
+        url: cli.url.clone(),
+        allow_http: cli.allow_http,
+        context: cli.context.clone(),
+        auth: cli.auth.clone(),
+        audience: cli.audience.clone(),
+        ca_file: cli.ca_file.clone(),
+        output: cli.output,
+    };
+    let resolved = config::resolve(&config, &overrides).map_err(|failure| (1, failure.0))?;
+    let output = resolved.output;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|failure| (12, format!("the runtime refused: {failure}")))?;
-    runtime.block_on(release_verb(command, &client))
+    runtime.block_on(async {
+        let client = Client::new(&resolved).await.map_err(call_failure)?;
+        release_verb(command, &client, output).await
+    })
 }
 
 #[allow(clippy::print_stderr)]
 fn load_config(cli: &Cli) -> Result<config::ConfigFile, (i32, String)> {
     let path = config::config_path(cli.config.clone(), home_dir());
     config::load(&path).map_err(|failure| (1, failure.0))
-}
-
-/// walk with the `-o` output overriding the defaults.
-fn resolve_target(config: &config::ConfigFile, cli: &Cli) -> Result<Resolved, (i32, String)> {
-    let resolved = config::resolve(config, cli.url.clone(), cli.allow_http, cli.context.clone())
-        .map_err(|failure| (1, failure.0))?;
-    Ok(match cli.output {
-        Some(format) => Resolved {
-            output: format,
-            ..resolved
-        },
-        None => resolved,
-    })
 }
 
 /// The (the exit, message) pair a client failure becomes.
@@ -202,9 +219,14 @@ fn home_dir() -> PathBuf {
         })
 }
 
-/// The verbs (theirs shapes: flat bodies; the problem details surfaced).
+/// The verbs (theirs shapes: flat bodies; the problem details surfaced);
+/// `output` is the resolved format every render obeys.
 #[allow(clippy::print_stdout, clippy::print_stderr)]
-async fn release_verb(command: ReleaseCommand, client: &Client) -> Result<i32, (i32, String)> {
+async fn release_verb(
+    command: ReleaseCommand,
+    client: &Client,
+    output: OutputFormat,
+) -> Result<i32, (i32, String)> {
     let url = "/api/v1/releases".to_owned();
     match command {
         ReleaseCommand::Create {
@@ -215,7 +237,7 @@ async fn release_verb(command: ReleaseCommand, client: &Client) -> Result<i32, (
         } => {
             let body = serde_json::json!({ "application": application, "version": version });
             let document = client.post_json(&url, body).await.map_err(call_failure)?;
-            let rendered = render::documents(OutputFormat::Json, &document)
+            let rendered = render::documents(output, &document)
                 .map_err(|failure| (12, failure.to_string()))?;
             print!("{rendered}");
             let Some(id) = document
@@ -248,8 +270,8 @@ async fn release_verb(command: ReleaseCommand, client: &Client) -> Result<i32, (
             }
             let path = format!("{}?{}", url, query.join("&"));
             let page = client.get_json(&path).await.map_err(call_failure)?;
-            let rendered = render::documents(OutputFormat::Table, &page)
-                .map_err(|failure| (12, failure.to_string()))?;
+            let rendered =
+                render::documents(output, &page).map_err(|failure| (12, failure.to_string()))?;
             print!("{rendered}");
             Ok(0)
         }
@@ -258,7 +280,7 @@ async fn release_verb(command: ReleaseCommand, client: &Client) -> Result<i32, (
                 .get_json(&format!("{url}/{id}"))
                 .await
                 .map_err(call_failure)?;
-            let rendered = render::documents(OutputFormat::Json, &document)
+            let rendered = render::documents(output, &document)
                 .map_err(|failure| (12, failure.to_string()))?;
             print!("{rendered}");
             Ok(0)

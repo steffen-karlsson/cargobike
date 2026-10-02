@@ -110,11 +110,11 @@
 
 ## 5. CLI gaps (PRD §3, §4.8, §9.7, Phase 4 tasks 4.6/4.7/4.8)
 
-- [ ] **GitHub Actions OIDC token exchange is missing (US-1, 4.5)**:
-  `Client::bearer_for` returns `None` for `AuthConfig::GithubActions`;
-  `ci::oidc_request_environment` supplies the URL/token for detection only.
-  Nothing calls `ACTIONS_ID_TOKEN_REQUEST_URL` to mint an ID token with
-  audience `cargobike` (`--audience`), so CI creates go out unauthenticated.
+- [x] **GitHub Actions OIDC token exchange works (US-1, 4.5)**:
+  `ci::actions_token` exchanges the request token for an audience-scoped
+  ID token (the flag/env/default audience); `Client::bearer_for` mints on
+  the `github-actions` shape (unit + binary E2E against wiremock, incl.
+  the request-token header and the audience query param).
 - [ ] **`release watch` (4.7) missing entirely** — SSE client
   (`reqwest-eventsource`), `--until <environment>` (incl. `Skipped` = exit 0),
   exit codes 0/1/2/3/10/11/12 (10/11/12 exist in `client::exit_code` but the
@@ -128,11 +128,12 @@
 - [ ] `release approve` / approvals-submission UX missing (F-59; server endpoint is Phase 5.5 — keep in phase order).
 - [ ] `release list --since` missing (US-2 accepted filters; server supports it).
 - [ ] `release get --events` flag missing (US-3; server endpoint Phase 5.4).
-- **Bug (F-108/F-145)**: `-o`/`--output` and `defaults.output` are resolved
-  into `Resolved.output` but every verb hardcodes the format
-  (`list` → `Table`, `create`/`get` → `Json`). `-o yaml` is silently ignored.
-- [ ] `-o` lacks `CARGOBIKE_OUTPUT` env wiring (F-145); `--auth`/`CARGOBIKE_AUTH`
-  override and `--ca-file`/`CARGOBIKE_CA_FILE` flag/env missing.
+- [x] **`-o` obeys the format now (F-108/F-145)**: every verb renders the
+  resolved format; `CARGOBIKE_OUTPUT` fills in when the flag is missing
+  (E2E: `-o json`, `-o yaml`, the env format on list/get).
+- [x] `--auth`/`CARGOBIKE_AUTH` (none|api-key|exec|github-actions; exec keeps
+  the context's shape, api-key materializes CARGOBIKE_API_KEY{,_FILE}) and
+  `--ca-file`/`CARGOBIKE_CA_FILE` + `~`-expansion on CA/key file refs.
 - [ ] CI env assembly: `ci::CiContext::from_environment` is never attached to a
   create request (US-1's auto-detect creates no annotations today; server is the
   authority on claims — verify the split before wiring).

@@ -1,7 +1,7 @@
 //! The CLI's config file: named contexts,
 //! auth kinds, and the `flag > env > context > defaults` precedence.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -334,28 +334,120 @@ defaults:
             "current_context: production\ncontexts:\n  - name: production\n    url: https://cargobike.example.com\n    auth:\n      type: api-key\n      api_key: { file: /tmp/key }\n",
         )
         .expect("parses");
-        let resolved = resolve(&config, None, false, None).expect("resolves");
+        let resolved = resolve(&config, &Overrides::default()).expect("resolves");
         assert_eq!(resolved.url, "https://cargobike.example.com");
         assert!(matches!(resolved.auth, AuthConfig::ApiKey { .. }));
         // Flag over context .
         let resolved = resolve(
             &config,
-            Some("http://localhost:8080".to_owned()),
-            false,
-            None,
+            &Overrides {
+                url: Some("http://localhost:8080".to_owned()),
+                allow_http: false,
+                ..Overrides::default()
+            },
         )
         .expect("resolves");
         assert_eq!(resolved.url, "http://localhost:8080");
         // No context + no env + not Actions => refuses to guess.
-        let resolved = resolve(&ConfigFile::default(), None, false, None);
+        let resolved = resolve(&ConfigFile::default(), &Overrides::default());
         assert!(resolved.is_err());
         // The refusal rule applies to context urls too.
         let hostile = parse(
             "contexts:\n  - name: prod\n    url: http://cargobike.example.com\n    auth: {type: none}\n",
         )
         .expect("parses");
-        let resolved = resolve(&hostile, None, false, None);
+        let resolved = resolve(&hostile, &Overrides::default());
         assert!(resolved.is_err(), "remote http refuses without the flag");
+    }
+
+    #[test]
+    fn test_the_auth_override_switches_shapes() {
+        unsafe { std::env::remove_var("CARGOBIKE_API_KEY_FILE") };
+        let config = parse(
+            "current_context: prod\ncontexts:\n  - name: prod\n    url: https://cargobike.example.com\n    auth: {type: none}\n",
+        )
+        .expect("parses");
+        // none + api-key + github-actions overrides on a no-auth context.
+        let resolved = resolve(
+            &config,
+            &Overrides {
+                auth: Some("github-actions".to_owned()),
+                audience: Some("aud-1".to_owned()),
+                ..Overrides::default()
+            },
+        )
+        .expect("resolves");
+        assert!(matches!(
+            resolved.auth,
+            AuthConfig::GithubActions { audience: Some(a) } if a == "aud-1"
+        ));
+        // api-key rides the CARGOBIKE_API_KEY env ref when no file is set.
+        let resolved = resolve(
+            &config,
+            &Overrides {
+                auth: Some("api-key".to_owned()),
+                ..Overrides::default()
+            },
+        )
+        .expect("resolves");
+        assert!(matches!(
+            resolved.auth,
+            AuthConfig::ApiKey { api_key: SecretRef::Env { env } } if env == "CARGOBIKE_API_KEY"
+        ));
+        // The exec override refuses on a non-exec context.
+        let resolved = resolve(
+            &config,
+            &Overrides {
+                auth: Some("exec".to_owned()),
+                ..Overrides::default()
+            },
+        );
+        assert!(resolved.is_err(), "exec needs an exec context");
+        // Unknown vocab is a refusal.
+        let resolved = resolve(
+            &config,
+            &Overrides {
+                auth: Some("tpm".to_owned()),
+                ..Overrides::default()
+            },
+        );
+        assert!(resolved.is_err());
+    }
+
+    #[test]
+    fn test_the_ca_and_tilde_overrides() {
+        let config = parse(
+            "contexts:\n  - name: prod\n    url: https://cargobike.example.com\n    ca_file: /etc/ca.pem\n",
+        )
+        .expect("parses");
+        // A plain context path passes through; the flag's tilde expands.
+        let resolved = resolve(
+            &config,
+            &Overrides {
+                ca_file: Some(PathBuf::from("~/certs/ca.pem")),
+                ..Overrides::default()
+            },
+        )
+        .expect("resolves");
+        let ca = resolved.ca_file.expect("the ca file");
+        assert!(!ca.display().to_string().starts_with('~'), "expanded");
+        // The env output format flows at the env level (restored after).
+        let restored = std::env::var("CARGOBIKE_OUTPUT").ok();
+        unsafe { std::env::set_var("CARGOBIKE_OUTPUT", "yaml") };
+        let resolved = resolve(
+            &config,
+            &Overrides {
+                output: None,
+                ..Overrides::default()
+            },
+        )
+        .expect("resolves");
+        assert!(matches!(resolved.output, OutputFormat::Yaml));
+        if let Some(restored) = restored {
+            unsafe { std::env::set_var("CARGOBIKE_OUTPUT", restored) };
+        } else {
+            unsafe { std::env::remove_var("CARGOBIKE_OUTPUT") };
+        }
     }
 
     #[test]
@@ -397,34 +489,83 @@ pub struct Resolved {
     pub output: OutputFormat,
 }
 
-/// precedence: flag > env > context > defaults > built-in.
-pub fn resolve(
-    config: &ConfigFile,
-    flag_url: Option<String>,
-    allow_http: bool,
-    selected: Option<String>,
-) -> Result<Resolved, ConfigError> {
-    if let Some(text) = flag_url {
-        return resolved_from(text, None, config, allow_http);
+/// The CLI's flag-level overrides (the flag beats the env, the env
+/// beats the selected context, the context beats `defaults`).
+#[derive(Debug, Default, Clone)]
+pub struct Overrides {
+    /// `--url` / `CARGOBIKE_URL`.
+    pub url: Option<String>,
+    /// `--allow-http`.
+    pub allow_http: bool,
+    /// `--context` / `CARGOBIKE_CONTEXT`.
+    pub context: Option<String>,
+    /// `--auth` / `CARGOBIKE_AUTH`: the auth's type override
+    /// (`none`, `api-key`, `exec`, `github-actions`).
+    pub auth: Option<String>,
+    /// `--audience` / `CARGOBIKE_AUDIENCE`; the Actions' token's aud.
+    pub audience: Option<String>,
+    /// `--ca-file` / `CARGOBIKE_CA_FILE`; a CA bundle for the context.
+    pub ca_file: Option<PathBuf>,
+    /// `-o` / `CARGOBIKE_OUTPUT`.
+    pub output: Option<OutputFormat>,
+}
+
+/// A tilde-expanding path read: the `~/`-prefixed forms join the HOME.
+pub fn tilde(path: &Path) -> PathBuf {
+    if let Some(rest) = path.display().to_string().strip_prefix("~/") {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(|home| (!home.is_empty()).then_some(home));
+        if let Ok(Some(home)) = home {
+            return PathBuf::from(home).join(rest);
+        }
     }
-    let context_name = selected
-        .or_else(|| config.current_context.clone())
-        .or_else(|| single_context(config));
-    let found = context_name.and_then(|name| {
-        config
-            .contexts
-            .iter()
-            .find(|candidate| candidate.name == name)
-            .cloned()
-    });
-    resolved_from(
-        found
-            .as_ref()
-            .map_or(String::new(), |found| found.url.clone()),
-        found,
-        config,
-        allow_http,
-    )
+    path.to_path_buf()
+}
+
+/// The `--auth`/`CARGOBIKE_AUTH`'s text: one of the four shapes' names.
+fn auth_override_text(text: &str) -> Option<String> {
+    match text {
+        "none" | "api-key" | "exec" | "github-actions" => Some(text.to_owned()),
+        _ => None,
+    }
+}
+
+/// The walk's one stop: the context's state (its config's presence)
+/// turns into the resolved target; the flag-level overrides apply to
+/// whatever shape fell out.
+pub fn resolve(config: &ConfigFile, overrides: &Overrides) -> Result<Resolved, ConfigError> {
+    let resolved = if let Some(text) = overrides.url.clone().filter(|text| !text.is_empty()) {
+        resolved_from(text, None, config, overrides.allow_http)?
+    } else {
+        let context_name = overrides
+            .context
+            .clone()
+            .or_else(|| {
+                std::env::var("CARGOBIKE_CONTEXT")
+                    .ok()
+                    .filter(|name| !name.is_empty())
+            })
+            .or_else(|| config.current_context.clone())
+            .or_else(|| single_context(config));
+        let found = context_name.and_then(|name| {
+            config
+                .contexts
+                .iter()
+                .find(|candidate| candidate.name == name)
+                .cloned()
+        });
+        resolved_from(
+            found
+                .as_ref()
+                .map_or(String::new(), |found| found.url.clone()),
+            found,
+            config,
+            overrides.allow_http,
+        )?
+    };
+
+    apply_auth_override(resolved, overrides)
 }
 
 /// The refusal-walk from one URL source (the context may be absent —
@@ -445,7 +586,7 @@ fn resolved_from(
         return Ok(Resolved {
             url: resolved_url(url_source.as_str(), allow_http)?,
             auth: context.auth.clone(),
-            ca_file: context.ca_file.clone(),
+            ca_file: context.ca_file.clone().map(|path| tilde(&path)),
             output: config
                 .defaults
                 .as_ref()
@@ -466,6 +607,92 @@ fn resolved_from(
             .as_ref()
             .map_or_else(OutputFormat::default, |found| found.output),
     })
+}
+
+/// The auth override's walk: the flag (`--auth`) beats the env
+/// (`CARGOBIKE_AUTH`) beats the context's own shape.
+fn apply_auth_override(
+    mut resolved: Resolved,
+    overrides: &Overrides,
+) -> Result<Resolved, ConfigError> {
+    let auth_text = overrides.auth.clone().or_else(|| {
+        std::env::var("CARGOBIKE_AUTH")
+            .ok()
+            .filter(|value| !value.is_empty())
+    });
+    if let Some(text) = auth_text {
+        let Some(text) = auth_override_text(&text) else {
+            return Err(ConfigError(format!(
+                "the auth override `{text}` is not one of none|api-key|exec|github-actions"
+            )));
+        };
+        resolved.auth = match text.as_str() {
+            "none" => AuthConfig::None,
+            "api-key" => AuthConfig::ApiKey {
+                api_key: api_key_override_ref(),
+            },
+            "exec" => match resolved.auth {
+                AuthConfig::Exec { .. } => resolved.auth,
+                other => {
+                    return Err(ConfigError(format!(
+                        "the exec override needs an exec context ({:?} was resolved)",
+                        std::mem::discriminant(&other)
+                    )));
+                }
+            },
+            "github-actions" => AuthConfig::GithubActions {
+                audience: overrides.audience.clone(),
+            },
+            _ => unreachable!("the override's vocabulary is checked above"),
+        };
+    }
+    // The Actions' audience: the flag's value rides the github-actions
+    // shape (the ci fallback applies an unset audience later).
+    if let (AuthConfig::GithubActions { audience }, Some(flag)) =
+        (&mut resolved.auth, overrides.audience.clone())
+    {
+        *audience = Some(flag);
+    }
+    // The CA override (the flag's path wins over the context's).
+    if let Some(ca_file) = overrides.ca_file.clone() {
+        resolved.ca_file = Some(tilde(&ca_file));
+    }
+    // The output override: the flag's value wins; the env's
+    // (`CARGOBIKE_OUTPUT`) fills in otherwise.
+    resolved.output = overrides
+        .output
+        .or_else(output_from_env)
+        .unwrap_or(resolved.output);
+    Ok(resolved)
+}
+
+/// The `CARGOBIKE_OUTPUT`'s value to the format (unknown texts are
+/// ignored; the default stands).
+fn output_from_env() -> Option<OutputFormat> {
+    let text = std::env::var("CARGOBIKE_OUTPUT")
+        .ok()
+        .filter(|value| !value.is_empty())?;
+    match text.as_str() {
+        "table" => Some(OutputFormat::Table),
+        "json" => Some(OutputFormat::Json),
+        "yaml" => Some(OutputFormat::Yaml),
+        _ => None,
+    }
+}
+
+/// The `api-key` override's material ref: the FILE form (the key's on
+/// disk) wins over the environment form (`CARGOBIKE_API_KEY`).
+fn api_key_override_ref() -> SecretRef {
+    let path =
+        std::env::var("CARGOBIKE_API_KEY_FILE").map(|path| (!path.is_empty()).then_some(path));
+    if let Ok(Some(path)) = path {
+        return SecretRef::File {
+            file: tilde(std::path::Path::new(&path)),
+        };
+    }
+    SecretRef::Env {
+        env: "CARGOBIKE_API_KEY".to_owned(),
+    }
 }
 
 /// One-context configs select it without `current_context`.

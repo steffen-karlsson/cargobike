@@ -1,6 +1,7 @@
 //! The server client (the API surface's resolution +
 //! refusals materialised at the call site): one bearer token per auth
-//! shape, RFC 9457 problem details on failure.
+//! shape — including the Actions' OIDC exchange — RFC 9457 problem
+//! details on failure.
 
 use crate::config::{AuthConfig, Resolved, SecretRef};
 use secrecy::{ExposeSecret as _, SecretString};
@@ -44,8 +45,8 @@ pub enum CallError {
 
 impl Client {
     /// Builds the resolved target into a client (the refusal already
-    /// ran).
-    pub fn new(resolved: &Resolved) -> Result<Self, CallError> {
+    /// ran); the Actions' exchange mints its token here.
+    pub async fn new(resolved: &Resolved) -> Result<Self, CallError> {
         let mut http = reqwest::Client::builder()
             .user_agent(concat!("cargobike-cli/", env!("CARGO_PKG_VERSION")));
         if let Some(bundle_path) = &resolved.ca_file {
@@ -63,7 +64,7 @@ impl Client {
                 .build()
                 .map_err(|failure| CallError::Transport(failure.to_string()))?,
             base: resolved.url.trim_end_matches('/').to_owned(),
-            bearer: bearer_for(&resolved.auth)?,
+            bearer: bearer_for(&resolved.auth).await?,
         })
     }
 
@@ -140,8 +141,15 @@ impl Client {
     }
 }
 
-/// The bearer token per auth shape (the four surfaces).
-fn bearer_for(auth: &AuthConfig) -> Result<Option<SecretString>, CallError> {
+/// The bearer token per auth shape (the four surfaces; the Actions
+/// shape mints its audience-scoped token here).
+async fn bearer_for(auth: &AuthConfig) -> Result<Option<SecretString>, CallError> {
+    if let AuthConfig::GithubActions { audience } = auth {
+        let minted = crate::ci::actions_token(&crate::ci::audience(audience.as_deref()))
+            .await
+            .map_err(CallError::Auth)?;
+        return Ok(Some(minted));
+    }
     Ok(match auth {
         AuthConfig::None | AuthConfig::GithubActions { .. } => None,
         AuthConfig::ApiKey { api_key } => Some(materialise_ref(api_key)?),
@@ -176,7 +184,8 @@ fn bearer_for(auth: &AuthConfig) -> Result<Option<SecretString>, CallError> {
 fn materialise_ref(reference: &SecretRef) -> Result<SecretString, CallError> {
     match reference {
         SecretRef::File { file } => {
-            let text = std::fs::read_to_string(file).map_err(|failure| {
+            let file = crate::config::tilde(file);
+            let text = std::fs::read_to_string(&file).map_err(|failure| {
                 CallError::Auth(format!(
                     "the `{}` key file refused: {failure}",
                     file.display()
@@ -212,14 +221,17 @@ mod tests {
     use super::*;
     use crate::config::{AuthConfig, OutputFormat, Resolved};
 
-    #[test]
-    fn test_bearer_for_each_auth_shape() {
-        // None and github-actions: no bearer until the exchange.
-        assert!(bearer_for(&AuthConfig::None).unwrap().is_none());
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_bearer_for_each_auth_shape() {
+        // None: no bearer; github-actions without the Actions env
+        // refuses (the exchange needs the runtime environment).
+        assert!(bearer_for(&AuthConfig::None).await.unwrap().is_none());
+        unsafe { std::env::remove_var("ACTIONS_ID_TOKEN_REQUEST_URL") };
+        unsafe { std::env::remove_var("ACTIONS_ID_TOKEN_REQUEST_TOKEN") };
         assert!(
             bearer_for(&AuthConfig::GithubActions { audience: None })
-                .unwrap()
-                .is_none()
+                .await
+                .is_err()
         );
 
         // env reference.
@@ -229,6 +241,7 @@ mod tests {
         };
         assert_eq!(
             bearer_for(&AuthConfig::ApiKey { api_key: reference })
+                .await
                 .unwrap()
                 .unwrap()
                 .expose_secret(),
@@ -242,28 +255,32 @@ mod tests {
                 env: String::from("CB_TEST_TOKEN_MISSING"),
             },
         })
+        .await
         .expect_err("refuses");
         assert!(failure.to_string().contains("unset"));
     }
 
-    #[test]
-    fn test_the_exec_contract_prints_only_the_token() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_the_exec_contract_prints_only_the_token() {
         let auth = AuthConfig::Exec {
             command: String::from("/bin/sh"),
             args: vec![String::from("-c"), String::from("printf 'tok'")],
         };
-        assert_eq!(bearer_for(&auth).unwrap().unwrap().expose_secret(), "tok");
+        assert_eq!(
+            bearer_for(&auth).await.unwrap().unwrap().expose_secret(),
+            "tok"
+        );
         // A multi-line output is a contract violation.
         let auth = AuthConfig::Exec {
             command: String::from("/bin/sh"),
             args: vec![String::from("-c"), String::from("printf 'a\\nb'")],
         };
-        let failure = bearer_for(&auth).expect_err("refuses");
+        let failure = bearer_for(&auth).await.expect_err("refuses");
         assert!(failure.to_string().contains("ONLY the token"));
     }
 
-    #[test]
-    fn test_the_client_carries_the_authorization_header() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_the_client_carries_the_authorization_header() {
         let resolved = Resolved {
             url: "http://localhost:8080".to_owned(),
             auth: AuthConfig::ApiKey {
@@ -275,7 +292,7 @@ mod tests {
             output: OutputFormat::Table,
         };
         std::fs::write(std::env::temp_dir().join("cb-cfgtest-key"), "cb-key-1").expect("write key");
-        let client = Client::new(&resolved).expect("builds");
+        let client = Client::new(&resolved).await.expect("builds");
         assert!(client.bearer.is_some());
         std::fs::remove_file(std::env::temp_dir().join("cb-cfgtest-key")).expect("cleanup");
     }

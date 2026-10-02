@@ -26,7 +26,11 @@ Crate-specific how-to; project-wide rules in the root
 - Secrets stay `SecretString`/`SecretRef`; `Debug`/`Display` never expose
  them; exec command output checks the "PRINTS ONLY the token" contract.
 - CI-auto-detection lives in `ci.rs`; keep the `CiContext` facts there and
- keep `audience` reading `CARGOBIKE_AUDIENCE` only.
+ the audience precedence in one place: `--audience` >
+ `CARGOBIKE_AUDIENCE` > the `cargobike` default. The OIDC exchange
+ (`ci::actions_token`) is the only caller of
+ `ACTIONS_ID_TOKEN_REQUEST_URL`; the client's `github-actions` shape mints
+ there.
 
 ## How to test
 
@@ -70,11 +74,14 @@ All must be true:
 1. All four gates pass: `make lint`, `make test`, `make build`,
  `make docs-check` — including the cli wiremock suite
  (`tests/cli_server.rs`).
-2. Output rendering honours the resolved format (currently violated by the
- `-o` bug tracked in the audit — do not add new render sites that hardcode a
- format; fix through `Resolved`).
+2. Output rendering honours the resolved format ("fixed by the `-o` fix —
+ never add render sites that hardcode a format; thread the resolved
+ `output` through"); new verbs take the format parameter.
 3. No flag/env reads outside the declared precedence; `CARGOBIKE_*` naming
- exact .
+ exact . The override envs (`CARGOBIKE_URL`, `CARGOBIKE_AUTH`,
+ `CARGOBIKE_AUDIENCE`, `CARGOBIKE_CA_FILE`, `CARGOBIKE_OUTPUT`,
+ `CARGOBIKE_API_KEY`, `CARGOBIKE_API_KEY_FILE`, `CARGOBIKE_CONTEXT`) are
+ read in the resolution walk only, never scattered.
 4. No secret material in logs, errors or rendered output; panic-free (lints
  deny `unwrap`/`expect` outside tests).
 5. Failure modes map to the exit-code vocabulary with tests.
