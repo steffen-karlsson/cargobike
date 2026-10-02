@@ -49,8 +49,10 @@ jobs:
           POSTGRES_DB: postgres
         ports: ["54329:5432"]
         # The workspace boots several servers/instances against this
-        # fixture in parallel; the 100 default would starve them.
-        cmd: ["-c", "max_connections=300"]
+        # fixture in parallel; the 100 default would starve them. The
+        # services' `command` is docker's CMD override (the schema's
+        # string form).
+        command: "-c max_connections=300"
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
