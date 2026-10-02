@@ -43,14 +43,14 @@ jobs:
       # harness runs in this job too (its feature flag turns the hooks on).
       postgres:
         image: postgres:16
-env:
+        env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
         ports: ["54329:5432"]
         # The workspace boots several servers/instances against this
         # fixture in parallel; the 100 default would starve them.
-        command: ["-c", "max_connections=300"]
+        cmd: ["-c", "max_connections=300"]
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
