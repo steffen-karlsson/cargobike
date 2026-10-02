@@ -64,7 +64,21 @@ impl GithubProvider {
     /// Builds the client with the auth's token lifecycle absorbed at
     /// construction (the octocrab caches installation tokens internally).
     pub fn new(auth: &GithubAuth) -> Result<Self, ProviderError> {
+        Self::new_with_api_url(auth, None)
+    }
+
+    /// The same build with a base URL: GitHub Enterprise Server's
+    /// `api_url` config lands here (the default is github.com's).
+    pub fn new_with_api_url(
+        auth: &GithubAuth,
+        api_url: Option<&str>,
+    ) -> Result<Self, ProviderError> {
         let mut builder = octocrab::Octocrab::builder();
+        if let Some(api_url) = api_url {
+            builder = builder.base_uri(api_url).map_err(|failure| {
+                ProviderError::Request(format!("the api_url refused to parse: {failure}"))
+            })?;
+        }
         builder = match auth {
             GithubAuth::Token(token) => builder.personal_token(token.expose_secret().to_owned()),
             GithubAuth::App {

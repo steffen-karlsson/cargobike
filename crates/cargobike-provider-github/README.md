@@ -29,10 +29,12 @@ Components:
 ## Status
 
 The Phase 4 REST/webhook surface is implemented, with the wiremock lifecycle
-suite green; only 4.3's `graphql_client` typed queries remain pending. Known
-gaps tracked in [`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md)
-§6: GHES `api_url` support, per-repo installation lookup (currently one
-static installation id), minimal-GitHub-App permission documentation.
+suite green; the GHES `api_url` base rides the provider's build (the config's
+`api_url` reaches `Octocrab::builder().base_uri`). Still pending: 4.3's
+`graphql_client` typed queries. Known gaps tracked in
+[`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md) §6: per-repo
+installation lookup (the config pins one static installation id today) and
+minimal-GitHub-App permission documentation.
 
 ## Usage
 
@@ -44,14 +46,19 @@ use cargobike_provider_github::{GithubAuth, GithubProvider};
 use cargobike_core::registry::ProviderRegistry;
 
 let auth = GithubAuth::App {
- app_id: 123,
- installation_id: 456,
- private_key_pem: key, // loaded from the config's secret shape
+    app_id: 123,
+    installation_id: 456,
+    private_key_pem: key, // loaded from the config's secret shape
 };
-let provider = GithubProvider::new(&auth)?;
+// `api_url: None` is github.com; a value points at GitHub Enterprise
+// Server (or a local mock).
+let provider = GithubProvider::new_with_api_url(&auth, None)?;
 
-let mut registry = ProviderRegistry::new;
-registry.insert("github", provider.into);
+let mut registry = ProviderRegistry::new();
+registry.insert(
+    "github",
+    Arc::new(provider) as Arc<dyn cargobike_core::provider::Provider>,
+);
 ```
 
 Webhook edge:
