@@ -19,10 +19,13 @@
   - [x] The cancel endpoint stops the workflow (`DBOS::cancel` on the
     attempt's id) and starts the cleanup (targets read the release's
     recorded CRs; the comment/branch/lease work runs as its own workflow).
-  - [ ] The supersede path (engine `concurrency::supersede`) transfers the
-    lease but does not cancel the old release and does not start the
-    cleanup with `superseded_by` — the engine cannot name the server's
-    instance; the server's `supersede` signal lands later.
+  - [x] The supersede chain lands in the engine: on the won transfer the
+    arriving release cancels the old attempt (the DBOS recordable
+    cancel from inside the workflow), marks the old environment
+    `Superseded` (the rollup's terminal), and starts the cleanup child
+    with the hand-over (`superseded_by`; the deterministic child id
+    joins replays). The services carry the DBOS handle + the cleanup
+    ref, so the engine no longer needs the server to cancel.
   - [x] The provider instances build from the config
     (`GithubProvider::new_with_api_url`; the App's identity + a pinned
     `installation_id`; extension-served providers log and skip until the
@@ -71,11 +74,12 @@
   id; the environment's status carries the CR reference at the same
   boundary. The integration stamp the test used to simulate is gone —
   the engine's write is the path now.
-- [ ] **F-95/F-4 version verification**: no create path validates the version
-  against the scheme, resolves the tag from `tag_format`, or checks tag/SHA
-  (`VersionNotVerified` is defined and never produced). Server-side verification for
-  OIDC-token creates (SHA claim), API-key creates (tag exists / request SHA), and
-  webhook creates (tag object SHA) are all missing (§3 US-1, §9.3).
+- [ ] **F-95/F-4 version verification, remainder**: the scheme check at
+  create is live (`VersionNotVerified` on a bad version; 6104d43) and the
+  webhook's tag-push path extracts the version from `tag_format`. Still
+  missing: per-shape verification — OIDC creates verify the SHA claim,
+  API-key creates verify the tag exists, webhook creates verify the tag
+  object's SHA (§3 US-1, §9.3).
 - [ ] **F-82 tag protection check at trigger time** — provider capability
   implemented (`check_tag_protection`), but no trigger-time enforcement anywhere.
 - [ ] **F-10 verified-path labels**: no startup `get_repo_path` check, no
@@ -84,12 +88,16 @@
 
 ## 3. Queue wake, event log, and remaining Phase 3 seams
 
-- [ ] **Queue-policy wake (F-71)**: releasing a lease does not `send`
-  `Signal::LeaseReleased` on `lease/{environment}`; queued releases only wake on
-  the 1-hour `QUEUE_WAKE_TIMEOUT` re-poll. Needs the queued-membership query
-  (membership noted as living in the release store — unwired).
-- [ ] Reconciler production seam: sqlx-backed `PendingReleaseSource` over the
-  `releases` table (currently `InMemoryPendingReleaseSource` fixture only).
+- [x] **Queue-policy wake (F-71)**: `release_lease` reads the status
+  store's `waiting_releases(application, environment)` (the jsonb
+  scan) and sends `Signal::LeaseReleased` to each waiting attempt's
+  workflow over `lease/{environment}` with the lease-release event's
+  idempotency key; a missed send degrades to the wake-timeout re-poll.
+  The dedicated wake E2E (a queued release actually waking) is still
+  untested (§9).
+- [x] Reconciler production seam: `SqlSignalSource` over the `releases`
+  join (`engine.rs`'s PendingReleaseSource impl), registered with the
+  reconciler at boot.
 - [ ] Reconciler efficiency: ETag conditional requests and batched GraphQL
   lookups (F-69, 4.3) — current sweep does per-row REST `get_change_request`.
 - [ ] Cleanup workflow body: provider calls run directly in the workflow body,
@@ -157,11 +165,16 @@
 - [ ] `update_branch` returns `Unsupported` (F-46 includes it in the trait
   contract; deferred to a v1.1 step type — either implement the provider op or
   reconcile the PRD deviation).
-- [ ] `pull_request.closed` normalisation drops `repository_id` and `sender`
-  (the correlation needs repo_id; actor recording needs sender).
+- [x] `pull_request.closed` normalisation carries `repository_id` (the
+  `base.repo.id`, `repository.id` fallback) and the `sender.login` — the
+  correlation's full key and the actor both survive; the normalise lives
+  in `cargobike_core::webhook::normalise_github` (the provider + the
+  mock share it).
 - [ ] Installation + repository allowlist check during webhook
-  normalisation (4.4 / 8.1) — not present on the provider path (server receiver
-  is Phase 5; the check needs a home there).
+  normalisation (4.4 / 8.1) — the receiver now exists and the tag-push
+  creator's app-source scan is the first cut (only apps whose
+  `source.id` match react); the `providers[].repositories` globs and the
+  installation lookup are still unwired.
 
 ## 7. F-32a provision-time checks (registry ↔ template)
 
@@ -210,10 +223,15 @@
 - [ ] `testcontainers` Postgres (PRD 1.4/2.9): absent from dev-deps; DB tests
   *skip* when `CARGOBIKE_TEST_DATABASE_URL` is unset, so a bare `cargo test`
   quietly zeroes integration coverage. Make `make test` self-sufficient.
-- [ ] Interpreter status writes + phase rollup (blocked by §1 above).
-- [ ] Supersede end-to-end (F-70/F-73/F-74): lease transfer is unit-tested;
-  cancel-old-release + cleanup + comment-link chain is not (blocked by §0.4).
-- [ ] Queue wake behaviour (F-71) — blocked by §3 queue wake.
+- [x] Interpreter status writes + phase rollup: the rollup's unit tests
+  (incl. the queue-Waiting→Pending fix) + the suites exercise the writes
+  end-to-end (the attempts, the CR stamps, the terminals).
+- [x] Supersede end-to-end (F-70/F-73/F-74): `test_supersede_cancels_the_
+  old_attempt_and_cleans_up` — the lease's holder becomes B, A's release
+  goes Superseded/terminal, A's CR closes and B's stays open.
+- [ ] Queue wake behaviour (F-71) — the send is wired; a QUEUED release's
+  wake-from-block E2E (enter → HeldBy → the queue's hold → the release's
+  wake → the run continues) is still untested.
 - [ ] Approval auth matrix (F-96): self-approval, distinct count, reject,
   409-while-not-PendingApproval, attempt+head-SHA binding — approvals endpoint
   doesn't exist yet (Phase 5.5, but keep the CLI-side covered by 4.6/4.9 too).
@@ -224,6 +242,10 @@
   by the reconciler suite (`tests/engine_integration/`); a cross-process kill
   during a wait remains unprobed (the milestone hook fires at action steps
   only).
+- [x] The webhook receiver's E2E (5.1/5.2):
+  `crates/cargobike-server/tests/webhook_receiver.rs` — the signed
+  tag-push, the closed-PR correlation driving the wait to `Completed`,
+  a 401/404/ignored/dedupe.
 - [x] F-120 secrets-in-DBOS-state scan test — the secrets invariant in
   `tests/engine_integration/`: a real interpreter pass records the returned
   request to prove the secret's flow, then scans `operation_outputs` and

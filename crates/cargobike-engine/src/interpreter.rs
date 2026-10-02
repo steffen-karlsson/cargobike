@@ -935,8 +935,9 @@ async fn verify_merged_facts(
                     return MergeVerify::Modified;
                 }
             }
-            // Consulted at signal time too: a webhook's head_sha高于the
-            // recorded original says the fix-up happened before merge.
+            // Consulted at signal time too: a webhook's head_sha higher
+            // than the recorded original says the fix-up happened
+            // before merge.
             if let (Some(original), Some(observed)) = (&original_head_sha, &head_sha_at_signal) {
                 if original != observed {
                     return MergeVerify::Modified;
