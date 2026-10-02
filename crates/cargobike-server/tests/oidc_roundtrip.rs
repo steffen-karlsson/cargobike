@@ -128,7 +128,7 @@ async fn test_oidc_token_passes_and_enforces_claims() {
     )
     .expect("config");
 
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path)).await else {
+    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), None).await else {
         eprintln!("skipping: boot failed");
         return;
     };

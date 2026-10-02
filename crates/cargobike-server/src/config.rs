@@ -392,6 +392,11 @@ pub struct ProviderConfig {
 pub struct ProviderAuth {
     /// The App ID, string .
     pub app_id: String,
+    /// The App's installation the provider drives (the per-repo
+    /// installation lookup is pending work; until then the config
+    /// pins one installation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<String>,
     /// Private key (the secret-shaped).
     pub private_key: SecretValue,
 }
@@ -692,7 +697,7 @@ pub enum PrincipalSelector {
 }
 
 /// A source repo entry: provider + immutable id + optional verified path.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HashMapEntrySource {
     /// Provider name.
@@ -803,7 +808,7 @@ pub struct EnvironmentEntry {
 }
 
 /// Registry-level edit shape .
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditEntry {
     /// Repository-relative file; `{application}` placeholders allowed .
@@ -1162,6 +1167,7 @@ fn apply_provider_overrides(config: &mut Config) -> Result<(), ConfigError> {
                     };
                     entry.auth = Some(ProviderAuth {
                         app_id,
+                        installation_id: None,
                         private_key: SecretValue::File(FileSecret {
                             file: PathBuf::from(key_file),
                         }),
@@ -1193,6 +1199,7 @@ fn apply_provider_overrides(config: &mut Config) -> Result<(), ConfigError> {
                 web_url: None,
                 auth: Some(ProviderAuth {
                     app_id,
+                    installation_id: None,
                     private_key: SecretValue::File(FileSecret {
                         file: PathBuf::from(key_file),
                     }),

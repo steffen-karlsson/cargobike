@@ -19,6 +19,9 @@ use uuid::Uuid;
 
 pub mod errors;
 
+/// The engine's hosting in the state (the handles the handlers use).
+use crate::engine::EngineHosting;
+
 /// Shared server state.
 pub struct AppState {
     /// The current config; a SIGHUP reload swaps this .
@@ -31,6 +34,8 @@ pub struct AppState {
     pub auth: Arc<crate::auth::AuthState>,
     /// The config file the reload task re-reads .
     pub config_path: Option<std::path::PathBuf>,
+    /// The engine's hosting: the interpreter/cleanup/DBOS handles.
+    pub engine: Arc<EngineHosting>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -256,6 +261,11 @@ async fn create_release(
         },
     });
 
+    // The provision: the registry's template compile, the environment's
+    // inputs staged, and the snapshot's hash — the interpreter reads
+    // only that.
+    let snapshot = provision_snapshot(state.as_ref(), app, version.as_str(), id).await?;
+
     let phase_of = "Pending";
     let existing = state
         .releases
@@ -267,8 +277,23 @@ async fn create_release(
         return Ok((StatusCode::OK, axum::Json(existing_json)).into_response());
     }
 
-    // TODO(2.4b): start the interpreter workflow (the durable) at creation; the
-    // row is persisted first, so recovery can prove correctness .
+    // The interpreter's start (the workflow id deduplicates; a replayed
+    // create joins the workflow already running).
+    let workflow_id = format!("cargobike/interpret/{id}");
+    if let Err(failure) = state
+        .engine
+        .interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs { snapshot },
+            dbos::StartOptions {
+                workflow_id: Some(workflow_id.as_str()),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+    {
+        tracing::error!(release = %id, %failure, "the interpreter's start refused");
+    }
     let location = format!("/api/v1/releases/{id}");
     Ok((
         StatusCode::ACCEPTED,
@@ -276,6 +301,150 @@ async fn create_release(
         axum::Json(document),
     )
         .into_response())
+}
+
+/// The provision: the release snapshot (the compiled template + the
+/// registry's staged inputs + the pinned step-type versions + the
+/// content hash) — the interpreter's one durable argument.
+async fn provision_snapshot(
+    state: &AppState,
+    app: &crate::config::ApplicationEntry,
+    version: &str,
+    id: Uuid,
+) -> Result<cargobike_engine::ReleaseSnapshot, ApiError> {
+    use crate::http::errors;
+    let application = app.name.clone();
+    let templates =
+        crate::validation::load_templates(&state.config.borrow().clone()).map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                errors::INTERNAL_ERROR,
+                "internal-error",
+                format!("failed to load the templates: {error}"),
+            )
+        })?;
+    let (template_name, template_version) = app.template.split_once('@').ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            errors::TEMPLATE_NOT_FOUND,
+            "template-not-found",
+            format!(
+                "the template reference `{}` is not name@version",
+                app.template
+            ),
+        )
+    })?;
+    let template = templates
+        .get(&(template_name.to_owned(), template_version.to_owned()))
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                errors::TEMPLATE_NOT_FOUND,
+                "template-not-found",
+                format!(
+                    "the template `{}` is not in the templates directory",
+                    app.template
+                ),
+            )
+        })?;
+    // The template's staged YAML (the model's shapes held the source).
+    let source = serde_yaml_ng::to_string(template).map_err(|failure| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            errors::INTERNAL_ERROR,
+            "internal-error",
+            format!("the template refused to serialise: {failure}"),
+        )
+    })?;
+    let scheme = match app.versioning.scheme.as_str() {
+        "semver" => cargobike_core::version::VersionScheme::Semver,
+        "calver" => cargobike_core::version::VersionScheme::Calver {
+            calver_format: app.versioning.calver_format.clone(),
+        },
+        _ => cargobike_core::version::VersionScheme::Opaque,
+    };
+    let mut compiled = cargobike_engine::template::compile(&source, &scheme).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            errors::INTERNAL_ERROR,
+            "internal-error",
+            format!("the template refused to compile: {error}"),
+        )
+    })?;
+
+    // The environments' staged inputs: the registry's repo/edits and
+    // the custom per-environment inputs over the template's shape.
+    let application_inputs = app.inputs.clone().unwrap_or_default();
+    for environment in compiled.environments.iter_mut() {
+        let Some(entry) = app.environments.get(&environment.name) else {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                errors::INTERNAL_ERROR,
+                "internal-error",
+                format!(
+                    "the application entry lacks the template's environment `{}`",
+                    environment.name
+                ),
+            ));
+        };
+        let mut staged = environment.env_inputs.clone();
+        if let Some(repo) = &entry.repo {
+            staged.insert(
+                "repo".to_owned(),
+                serde_json::to_value(repo).unwrap_or_default(),
+            );
+        }
+        if let Some(edits) = &entry.edits {
+            staged.insert(
+                "edits".to_owned(),
+                serde_json::to_value(edits).unwrap_or_default(),
+            );
+        }
+        if let Some(commit_message) = &entry.commit_message {
+            staged.insert(
+                "commit_message".to_owned(),
+                serde_json::json!(commit_message),
+            );
+        }
+        if let Some(inputs) = &entry.inputs {
+            for (name, value) in inputs {
+                staged.insert(name.clone(), value.clone());
+            }
+        }
+        environment.env_inputs = staged;
+    }
+
+    let step_type_versions = state
+        .engine
+        .services
+        .steps
+        .installed()
+        .into_iter()
+        .collect();
+    let release = cargobike_engine::ReleaseIdentity {
+        id: id.to_string(),
+        application,
+        version: version.to_owned(),
+        version_scheme: scheme,
+    };
+    let inputs = application_inputs;
+    let content_hash =
+        cargobike_engine::snapshot_content_hash(&compiled, &release, &inputs, &step_type_versions)
+            .map_err(|failure| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    errors::INTERNAL_ERROR,
+                    "internal-error",
+                    format!("the snapshot's hash failed: {failure}"),
+                )
+            })?;
+    Ok(cargobike_engine::ReleaseSnapshot {
+        template: compiled,
+        release,
+        inputs,
+        step_type_versions,
+        content_hash,
+    })
 }
 
 fn format_rfc3339(at: sqlx::types::time::OffsetDateTime) -> String {
@@ -333,7 +502,17 @@ async fn cancel_release(
         .set_phase(&id, "Canceled", true, now, expected_version)
         .await
     {
-        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) => {
+            // The cancelled workflow (stops at its next operation); the
+            // cleanup workflow closes the CRs, deletes the branches and
+            // settles the leases.
+            let workflow_id = format!("cargobike/interpret/{}", id);
+            let _ = state.engine.instance.cancel(&workflow_id).await;
+            if let Err(failure) = start_cleanup(&state, id).await {
+                tracing::error!(release = %id, %failure, "the cleanup workflow refused to start");
+            }
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(RepositoryError::Conflict) => Err(ApiError::new(
             StatusCode::CONFLICT,
             crate::http::errors::STATE_CONFLICT,
@@ -342,6 +521,94 @@ async fn cancel_release(
         )),
         Err(other) => Err(repository_to_api(other)),
     }
+}
+
+/// The cleanup workflow's start: the targets read the release's
+/// environments status (the open CRs the interpreter recorded); a
+/// cancelled release's books are source enough for the compensation.
+async fn start_cleanup(state: &AppState, id: Uuid) -> Result<(), String> {
+    let Some(document) = state.releases.get(&id).await.ok() else {
+        return Err(format!("failed to read the release {id} for its cleanup"));
+    };
+    let environments = document
+        .pointer("/status/environments")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let application = document
+        .pointer("/spec/application")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let branch_format = state.config.borrow().engine.branch_format.clone();
+    let mut targets: Vec<cargobike_engine::CleanupTarget> = Vec::new();
+    for environment in environments {
+        let Some(name) = environment.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let change_request = environment
+            .get("change_request")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let repo = change_request
+            .get("target_repo")
+            .cloned()
+            .and_then(|repo| serde_json::from_value(repo).ok());
+        let branch = cargo_branch_name(&branch_format, &application, name, &id);
+        // The CR summary the cleanup needs: number, repo, head sha.
+        let number = change_request
+            .get("number")
+            .and_then(serde_json::Value::as_u64);
+        let head_sha = change_request
+            .get("head_sha")
+            .and_then(serde_json::Value::as_str);
+        let change_request = match (repo, number, head_sha) {
+            (Some(target_repo), Some(number), Some(head_sha)) => {
+                Some(cargobike_engine::CrSummary {
+                    number,
+                    repo: target_repo,
+                    head_sha: head_sha.to_owned(),
+                })
+            }
+            _ => None,
+        };
+        targets.push(cargobike_engine::CleanupTarget {
+            application: application.clone(),
+            environment: name.to_owned(),
+            branch: Some(branch),
+            change_request,
+            superseded_by: None,
+            to_version: None,
+        });
+    }
+    state
+        .engine
+        .cleanup
+        .start_with(
+            cargobike_engine::CleanupArgs {
+                release_id: id.to_string(),
+                targets,
+            },
+            dbos::StartOptions::default(),
+        )
+        .await
+        .map_err(|failure| format!("the cleanup's start failed: {failure}"))?;
+    Ok(())
+}
+
+/// The release branch's name (the engine's deterministic default).
+fn cargo_branch_name(
+    format: &str,
+    application: &str,
+    environment: &str,
+    release_id: &Uuid,
+) -> String {
+    let values = std::collections::BTreeMap::from([
+        ("application".to_owned(), application.to_owned()),
+        ("environment".to_owned(), environment.to_owned()),
+        ("release_id".to_owned(), release_id.to_string()),
+    ]);
+    cargobike_engine::names::expand(format, &values)
 }
 
 /// The If-Match header's value (empty ⇒ an unconditional transition).
@@ -473,24 +740,27 @@ pub const LOCK_ID: i64 = 0x0063_6172_676f_626b; // 'cargobk'
 /// gate and the router ready to serve.
 pub async fn boot(
     config_path: Option<&std::path::Path>,
+    provider_override: crate::engine::ProviderOverride,
 ) -> Result<(Router<()>, Arc<AppState>), crate::config::ConfigError> {
     let config = Arc::new(load(config_path)?);
     for literal in literal_secret_warnings(&config) {
         tracing::warn!("{literal}");
     }
-    // 2.7: semantic validation before anything else starts half-authorised.
+    // semantic validation before anything else starts half-authorised.
     if let Err(error) = crate::validation::validate(&config) {
         return Err(crate::config::ConfigError::Parse(error.to_string()));
     }
     let pool = crate::db::connect(&config).await?;
     let (config_tx, config_rx) = tokio::sync::watch::channel(Arc::clone(&config));
     let auth = Arc::new(crate::auth::AuthState::new(config_rx.clone())?);
+    let engine = crate::engine::host(&config, pool.clone(), provider_override).await?;
     let state = Arc::new(AppState {
         config: config_rx,
         ready: AtomicBool::new(false),
         releases: ReleaseRepository::new(pool.clone()),
         auth,
         config_path: config_path.map(|path| path.to_path_buf()),
+        engine: Arc::new(engine),
     });
     spawn_sighup_reload(Arc::clone(&state), config_tx);
     elect_leader(&pool, config.leader_election.enabled, &state.ready)

@@ -20,15 +20,21 @@ Components:
 | `auth` (2.5/2.6) | Claim matching (glob by default, AND, array-or —), algorithm allowlist, OIDC verification with cached JWKS, argon2 API keys with rotation + expiry, the localhost-only bootstrap key, `authorize_create` (grant + `releasers` + `repository_id` —), the Bearer middleware |
 | `http` (2.1/2.4/2.8) | Router with RFC 9457 problem details (`http::errors`), health surfaces (`live`/`ready`/`startup`), `clientconfig` (issuer+audience hints only), release endpoints (list with filters + cursor pagination, idempotent create with 202/200, get, cancel with If-Match guard, terminal-only delete), `whoami`, trace/panic/body-limit/sensitive-header middleware |
 | `db` (2.3) | Pool + migrations: `releases`, events, leases, CR correlation tables |
-| `release` (2.3/2.4) | `ReleaseRepository`: JSONB documents + column indexes, idempotent create over `(application, version)` among non-terminal rows, phase/terminal updates with optimistic concurrency (`If-Match`/`resource_version`), terminal-only delete (event log retained, US-6) |
+| `release` (2.3/2.4) | `ReleaseRepository`: JSONB documents + column indexes, idempotent create over `(application, version)` among non-terminal rows, phase/terminal updates with optimistic concurrency (`If-Match`/`resource_version`), terminal-only delete (event log retained) |
+| `engine` | The engine's hosting: the services from the config (the providers' build incl. the GHES `api_url`, the named secrets' credential store, the egress-guarded HTTP seam, the leases/status/correlation stores), the DBOS boot with the interpreter + cleanup + reconciler registered before `launch()`, the production signal seam over the releases join, and the reconcile loop's start |
 | `main` | clap args (`--config`, `--listen`, `--public-url`; `CARGOBIKE_SERVER_CONFIG` env), `hash-api-key` stdin subcommand (§9.3), logging init |
 
 ## Status
 
-Phase 2 scope is complete in-scope; Phase 4's CLI runs against it. Not yet in
-place (audit TODO): engine boot/workflow start at create (the `TODO(2.4b)`
-marker), webhooks + SSE + events + snapshots + approvals + retry endpoints
-(Phase 5), application-group discovery, provider construction, metrics port.
+The server runs the durable engine end to end: the boot registers the
+interpreter/cleanup/reconciler before `launch()`, the create provisions a
+snapshot and starts the interpreter (the release status advances live via
+the engine's status store), and the cancel stops the workflow and starts
+the cleanup that closes recorded CRs, deletes branches and settles the
+leases. Pending work: webhooks + SSE watch/event/snapshot/approvals/retry
+endpoints (Phase 5), application-group discovery, the supersede chain's
+server side, the leader-lock-loss fence, and the full SSRF set (the HTTP
+seam is a first-cut guard).
 
 ## Usage
 

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod config;
 pub mod db;
+pub mod engine;
 pub mod http;
 pub mod release;
 pub mod validation;

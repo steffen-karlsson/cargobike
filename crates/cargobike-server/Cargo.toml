@@ -9,6 +9,11 @@ publish = false
 
 [dependencies]
 cargobike-core = { path = "../cargobike-core" }
+cargobike-engine = { path = "../cargobike-engine" }
+cargobike-provider-github = { path = "../cargobike-provider-github" }
+dbos = { workspace = true }
+async-trait = { workspace = true }
+url = "2.5.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -37,6 +42,7 @@ rand_core = { version = "0.6", features = ["std", "getrandom"] }
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
 [dev-dependencies]
+cargobike-engine = { path = "../cargobike-engine", features = ["crash-hooks"] }
 argon2 = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }

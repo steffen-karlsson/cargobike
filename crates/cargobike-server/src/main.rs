@@ -89,7 +89,8 @@ async fn run(args: ServerArgs) {
     };
     init_logging(&config);
     let listen = args.listen.unwrap_or_else(|| config.server.listen.clone());
-    let router = match cargobike_server::boot(Some(std::path::Path::new(&args.config))).await {
+    let router = match cargobike_server::boot(Some(std::path::Path::new(&args.config)), None).await
+    {
         Ok((router, _state)) => router,
         Err(error) => {
             exit_before_logging(&error);
