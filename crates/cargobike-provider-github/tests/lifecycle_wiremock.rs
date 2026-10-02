@@ -9,6 +9,15 @@
 //! The fixture is a small stateful GitHub: file texts live in a map the
 //! tree-create mock stamps, refs track their tips, and the open pull
 //! map feeds both the find-by-head and the list-open routes.
+//!
+//! (Test code: asserts and reports, so the panic/print lints stay off.)
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -187,9 +196,8 @@ async fn fixture_provider(fixture: Arc<Fixture>) -> (GithubProvider, wiremock::M
         .respond_with(move |_: &wiremock::Request| {
             let tips = tips.lock().expect("the ref lock");
             let Some(sha) = tips.get(RELEASE_BRANCH) else {
-                return ResponseTemplate::new(404).set_body_json(
-                    serde_json::json!({ "message": "Not Found", "status": 404 }),
-                );
+                return ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({ "message": "Not Found", "status": 404 }));
             };
             ResponseTemplate::new(200).set_body_json(ref_json(sha))
         })
@@ -206,9 +214,7 @@ async fn fixture_provider(fixture: Arc<Fixture>) -> (GithubProvider, wiremock::M
                 .unwrap_or_default()
                 .to_owned();
             let from_sha = body["sha"].as_str().unwrap_or_default().to_owned();
-            tips.lock()
-                .expect("the ref lock")
-                .insert(branch, from_sha);
+            tips.lock().expect("the ref lock").insert(branch, from_sha);
             ResponseTemplate::new(201).set_body_json(ref_json("new-branch-sha"))
         })
         .mount(&server)
@@ -306,14 +312,11 @@ async fn fixture_provider(fixture: Arc<Fixture>) -> (GithubProvider, wiremock::M
                 .unwrap_or_default();
             let mut manifests = manifests.lock().expect("the manifest lock");
             for entry in entries {
-                let Some(stamped_path) =
-                    entry.get("path").and_then(serde_json::Value::as_str)
+                let Some(stamped_path) = entry.get("path").and_then(serde_json::Value::as_str)
                 else {
                     continue;
                 };
-                let Some(content) =
-                    entry.get("content").and_then(serde_json::Value::as_str)
-                else {
+                let Some(content) = entry.get("content").and_then(serde_json::Value::as_str) else {
                     continue;
                 };
                 manifests.insert(stamped_path.to_owned(), content.to_owned());
@@ -579,7 +582,7 @@ async fn test_the_provider_lifecycle_against_mocked_github() {
         .commit_files(
             &repo,
             RELEASE_BRANCH,
-            &[edit.clone()],
+            std::slice::from_ref(&edit),
             "Release my-service 1.2.3",
             Some(&tip),
         )
@@ -615,11 +618,7 @@ async fn test_the_provider_lifecycle_against_mocked_github() {
         .await
         .expect("the replayed commit");
     assert_eq!(replay.sha, tip, "the replay no-ops at the same tip");
-    assert_eq!(
-        fixture.commits.load(Ordering::SeqCst),
-        1,
-        "one commit only"
-    );
+    assert_eq!(fixture.commits.load(Ordering::SeqCst), 1, "one commit only");
 
     // Change request: created once; a second pass finds the open one.
     let created = provider
@@ -670,7 +669,10 @@ async fn test_the_provider_lifecycle_against_mocked_github() {
         .check_branch_protection(&repo, RELEASE_BRANCH)
         .await
         .expect("the protection reads");
-    assert!(protection.requires_reviews, "the pull's base requires reviews");
+    assert!(
+        protection.requires_reviews,
+        "the pull's base requires reviews"
+    );
     assert_eq!(protection.required_review_count, Some(1));
     assert!(
         provider

@@ -60,37 +60,37 @@ root_review=
 docs_only=1
 
 # --- per-crate path partitions ------------------------------------------------
+# Auto mode resolved to diff listing `CHANGED` above; crate code changes need
+# a doc touch. Whitespace-only changes (a rustfmt pass, say) change no
+# documentation content and don't trigger the rule; the substantive list
+# carries the files whose diff survives whitespace-ignoring.
+SUBSTANTIVE=
 for file in $CHANGED; do
     case "$file" in
         .DS_Store|Cargo.lock|target/*) continue ;;
     esac
+    case "$MODENAME" in
+        cached) if [ -n "$(git diff --cached -w -- "$file")" ]; then SUBSTANTIVE="$SUBSTANTIVE $file"; fi ;;
+        tree)   if [ -n "$(git diff HEAD -w -- "$file")" ]; then SUBSTANTIVE="$SUBSTANTIVE $file"; fi ;;
+        commit) if [ -n "$(git diff "HEAD^" -w -- "$file")" ]; then SUBSTANTIVE="$SUBSTANTIVE $file"; fi ;;
+    esac
+done
+
+docs_only=1
+for file in $SUBSTANTIVE; do
     case "$file" in
-        crates/*)
-            crate=${file#crates/}
-            crate=${crate%%/*}
-            # The doc files themselves satisfy (not trigger) the rule.
-            case "$file" in
-                "crates/$crate/README.md"|"crates/$crate/AGENTS.md")
-                    continue
-                    ;;
-            esac
-            docs_only=0
-            break
-            ;;
-        *)
-            # Doc-or-code outside crates/: root-level.
-            docs_only=0
-            ;;
+        crates/*) docs_only=0; break ;;
+        *) docs_only=0 ;;
     esac
 done
 
 # Auto mode resolved to diff listing `CHANGED` above; crate code changes need
 # a doc touch. Emit violation lines when a crate changed non-doc files but
 # touched neither of its two docs.
-for crate in $(printf '%s\n' "$CHANGED" | sed -n 's|^crates/\([^/]*\)/.*$|\1|p' | sort -u); do
+for crate in $(printf '%s\n' "$SUBSTANTIVE" | sed -n 's|^crates/\([^/]*\)/.*$|\1|p' | sort -u); do
     code_changed=0
     doc_changed=0
-    for file in $CHANGED; do
+    for file in $SUBSTANTIVE; do
         case "$file" in
             "crates/$crate/README.md"|"crates/$crate/AGENTS.md")
                 doc_changed=1

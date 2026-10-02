@@ -71,7 +71,10 @@ make docs-check # crate README/AGENTS currency for the changes at hand
 
 If any fails, fix before committing; never commit failing code (PRD §20.2).
 CI additionally runs cargo-deny, the wasm32-wasip2 build of `cargobike-core`
-(the wasm build check), and the four-platform build matrix (`.github/workflows/ci.yml`).
+(the wasm build check), and the four-platform build matrix
+(`.github/workflows/ci.yml`); on pull requests the CI also runs the
+coverage (`cargo llvm-cov`) and security-audit (`cargo audit`) reports as
+concise comments on the PR.
 
 ## How to document
 

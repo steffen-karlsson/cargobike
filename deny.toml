@@ -1,8 +1,8 @@
-# cargo-deny: licence policy, duplicate-version bans, advisories, sources (PRD A.13).
+# cargo-deny: licence policy, duplicate-version bans, advisories, sources.
 # CI runs it via EmbarkStudios/cargo-deny-action; `make audit` still runs cargo audit.
 
 [graph]
-# The CLI/server targets plus the wasi target core must compile for (PRD T4).
+# The CLI/server targets plus the wasi target core must compile for.
 targets = [
     { triple = "x86_64-unknown-linux-gnu" },
     { triple = "wasm32-wasip2" },
@@ -23,14 +23,20 @@ allow = [
     "MPL-2.0",
     "Unicode-3.0",
     "Zlib",
+    # webpki-roots ships its bundled root-store data under a permissive
+    # data licence.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# The workspace's internal crates are path dependencies without a
+# version field (they are not published from here), which cargo-deny
+# would otherwise reject as wildcard dependencies.
+wildcards = "allow"
 deny = [
-    # serde_yml is RUSTSEC-2025-0068; serde_yaml is archived (PRD A.15).
+    # serde_yml is RUSTSEC-2025-0068; serde_yaml is archived.
     { name = "serde_yml", version = "*" },
     { name = "serde_yaml", version = "*" },
     { name = "openssl", version = "*" },
@@ -40,3 +46,11 @@ deny = [
 [advisories]
 version = 2
 yanked = "warn"
+ignore = [
+    # The RSA crate has no patched release (the advisory's patched list is
+    # intentionally empty). The exposed path here is GitHub App JWT
+    # signing and OIDC RS256 verification through jsonwebtoken, whose
+    # practical exposure to the timing channel is limited; tracked
+    # upstream and to be revisited when a patched rsa ships.
+    "RUSTSEC-2023-0071",
+]

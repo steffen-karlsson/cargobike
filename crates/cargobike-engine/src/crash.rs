@@ -9,6 +9,7 @@
 /// The boundary check; `exit(9)` names the milestone in stderr (the
 /// harness's driver looks for it when waiting for the kill).
 #[cfg(feature = "crash-hooks")]
+#[allow(clippy::print_stderr)]
 pub fn milestone_maybe(environment: &str, step_id: &str) {
     let Some(target) = std::env::var("CB_CRASH_AT").ok() else {
         return;

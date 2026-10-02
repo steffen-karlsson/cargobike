@@ -360,6 +360,11 @@ defaults:
 
     #[test]
     fn test_config_path_honours_xdg_and_the_env_var() {
+        // The ambient XDG variable varies by machine (GitHub's runners
+        // export one); the test controls it and asserts both branches.
+        let restored_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+
         let home = PathBuf::from("/home/ska");
         assert_eq!(
             config_path(None, home.clone()),
@@ -367,6 +372,13 @@ defaults:
         );
         let explicit = config_path(Some("/etc/cargobike-cli.yaml".to_owned()), home.clone());
         assert_eq!(explicit, PathBuf::from("/etc/cargobike-cli.yaml"));
+
+        unsafe {
+            match restored_xdg {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
     }
 }
 

@@ -57,8 +57,9 @@ async fn test_reconciler_signals_a_stalled_merge_wait() {
 
     // Reconciler first (it borrows the registry's providers); the
     // interpreter's registration consumes its services.
-    let correlation_repository =
-        Arc::new(cargobike_engine::correlation::CorrelationRepository::new(pool.clone()));
+    let correlation_repository = Arc::new(
+        cargobike_engine::correlation::CorrelationRepository::new(pool.clone()),
+    );
     let reconciler = cargobike_engine::reconciler::register_reconciler(
         &instance,
         Arc::new(cargobike_engine::reconciler::ReconcilerServices {
@@ -250,11 +251,9 @@ async fn test_named_secrets_never_reach_dbos_state() {
             "a step output carries the secret: {output:?}"
         );
     }
-    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-        sqlx::AssertSqlSafe(format!(
-            "SELECT inputs, output, error FROM \"{schema}\".workflow_status"
-        )),
-    )
+    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(sqlx::AssertSqlSafe(
+        format!("SELECT inputs, output, error FROM \"{schema}\".workflow_status"),
+    ))
     .fetch_all(&pool)
     .await
     .expect("the workflow status rows are readable");
@@ -293,7 +292,12 @@ impl RecordingHttpService {
         Arc<std::sync::Mutex<Option<cargobike_core::step::HttpRequest>>>,
     ) {
         let seen = Arc::new(std::sync::Mutex::new(None));
-        (Arc::new(Self { seen: Arc::clone(&seen) }), Arc::clone(&seen))
+        (
+            Arc::new(Self {
+                seen: Arc::clone(&seen),
+            }),
+            Arc::clone(&seen),
+        )
     }
 }
 

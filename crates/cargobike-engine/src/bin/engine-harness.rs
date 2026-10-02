@@ -197,9 +197,11 @@ environments:
 
         // The snapshot: the compiled template with the mock repo + edits
         // stamped into its one environment (the provision).
-        let mut compiled =
-            cargobike_engine::template::compile(template_for(template_kind)?, &VersionScheme::Semver)
-                .map_err(|error| anyhow::anyhow!("template: {error}"))?;
+        let mut compiled = cargobike_engine::template::compile(
+            template_for(template_kind)?,
+            &VersionScheme::Semver,
+        )
+        .map_err(|error| anyhow::anyhow!("template: {error}"))?;
         let mut env_inputs = std::collections::BTreeMap::new();
         env_inputs.insert(
             "repo".to_owned(),

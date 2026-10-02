@@ -40,7 +40,10 @@ cargo test -p cargobike-cli
  `wiremock`: keep the exit-code and rendering coverage here, matching PRD
  §14.4 rows (output formats, config refusal, CI detection).
 - Env-var tests use `unsafe { std::env::set_var }` only in tests, and always
- clean up — no global ambient state across tests.
+ clean up — no global ambient state across tests. Tests must not DEPEND on
+ ambient env either: GitHub's runners export variables like
+ `XDG_CONFIG_HOME`, so env-reading logic under test controls and restores
+ the variable itself (see the config-path test).
 - New verbs need: happy-path render test, problem-document mapping test
  (exit 12), auth-failure test (exit 10), dead-server test (exit 11).
 

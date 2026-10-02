@@ -229,10 +229,7 @@ impl Provider for MockProvider {
             .filter(|(key, _)| key.starts_with(&base_prefix))
             .map(|(key, value)| {
                 (
-                    branch_key(
-                        branch,
-                        key.strip_prefix(&base_prefix).unwrap_or_default(),
-                    ),
+                    branch_key(branch, key.strip_prefix(&base_prefix).unwrap_or_default()),
                     value.clone(),
                 )
             })
@@ -298,16 +295,12 @@ impl Provider for MockProvider {
             if text != current {
                 changed = true;
                 tip = format!("mock-sha-{}", state.commit_runs + 1);
-                state
-                    .files
-                    .insert(branch_key(branch, file), text);
+                state.files.insert(branch_key(branch, file), text);
             }
         }
         if changed {
             state.commit_runs += 1;
-            state
-                .branches
-                .insert(branch.to_owned(), tip.clone());
+            state.branches.insert(branch.to_owned(), tip.clone());
             state.save(&path);
         }
         Ok(CommitResult {
@@ -342,7 +335,9 @@ impl Provider for MockProvider {
             head_sha: head_sha.clone(),
             state: "open".to_owned(),
         };
-        state.change_requests.insert(head.to_owned(), summary.clone());
+        state
+            .change_requests
+            .insert(head.to_owned(), summary.clone());
         state.save(&path);
         Ok(core_request_of_summary(&summary))
     }
@@ -369,10 +364,7 @@ impl Provider for MockProvider {
     ) -> ProviderResult<Option<CoreChangeRequest>> {
         let path = self.state_file();
         let state = MockState::load(&path);
-        Ok(state
-            .change_requests
-            .get(head)
-            .map(core_request_of_summary))
+        Ok(state.change_requests.get(head).map(core_request_of_summary))
     }
 
     async fn close_change_request(
