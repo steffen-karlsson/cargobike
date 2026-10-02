@@ -190,6 +190,18 @@ impl MockProvider {
 
 #[async_trait]
 impl Provider for MockProvider {
+    /// The mock's verification is the same HMAC contract the receiver's
+    /// production path uses (the core's verified normalise); the caps
+    /// advertise both webhook halves.
+    async fn verify_webhook(
+        &self,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        secrets: &[secrecy::SecretString],
+    ) -> ProviderResult<cargobike_core::webhook::NormalisedEvent> {
+        cargobike_core::webhook::normalise_github(headers, body, secrets)
+    }
+
     fn capabilities(&self) -> ProviderCaps {
         ProviderCaps {
             branch_protection: false,
@@ -197,8 +209,8 @@ impl Provider for MockProvider {
             auto_merge: false,
             releases: false,
             tags: false,
-            webhook_parsing: false,
-            webhook_verification: false,
+            webhook_parsing: true,
+            webhook_verification: true,
             branch_delete: false,
         }
     }

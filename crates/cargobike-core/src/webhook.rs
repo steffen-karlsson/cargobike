@@ -1,7 +1,15 @@
 //! Normalised webhook events : providers map their delivery formats
 //! onto this shape at the transport boundary (`cargobike-provider-github`
 //! and sidecars); the server's dispatch logic stays provider-neutral.
+//!
+//! GitHub's delivery verification also lives here (the shared HMAC
+//! contract): signature check over the RAW body with the each-configured
+//! secret, constant-time compare, then normalisation. The
+//! `cargobike-provider-github` and the engine's harness mock both call
+//! this one routine, so the mock's behaviour and production办案 do not
+//! drift.
 
+use secrecy::ExposeSecret as _;
 use serde::{Deserialize, Serialize};
 
 /// A webhook delivery reduced to what Cargobike acts on .
@@ -16,6 +24,12 @@ pub enum NormalisedEvent {
         number: u64,
         /// State the CR reached (`merged` or `closed`;).
         merged: bool,
+        /// Repository the CR belongs to (the immutable ID; the
+        /// correlation's key half).
+        repository_id: String,
+        /// Who closed it (the actor; correlation errs on the empty
+        /// side but keeps the sender when the payload carries it).
+        sender: String,
     },
     /// Any other event: persisted, acknowledged, ignored .
     Unrecognised {
@@ -39,6 +53,167 @@ pub struct TagPush {
     pub sender: String,
 }
 
+/// The delivery verification failure shapes .
+pub type VerifyResult = Result<NormalisedEvent, crate::provider::ProviderError>;
+
+/// GitHub's delivery headers Cargobike requires .
+const SIGNATURE_HEADER: &str = "x-hub-signature-256";
+const EVENT_HEADER: &str = "x-github-event";
+
+/// Verifies the delivery's signature against each configured secret and
+/// normalises the event. GitHub sends `sha256=<hex>`; matching any one
+/// secret accepts the delivery (the rotation needs two secrets). A
+/// failed verification is a transport rejection, not an event (the
+/// server answers 401 and forgets).
+pub fn normalise_github(
+    headers: &[(&str, &str)],
+    body: &[u8],
+    secrets: &[secrecy::SecretString],
+) -> VerifyResult {
+    if secrets.is_empty() {
+        return Err(crate::provider::ProviderError::Unsupported);
+    }
+    let signature = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(SIGNATURE_HEADER))
+        .map(|(_, value)| *value)
+        .ok_or(crate::provider::ProviderError::NotFound(SIGNATURE_HEADER))?;
+    let expected = signature.strip_prefix("sha256=").ok_or_else(|| {
+        crate::provider::ProviderError::Request("the signature is not a sha256 digest".to_owned())
+    })?;
+    // the compare is HMAC's verify_slice (the constant-time on
+    // the raw tag bytes; the hex was only the delivery's encoding).
+    let verified = secrets
+        .iter()
+        .any(|secret| digest_matches(secret.expose_secret().as_bytes(), body, expected));
+    if !verified {
+        return Err(crate::provider::ProviderError::Request(
+            "the delivery's signature does not verify".to_owned(),
+        ));
+    }
+    let event_name = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(EVENT_HEADER))
+        .map(|(_, value)| *value)
+        .ok_or(crate::provider::ProviderError::NotFound(EVENT_HEADER))?;
+    normalise(event_name, body)
+}
+
+/// normalisation over the delivery body.
+pub fn normalise(event_name: &str, body: &[u8]) -> VerifyResult {
+    match event_name {
+        // tag pushes as release candidates.
+        "push" => {
+            let delivery: serde_json::Value =
+                serde_json::from_slice(body).map_err(|failure| unreadable(&failure))?;
+            let reference = delivery
+                .get("ref")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if let Some(tag) = reference.strip_prefix("refs/tags/") {
+                return Ok(NormalisedEvent::TagPush(TagPush {
+                    tag: tag.to_owned(),
+                    sha: delivery
+                        .get("after")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    repository_id: delivery
+                        .get("repository")
+                        .and_then(|repo| repo.get("id"))
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default()
+                        .to_string(),
+                    sender: delivery
+                        .get("sender")
+                        .and_then(|sender| sender.get("login"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                }));
+            }
+            Ok(NormalisedEvent::Unrecognised {
+                provider_event: event_name.to_owned(),
+            })
+        }
+        // the event a release's wait was listening for.
+        "pull_request" => {
+            let delivery: serde_json::Value =
+                serde_json::from_slice(body).map_err(|failure| unreadable(&failure))?;
+            let action = delivery
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if action != "closed" {
+                return Ok(NormalisedEvent::Unrecognised {
+                    provider_event: format!("pull_request/{action}"),
+                });
+            }
+            let pull = delivery.get("pull_request");
+            let merged = pull
+                .and_then(|p| p.get("merged"))
+                .and_then(|m| m.as_bool())
+                .unwrap_or(false);
+            let Some(number) = pull
+                .and_then(|p| p.get("number"))
+                .and_then(serde_json::Value::as_u64)
+            else {
+                return Err(malformed("no pull request number"));
+            };
+            let repository_id = pull
+                .and_then(|p| p.pointer("/base/repo/id"))
+                .or_else(|| delivery.pointer("/repository/id"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+                .to_string();
+            let sender = delivery
+                .pointer("/sender/login")
+                .or_else(|| delivery.pointer("/pull_request/user/login"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            Ok(NormalisedEvent::ChangeRequestClosed {
+                number,
+                merged,
+                repository_id,
+                sender,
+            })
+        }
+        other => Ok(NormalisedEvent::Unrecognised {
+            provider_event: other.to_owned(),
+        }),
+    }
+}
+
+/// The constant-time digest check : decode the expected tag then
+/// verify slice-against-slice; an unparsable digest is a reject.
+fn digest_matches(secret_key: &[u8], body: &[u8], expected_hex: &str) -> bool {
+    use hmac::Mac as _;
+    use sha2::Sha256;
+    let Ok(expected) = hex::decode(expected_hex) else {
+        return false;
+    };
+    let Ok(mut mac) = hmac::Hmac::<Sha256>::new_from_slice(secret_key) else {
+        return false;
+    };
+    mac.update(body);
+    mac.verify_slice(&expected).is_ok()
+}
+
+/// The malformed/invalid body's error (the delivery is acted-on
+/// garbage; the receiver refuses it).
+fn unreadable(failure: &serde_json::Error) -> crate::provider::ProviderError {
+    crate::provider::ProviderError::Request(format!(
+        "the delivery body is unreadable JSON: {failure}"
+    ))
+}
+
+/// The delivery's required field is absent.
+fn malformed(reason: &str) -> crate::provider::ProviderError {
+    crate::provider::ProviderError::Request(format!("the delivery is malformed: {reason}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,5 +230,24 @@ mod tests {
         assert_eq!(json["kind"], "tag-push");
         let back: NormalisedEvent = serde_json::from_value(json).expect("event must deserialise");
         assert_eq!(back, event);
+    }
+
+    #[test]
+    fn test_the_hmac_verify_slices_constant_time_rfc_4231() {
+        // RFC 4231 case 2 (the Jefe vector) exercises the HMAC engine
+        // end-to-end through the digest helper.
+        let body = b"what do ya want for nothing?";
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(b"Jefe").expect("the RFC's key");
+        use hmac::Mac as _;
+        mac.update(body);
+        let expected_digest = hex::encode(mac.finalize().into_bytes());
+        assert!(
+            digest_matches(b"Jefe", body, &expected_digest),
+            "right key verifies"
+        );
+        assert!(
+            !digest_matches(b"Jefe", body, "deadbeef"),
+            "wrong digest refuses"
+        );
     }
 }

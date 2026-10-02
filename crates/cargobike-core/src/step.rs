@@ -105,9 +105,17 @@ pub type StepFailureReason = String;
 #[derive(Clone, Debug, PartialEq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "failure")]
 pub enum StepError {
-    /// The step failed transiently; `StepOptions` retries apply .
-    #[error("step failed transiently: {0}")]
-    Transient(String),
+    /// The step failed transiently; `StepOptions` retries apply.
+    ///
+    /// A struct variant and not a newtype: the serde `tag = "failure"`
+    /// representation cannot carry a string payload in a newtype
+    /// variant, and the step's ERR result rides the engine's durable
+    /// recording — this shape must move as-is.
+    #[error("step failed transiently: {reason}")]
+    Transient {
+        /// The human transient reason.
+        reason: String,
+    },
     /// The step failed permanently; the release error carries `code`.
     #[error("{code}: {message}")]
     Failed {

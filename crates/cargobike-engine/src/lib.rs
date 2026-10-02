@@ -21,6 +21,7 @@ pub mod snapshot;
 pub mod status;
 pub mod steps;
 pub mod template;
+pub mod webhook;
 
 pub use cleanup::{
     CLEANUP_WORKFLOW, CleanupArgs, CleanupServices, CleanupTarget, CrSummary, register_cleanup,
@@ -36,3 +37,7 @@ pub use snapshot::{ReleaseIdentity, ReleaseSnapshot, duration_text, snapshot_con
 pub use status::{ReleaseStatusStore, SqlReleaseStatusStore, StatusError, rollup as rollup_phase};
 pub use steps::{StepRegistry, StepRegistryError};
 pub use template::{CompiledTemplate, TemplateError, compile, compile_with};
+pub use webhook::{
+    TagPushCreator, TagPushOutcome, WEBHOOK_WORKFLOW, WebhookArgs, WebhookServices,
+    register_webhook,
+};

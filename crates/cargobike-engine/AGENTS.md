@@ -36,9 +36,13 @@ project-wide rules live in the root [`AGENTS.md`](../../AGENTS.md).
 ## How to test
 
 - Unit tests in-module (`#[cfg(test)]`), integration tests in `tests/`:
- `engine_integration/` (in-process: the reconciler's send-only signaling
- contract; the secrets invariant), `crash_harness.rs` (the kill at every
- step boundary, converge) and `leases_behaviour.rs`.
+ `engine_integration/` runs as ONE binary (in-process: the reconciler's
+ send-only signaling contract, the secrets invariant, the supersede
+ E2E, and the crash-harness module `crash_harness::…`) with a fixture-DB
+ lock for the connection budget; `leases_behaviour.rs` standalone. The
+ webhook receiver's end-to-end lives with the server
+ (`crates/cargobike-server/tests/webhook_receiver.rs`) because the
+ receiver is server-hosted.
 - Crash hooks are feature-gated: `--features crash-hooks` compiles
  `mock`, `crash::milestone_maybe` and the harness bin. Without the feature
  they are inert — production builds take none of that path.
@@ -77,7 +81,7 @@ All must be true:
  `make docs-check`.
 2. New engine logic has scenario-named tests; crash-harness-affected changes
  re-run `cargo test -p cargobike-engine --features crash-hooks --test
- crash_harness` with Postgres available.
+ engine_integration` with Postgres available.
 3. Steps added to the interpreter are idempotent with the idempotency strategy table strategy stated
  in their rustdoc; signals use topic+idempotency-key helpers.
 4. No secret values can enter step outputs : credentials resolve only

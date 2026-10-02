@@ -18,10 +18,10 @@ Components:
 | `config` (§4.17, §13) | The YAML config: top-level sections (`server`, `database`, `leader_election`, `auth`, `secrets`, `providers`, `extensions`, `templates`, `engine`, `reconciler`, `retention`, `limits`, `network`, `logging`, `metrics`, `applications`, `application_groups`), secret-shaped values (`{ file }` / `{ env }` / `{ secret }`, literals warned), post-parse `${VAR}` / `${VAR:-default}` interpolation that refuses inside secret fields, curated `CARGOBIKE_SERVER_*` overrides, GitHub-provider env stamps |
 | `validation` (2.7) | Semantic boot validation: unusable OIDC entries, API-key hash checks, releaser references + grants, ref/tag-format cross-check, registry-`approval`-needs-template-`wait: approval` invariant, tag-format/branch-format placeholder grammar, `extends` group references |
 | `auth` (2.5/2.6) | Claim matching (glob by default, AND, array-or —), algorithm allowlist, OIDC verification with cached JWKS, argon2 API keys with rotation + expiry, the localhost-only bootstrap key, `authorize_create` (grant + `releasers` + `repository_id` —), the Bearer middleware |
-| `http` (2.1/2.4/2.8) | Router with RFC 9457 problem details (`http::errors`), health surfaces (`live`/`ready`/`startup`), `clientconfig` (issuer+audience hints only), release endpoints (list with filters + cursor pagination, idempotent create with 202/200, get, cancel with If-Match guard, terminal-only delete), `whoami`, trace/panic/body-limit/sensitive-header middleware |
+| `http` (2.1/2.4/2.8) | Router with RFC 9457 problem details (`http::errors`), health surfaces (`live`/`ready`/`startup`), `clientconfig` (issuer+audience hints only), release endpoints (list with filters + cursor pagination, idempotent create with 202/200, get, cancel with If-Match guard, terminal-only delete), `whoami`, trace/panic/body-limit/sensitive-header middleware; plus the webhook lane (5.1): `POST /webhooks/{provider}` verifies before any parse (the shared HMAC normalise), deduplicates on the delivery id, fast-acks 202 (200 acknowledge-ignored on unrecognised events), under its own body-limit lane |
 | `db` (2.3) | Pool + migrations: `releases`, events, leases, CR correlation tables |
 | `release` (2.3/2.4) | `ReleaseRepository`: JSONB documents + column indexes, idempotent create over `(application, version)` among non-terminal rows, phase/terminal updates with optimistic concurrency (`If-Match`/`resource_version`), terminal-only delete (event log retained) |
-| `engine` | The engine's hosting: the services from the config (the providers' build incl. the GHES `api_url`, the named secrets' credential store, the egress-guarded HTTP seam, the leases/status/correlation stores), the DBOS boot with the interpreter + cleanup + reconciler registered before `launch()`, the production signal seam over the releases join, and the reconcile loop's start |
+| `engine` | The engine's hosting: the services from the config (the providers' build incl. the GHES `api_url`, the named secrets' credential store, the egress-guarded HTTP seam, the leases/status/correlation stores), the DBOS boot with the interpreter + cleanup + webhook + reconciler registered before `launch()`, the materialised per-provider webhook secrets, the tag-push creator (the registry scan + `tag_format` extraction + the F-82 fail-closed tag-protection check + the shared create core), the production signal seam over the releases join, and the reconcile loop's start |
 | `main` | clap args (`--config`, `--listen`, `--public-url`; `CARGOBIKE_SERVER_CONFIG` env), `hash-api-key` stdin subcommand (§9.3), logging init |
 
 ## Status
@@ -83,6 +83,12 @@ CARGOBIKE_TEST_DATABASE_URL=postgres://... cargo test -p cargobike-server
 - `tests/oidc_roundtrip.rs` — locally issued RS256 tokens through the trust
   policy (claims, audience, expiry).
 - `tests/sighup_reload.rs` — the hot-reload swap without a restart.
+- `tests/webhook_receiver.rs` — signed deliveries end-to-end: the tag-push
+  creating the release (the fail-closed skip on the ruleset-capable default),
+  the closed-PR correlation waking a waiting release to `Completed`, the
+  401/404/ignored/dedupe surfaces. Delivery ids are port-tagged: a recorded
+  workflow's replay would satisfy the duplicate-detection FOREVER, so each
+  test run gets fresh ids.
 - Config unit tests cover the secret shapes, the interpolation fail-fast,
   and the `${VAR:-default}` default syntax.
 

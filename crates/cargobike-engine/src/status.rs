@@ -141,6 +141,14 @@ pub fn rollup(env_phases: &[EnvironmentPhase]) -> Phase {
     if env_phases.contains(&EnvironmentPhase::PendingApproval) {
         return Phase::PendingApproval;
     }
+    // Nothing has actually started (the lease's queue holds every env
+    // still): the release remains Pending until an environment runs.
+    if env_phases
+        .iter()
+        .all(|phase| matches!(phase, EnvironmentPhase::Pending | EnvironmentPhase::Waiting))
+    {
+        return Phase::Pending;
+    }
     Phase::Running
 }
 
@@ -537,6 +545,19 @@ mod tests {
                 EnvironmentPhase::Superseded
             ])),
             Phase::Superseded
+        );
+        // The queue's hold is not a start: an all-Waiting release stays
+        // Pending until an environment actually runs.
+        assert_eq!(
+            rollup(&phases(&[EnvironmentPhase::Waiting])),
+            Phase::Pending
+        );
+        assert_eq!(
+            rollup(&phases(&[
+                EnvironmentPhase::Waiting,
+                EnvironmentPhase::Running
+            ])),
+            Phase::Running
         );
     }
 

@@ -2,11 +2,14 @@
 //! pagination , get, cancel and terminal-only delete
 //! under optimistic concurrency (If-Match / resource_version).
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use axum::http::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::db::RepositoryError;
-use axum::http::StatusCode;
 
 /// The SQL access for releases; JSONB documents + indexed columns.
 pub struct ReleaseRepository {
@@ -236,8 +239,8 @@ impl ReleaseRepository {
 /// The provision: the release snapshot (the compiled template + the
 /// registry's staged inputs + the pinned step-type versions + the
 /// content hash) — the interpreter's one durable argument.
-pub(crate) async fn provision_snapshot(
-    state: &crate::http::AppState,
+pub(crate) async fn provision_snapshot_parts(
+    parts: &CoreParts<'_>,
     app: &crate::config::ApplicationEntry,
     version: &str,
     id: Uuid,
@@ -257,15 +260,14 @@ pub(crate) async fn provision_snapshot(
             ),
         )
     })?;
-    let templates =
-        crate::validation::load_templates(&state.config.borrow().clone()).map_err(|error| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                errors::INTERNAL_ERROR,
-                "internal-error",
-                format!("failed to load the templates: {error}"),
-            )
-        })?;
+    let templates = crate::validation::load_templates(&parts.config).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            errors::INTERNAL_ERROR,
+            "internal-error",
+            format!("failed to load the templates: {error}"),
+        )
+    })?;
     let (template_name, template_version) = app.template.split_once('@').ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -351,13 +353,7 @@ pub(crate) async fn provision_snapshot(
         environment.env_inputs = staged;
     }
 
-    let step_type_versions = state
-        .engine
-        .services
-        .steps
-        .installed()
-        .into_iter()
-        .collect();
+    let step_type_versions = parts.step_types.clone();
     let release = cargobike_engine::ReleaseIdentity {
         id: id.to_string(),
         application,
@@ -425,6 +421,39 @@ pub(crate) async fn create_release_core(
     application: &str,
     version: &str,
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
+    let parts = CoreParts {
+        releases: &state.releases,
+        config: state.config.borrow().clone(),
+        step_types: state
+            .engine
+            .services
+            .steps
+            .installed()
+            .into_iter()
+            .collect(),
+    };
+    create_from_parts(&parts, &state.engine.interpreter, app, application, version).await
+}
+
+/// The create core's separable dependencies (the parts the webhook
+/// creator assembles without an AppState).
+pub(crate) struct CoreParts<'a> {
+    pub releases: &'a crate::release::ReleaseRepository,
+    pub config: Arc<crate::config::Config>,
+    pub step_types: BTreeMap<String, String>,
+}
+
+pub(crate) async fn create_from_parts(
+    parts: &CoreParts<'_>,
+    interpreter: &dbos::WorkflowRef<
+        cargobike_engine::InterpretArgs,
+        cargobike_engine::InterpretResult,
+        cargobike_engine::InterpreterError,
+    >,
+    app: &crate::config::ApplicationEntry,
+    application: &str,
+    version: &str,
+) -> Result<CreateOutcome, crate::http::errors::ApiError> {
     let id = Uuid::now_v7();
     let now = sqlx::types::time::OffsetDateTime::now_utc();
     let document = serde_json::json!({
@@ -456,9 +485,9 @@ pub(crate) async fn create_release_core(
     // The provision: the registry's template compile, the environment's
     // inputs staged, and the snapshot's hash — the interpreter reads
     // only that.
-    let snapshot = provision_snapshot(state, app, version, id).await?;
+    let snapshot = provision_snapshot_parts(parts, app, version, id).await?;
 
-    let existing = state
+    let existing = parts
         .releases
         .create(&document, id, application, version, "Pending", now)
         .await
@@ -474,9 +503,7 @@ pub(crate) async fn create_release_core(
     // The interpreter's start (the workflow id deduplicates; a replayed
     // create joins the workflow already running).
     let workflow_id = format!("cargobike/interpret/{id}");
-    if let Err(failure) = state
-        .engine
-        .interpreter
+    if let Err(failure) = interpreter
         .start_with(
             cargobike_engine::InterpretArgs { snapshot },
             dbos::StartOptions {

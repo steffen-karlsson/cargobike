@@ -90,9 +90,11 @@ pub struct InterpreterServices {
 pub(crate) fn status_to_interpreter_error(failure: crate::status::StatusError) -> InterpreterError {
     use crate::status::StatusError as StoreError;
     match failure {
-        StoreError::Terminal | StoreError::NotFound(_) => InterpreterError::Step(
-            cargobike_core::step::StepError::Transient(failure.to_string()),
-        ),
+        StoreError::Terminal | StoreError::NotFound(_) => {
+            InterpreterError::Step(cargobike_core::step::StepError::Transient {
+                reason: failure.to_string(),
+            })
+        }
         StoreError::Internal(text) => {
             InterpreterError::Step(cargobike_core::step::StepError::Failed {
                 code: cargobike_core::error::STEP_FAILED.to_owned(),
@@ -216,9 +218,9 @@ type UuidAlias = uuid::Uuid;
 fn interpreter_error_of(failure: dbos::Error<InterpreterError>) -> InterpreterError {
     match failure {
         dbos::Error::Application(failure) => failure,
-        other => InterpreterError::Step(cargobike_core::step::StepError::Transient(
-            other.to_string(),
-        )),
+        other => InterpreterError::Step(cargobike_core::step::StepError::Transient {
+            reason: other.to_string(),
+        }),
     }
 }
 
@@ -644,12 +646,16 @@ async fn wait_merge(
         Ok(Ok(anchor)) => anchor,
         Ok(Err(_)) => {
             return StepFlow::Error(InterpreterError::Step(
-                cargobike_core::step::StepError::Transient("the anchor step failed".to_owned()),
+                cargobike_core::step::StepError::Transient {
+                    reason: "the anchor step failed".to_owned(),
+                },
             ));
         }
         Err(engine_failure) => {
             return StepFlow::Error(InterpreterError::Step(
-                cargobike_core::step::StepError::Transient(engine_failure.to_string()),
+                cargobike_core::step::StepError::Transient {
+                    reason: engine_failure.to_string(),
+                },
             ));
         }
     };
@@ -675,9 +681,9 @@ async fn wait_merge(
             // redoes the wait with the same recorded facts .
             Err(_) => {
                 return StepFlow::Error(InterpreterError::Step(
-                    cargobike_core::step::StepError::Transient(
-                        "the durable receive failed".to_owned(),
-                    ),
+                    cargobike_core::step::StepError::Transient {
+                        reason: "the durable receive failed".to_owned(),
+                    },
                 ));
             }
         };
@@ -748,9 +754,9 @@ async fn wait_merge(
             Ok(Err(())) | Err(_) => {
                 // The provider refused during the verify: transient.
                 return StepFlow::Error(InterpreterError::Step(
-                    cargobike_core::step::StepError::Transient(
-                        "the merge verification could not read the provider".to_owned(),
-                    ),
+                    cargobike_core::step::StepError::Transient {
+                        reason: "the merge verification could not read the provider".to_owned(),
+                    },
                 ));
             }
         };
@@ -854,9 +860,9 @@ async fn after_change_request_continue(
         .await
         {
             return dbos::Result::Err(dbos::Error::Application(InterpreterError::Step(
-                cargobike_core::step::StepError::Transient(format!(
-                    "the correlation stamp's step failed: {engine_failure:.100}"
-                )),
+                cargobike_core::step::StepError::Transient {
+                    reason: format!("the correlation stamp's step failed: {engine_failure:.100}"),
+                },
             )));
         }
     }
@@ -1157,11 +1163,12 @@ async fn dispatch_action(
         },
     )
     .await;
-    let inner = ran.map_err(|_engine_failure| {
+    let inner = ran.map_err(|engine_failure| {
+        tracing::error!(%engine_failure, "the durable step engine refused the run");
         StepFlow::Error(InterpreterError::Step(
-            cargobike_core::step::StepError::Transient(
-                "the durable step engine refused the run".to_owned(),
-            ),
+            cargobike_core::step::StepError::Transient {
+                reason: "the durable step engine refused the run".to_owned(),
+            },
         ))
     });
     match inner {
@@ -1232,7 +1239,7 @@ fn step_options(step: &ResolvedStep) -> dbos::StepOptions<InterpreterError> {
                     failure,
                     dbos::Error::StepTimeout { .. }
                         | dbos::Error::Application(InterpreterError::Step(
-                            cargobike_core::step::StepError::Transient(_)
+                            cargobike_core::step::StepError::Transient { reason: _ }
                         ))
                 )
             },

@@ -16,6 +16,8 @@ pub const INVALID_REQUEST: &str = "InvalidRequest";
 pub const STATE_CONFLICT: &str = "StateConflict";
 pub const TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
 pub const VERSION_NOT_VERIFIED: &str = "VersionNotVerified";
+pub const PROVIDER_NOT_FOUND: &str = "ProviderNotFound";
+pub const WEBHOOK_UNTRUSTED: &str = "WebhookUntrusted";
 const CANONICAL_FORBIDDEN_SLUG: &str = "forbidden-resource";
 const FORBIDDEN_RESOURCE: &str = "ForbiddenResource";
 
@@ -106,6 +108,32 @@ mod tests {
             "no release",
         );
         expect(error.into_response(), 404, "ReleaseNotFound");
+    }
+
+    #[test]
+    fn test_webhook_vocabulary_is_stable() {
+        assert_eq!(PROVIDER_NOT_FOUND, "ProviderNotFound");
+        assert_eq!(WEBHOOK_UNTRUSTED, "WebhookUntrusted");
+        let response = ApiError::new(
+            axum::http::StatusCode::UNAUTHORIZED,
+            WEBHOOK_UNTRUSTED,
+            "webhook-untrusted",
+            "no signature",
+        )
+        .into_response();
+        assert_eq!(response.status().as_u16(), 401);
+        let body = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt")
+            .block_on(async {
+                axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body")
+            });
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(json["code"], "WebhookUntrusted");
+        assert_eq!(json["status"], 401);
     }
 
     fn expect(response: Response, status: u16, code: &str) {

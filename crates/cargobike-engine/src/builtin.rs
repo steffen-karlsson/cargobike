@@ -211,10 +211,9 @@ impl StepType for HttpCall {
         let response = ctx.http.send(request).await.map_err(http_failure)?;
         if response.status >= 500 {
             // Server-side failures are transient (the retry counts them).
-            return Err(StepError::Transient(format!(
-                "http {method} responded {}",
-                response.status
-            )));
+            return Err(StepError::Transient {
+                reason: format!("http {method} responded {}", response.status),
+            });
         }
         if let Some(expected) = params.get("expect_status").and_then(JsonValue::as_u64) {
             if response.status != expected as u16 {
@@ -330,7 +329,9 @@ fn step_failure(failure: ProviderError) -> StepError {
             code: STEP_FAILED.to_owned(),
             message: format!("{object}: not found"),
         },
-        other => StepError::Transient(other.to_string()),
+        other => StepError::Transient {
+            reason: other.to_string(),
+        },
     }
 }
 
@@ -350,9 +351,9 @@ fn step_failure_library(failure: cargobike_core::error::LibraryError) -> StepErr
 fn http_failure(failure: cargobike_core::provider::HttpError) -> StepError {
     match failure {
         cargobike_core::provider::HttpError::Timeout
-        | cargobike_core::provider::HttpError::Connect(_) => {
-            StepError::Transient(failure.to_string())
-        }
+        | cargobike_core::provider::HttpError::Connect(_) => StepError::Transient {
+            reason: failure.to_string(),
+        },
         other => StepError::Failed {
             code: STEP_FAILED.to_owned(),
             message: other.to_string(),

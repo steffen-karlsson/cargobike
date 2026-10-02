@@ -20,6 +20,9 @@ tracing = { workspace = true }
 secrecy = { workspace = true }
 toml = "1.1.6"
 serde_yaml_ng = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 rstest = { workspace = true }

@@ -70,15 +70,33 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
         .with_state(Arc::clone(&state));
     let body_limit = crate::config::parse_size(&state.config.borrow().limits.api.max_body_size)
         .unwrap_or(1024 * 1024);
-    unauthenticated
-        .merge(protected)
-        // The 2.1 surface: trace, panic containment per RFC 9457, body
-        // limit, sensitive headers (never traced/logged).
+    // The webhook surface: no auth (the HMAC is the auth), its own
+    // body-limit lane (5.1's WebhookVerify); the per-lane limit layers
+    // the sub-router so the API's tighter cap never truncates the
+    // deliveries.
+    let webhook_limit =
+        crate::config::parse_size(&state.config.borrow().limits.webhooks.max_body_size)
+            .unwrap_or(25 * 1024 * 1024);
+    let webhooks = Router::new()
+        .route("/webhooks/{provider}", post(receive_webhook))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            webhook_limit as usize,
+        ))
+        .with_state(Arc::clone(&state));
+    let rest =
+        unauthenticated
+            .merge(protected)
+            .layer(tower_http::limit::RequestBodyLimitLayer::new(
+                body_limit as usize,
+            ));
+    rest.merge(webhooks)
+        // The 2.1 surface: trace, panic containment per RFC 9457, and
+        // sensitive headers (never traced/logged) — the lanes' body
+        // limits are layered before the merge.
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer::new(
             sensitive_headers(),
         ))
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(body_limit as usize))
         .layer(tower_http::catch_panic::CatchPanicLayer::custom(PanicProblem))
 }
 
@@ -548,7 +566,8 @@ pub async fn boot(
     let pool = crate::db::connect(&config).await?;
     let (config_tx, config_rx) = tokio::sync::watch::channel(Arc::clone(&config));
     let auth = Arc::new(crate::auth::AuthState::new(config_rx.clone())?);
-    let engine = crate::engine::host(&config, pool.clone(), provider_override).await?;
+    let engine =
+        crate::engine::host(&config, config_rx.clone(), pool.clone(), provider_override).await?;
     let state = Arc::new(AppState {
         config: config_rx,
         ready: AtomicBool::new(false),
@@ -611,6 +630,128 @@ async fn whoami(
         "grants": caller.grants,
         "bootstrap": caller.bootstrap,
     }))
+}
+
+/// `POST /webhooks/{provider}` (5.1): verify before parse, the
+/// per-surface body limit is the router's layer, duplicate deliveries
+/// deduplicate (the delivery id IS the workflow id), unrecognized
+/// events acknowledge 200 and are ignored; acted-upon events fast-ack
+/// 202 while the webhook workflow follows through.
+async fn receive_webhook(
+    State(state): State<Arc<AppState>>,
+    Path(provider_name): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, ApiError> {
+    use crate::http::errors;
+    let Some(secrets) = state
+        .engine
+        .webhook_secrets
+        .get(&provider_name)
+        .filter(|s| !s.is_empty())
+    else {
+        // An unknown provider's endpoint never even exists (no secret
+        // configured = no receiver).
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            errors::PROVIDER_NOT_FOUND,
+            "provider-not-found",
+            format!("No webhook receiver for the provider `{provider_name}`."),
+        ));
+    };
+    let secrets = secrets.clone();
+    let probe = cargobike_core::model::RepoRef::new(&provider_name, "0");
+    let provider = state
+        .engine
+        .services
+        .providers
+        .resolve(&probe)
+        .map_err(|failure| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                errors::PROVIDER_NOT_FOUND,
+                "provider-not-found",
+                format!("The provider `{provider_name}` is not registered: {failure}."),
+            )
+        })?;
+    let pairs: Vec<(&str, &str)> = headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value_text| (name.as_str(), value_text))
+        })
+        .collect();
+    let event = match provider.verify_webhook(&pairs, &body, &secrets).await {
+        Ok(event) => event,
+        Err(failure) => {
+            // The provider's contract: the transport rejection is the
+            // 401 and forgets; the detailed reason stays out.
+            tracing::warn!(provider = %provider_name, "the webhook delivery refused");
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                errors::WEBHOOK_UNTRUSTED,
+                "webhook-untrusted",
+                format!("The delivery does not carry a trusted signature ({failure})."),
+            ));
+        }
+    };
+    let ignores = matches!(
+        event,
+        cargobike_core::webhook::NormalisedEvent::Unrecognised { .. }
+    );
+    let delivery = headers
+        .get("x-github-delivery")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    if ignores {
+        // 200 acknowledged (the payload is retained only for the audit
+        // surface once the event log lands).
+        return Ok((
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "received": true,
+                "action": "ignored",
+            })),
+        )
+            .into_response());
+    }
+    let args = cargobike_engine::WebhookArgs {
+        provider: provider_name.clone(),
+        delivery_id: delivery,
+        event,
+    };
+    let workflow_id = format!("cargobike/webhook/{provider_name}/{}", args.delivery_id);
+    if let Err(failure) = state
+        .engine
+        .webhook
+        .start_with(
+            args,
+            dbos::StartOptions {
+                workflow_id: Some(workflow_id.as_str()),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+    {
+        tracing::error!(%failure, "the webhook workflow refused to start");
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            errors::INTERNAL_ERROR,
+            "internal-error",
+            "The delivery was verified but the follow-through refused to start.",
+        ));
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "received": true,
+            "action": "accepted",
+        })),
+    )
+        .into_response())
 }
 
 /// Maps an auth failure to the problem response when it surfaces in a

@@ -43,6 +43,12 @@ pub struct EngineHosting {
     /// The cleanup workflow's registration.
     pub cleanup:
         dbos::WorkflowRef<cargobike_engine::CleanupArgs, (), cargobike_engine::InterpreterError>,
+    /// The webhook workflow's registration (the receiver's follow-through).
+    pub webhook:
+        dbos::WorkflowRef<cargobike_engine::WebhookArgs, (), cargobike_engine::InterpreterError>,
+    /// The per-provider materialised webhook secrets (the receiver's
+    /// verification input; the two-secret rotation is the list).
+    pub webhook_secrets: std::collections::BTreeMap<String, Vec<secrecy::SecretString>>,
 }
 
 /// A factory over the config's providers (the tests install a mock
@@ -214,6 +220,7 @@ impl cargobike_engine::reconciler::PendingReleaseSource for SqlSignalSource {
 /// comes from the config's providers (or the tests' override).
 pub async fn host(
     config: &Config,
+    config_rx: tokio::sync::watch::Receiver<Arc<Config>>,
     pool: sqlx::PgPool,
     provider_override: ProviderOverride,
 ) -> Result<EngineHosting, crate::config::ConfigError> {
@@ -270,6 +277,14 @@ pub async fn host(
         secrets.insert(name.clone(), value);
     }
 
+    // The providers' webhook secrets (the { file }/env/secret refs read
+    // at boot; the map is the receiver's verification input).
+    let mut webhook_secrets = std::collections::BTreeMap::new();
+    for provider in &config.providers {
+        let values = materialise_secret_values(&provider.webhook_secrets, &secrets).await?;
+        webhook_secrets.insert(provider.name.clone(), values);
+    }
+
     let steps = {
         let mut steps = cargobike_engine::StepRegistry::new();
         cargobike_engine::builtin::register_builtins(&mut steps);
@@ -311,12 +326,33 @@ pub async fn host(
     // The supersede path's starter gets the cleanup's handle.
     let _ = services.cleanup_ref.set(cleanup.clone());
 
+    // The webhook workflow registers BEFORE launch (the durable
+    // follow-through the receiver starts).
+    let webhook = cargobike_engine::register_webhook(
+        &instance,
+        Arc::new(cargobike_engine::WebhookServices {
+            correlations: services.correlations.clone(),
+            creator: Arc::new(ServerTagPushCreator {
+                pool: pool.clone(),
+                config: config_rx,
+                providers: services.providers.clone(),
+                steps: services.steps.clone(),
+                interpreter: interpreter.clone(),
+            }),
+        }),
+    )
+    .map_err(|failure| {
+        crate::config::ConfigError::Parse(format!(
+            "the webhook workflow refused to register: {failure}"
+        ))
+    })?;
+
     let reconciler = cargobike_engine::reconciler::register_reconciler(
         &instance,
         Arc::new(cargobike_engine::reconciler::ReconcilerServices {
             providers: services.providers.clone(),
             correlations: services.correlations.clone(),
-            releases: Arc::new(SqlSignalSource { pool }),
+            releases: Arc::new(SqlSignalSource { pool: pool.clone() }),
         }),
     )
     .map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?;
@@ -350,7 +386,194 @@ pub async fn host(
         services: services.clone(),
         interpreter,
         cleanup,
+        webhook,
+        webhook_secrets,
     })
+}
+
+/// The providers' webhook secrets' materialisation (the { file }/env/
+/// `{ secret }` refs; literals already warned at startup).
+async fn materialise_secret_values(
+    entries: &Option<Vec<crate::config::SecretValue>>,
+    named: &BTreeMap<String, secrecy::SecretString>,
+) -> Result<Vec<secrecy::SecretString>, crate::config::ConfigError> {
+    use secrecy::ExposeSecret as _;
+    let Some(entries) = entries else {
+        return Ok(vec![]);
+    };
+    let mut values = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let value = match entry {
+            crate::config::SecretValue::Literal(text) => text.clone(),
+            crate::config::SecretValue::File(file) => secrecy::SecretString::from(
+                tokio::fs::read_to_string(&file.file)
+                    .await
+                    .map_err(|failure| crate::config::ConfigError::Materialise {
+                        path: file.file.clone(),
+                        cause: failure.to_string(),
+                    })?
+                    .trim_end_matches('\n')
+                    .to_owned(),
+            )
+            .expose_secret()
+            .to_owned(),
+            crate::config::SecretValue::Env { env } => std::env::var(env)
+                .map_err(|_| crate::config::ConfigError::UnknownEnv { name: env.clone() })?,
+            crate::config::SecretValue::Secret { r#secret } => named
+                .get(&secret.clone())
+                .map(|found| found.expose_secret().to_owned())
+                .ok_or_else(|| {
+                    crate::config::ConfigError::Parse(format!(
+                        "the webhook secret's `{secret}` is not in the `secrets:` map"
+                    ))
+                })?,
+        };
+        values.push(secrecy::SecretString::from(value));
+    }
+    Ok(values)
+}
+
+/// The tag-push creator (the engine's seam): scans the live registry
+/// for the app whose source + tag trigger match the delivery, extracts
+/// the version per `tag_format`, enforces the tag-protection rule
+/// (F-82: fail-closed on the default), and runs the shared create core.
+struct ServerTagPushCreator {
+    pool: sqlx::PgPool,
+    config: tokio::sync::watch::Receiver<Arc<Config>>,
+    providers: Arc<cargobike_core::registry::ProviderRegistry>,
+    steps: Arc<cargobike_engine::StepRegistry>,
+    interpreter: dbos::WorkflowRef<
+        cargobike_engine::InterpretArgs,
+        cargobike_engine::InterpretResult,
+        cargobike_engine::InterpreterError,
+    >,
+}
+
+/// The version inside a tag: the format's `{version}` placeholder
+/// pieces stripped (empty results refuse — the tag FORMAT's middle
+/// text must match exactly).
+fn version_from_tag(tag_format: &str, tag: &str) -> Option<String> {
+    let (prefix, suffix) = match tag_format.split_once("{version}") {
+        Some((before, after)) => (before, after),
+        None => return None,
+    };
+    let rest = tag.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    (!rest.is_empty()).then(|| rest.to_owned())
+}
+
+#[async_trait::async_trait]
+impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
+    async fn create_from_tag(
+        &self,
+        provider: &str,
+        repository_id: &str,
+        tag: &str,
+        _sha: &str,
+        sender: &str,
+    ) -> Result<cargobike_engine::TagPushOutcome, String> {
+        let _ = sender;
+        let config = self.config.borrow().clone();
+        let mut outcome = cargobike_engine::TagPushOutcome {
+            created: vec![],
+            duplicates: vec![],
+            skipped: vec![],
+        };
+        for app in &config.applications {
+            let matches = app.source.provider == provider
+                && app.source.id == repository_id
+                && app.triggers.iter().any(|trigger| trigger.event == "tag");
+            if !matches {
+                continue;
+            }
+            let Some(format) = app.versioning.tag_format.clone() else {
+                outcome.skipped.push(format!(
+                    "{}: the app has no tag_format for tag pushes",
+                    app.name
+                ));
+                continue;
+            };
+            let Some(version) = version_from_tag(&format, tag) else {
+                outcome.skipped.push(format!(
+                    "{}: the tag `{tag}` does not match the tag_format `{format}`",
+                    app.name
+                ));
+                continue;
+            };
+            // F-82: the tag-protection rule, fail-closed on the
+            // default (a check that answers not-protected or refuses
+            // to answer skips THIS APP entirely; the `continue` on the
+            // app loop is the whole point).
+            if app
+                .triggers
+                .iter()
+                .any(|trigger| trigger.event == "tag" && trigger.require_tag_protection)
+            {
+                let repo = cargobike_core::model::RepoRef::new(provider, repository_id);
+                let checked: cargobike_core::provider::ProviderResult<bool> =
+                    match self.providers.resolve(&repo) {
+                        Ok(provider) => provider.check_tag_protection(&repo, tag).await,
+                        Err(failure) => Err(cargobike_core::provider::ProviderError::Request(
+                            format!("the provider's lookup failed: {failure}"),
+                        )),
+                    };
+                match checked {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        outcome.skipped.push(format!(
+                            "{}: the tag `{tag}` is unprotected and the trigger requires protection",
+                            app.name
+                        ));
+                        continue;
+                    }
+                    Err(failure) => {
+                        outcome.skipped.push(format!(
+                            "{}: the tag-protection check failed ({failure}); refusing fail-closed",
+                            app.name
+                        ));
+                        continue;
+                    }
+                }
+            }
+            let parts = crate::release::CoreParts {
+                releases: &crate::release::ReleaseRepository::new(self.pool.clone()),
+                config: config.clone(),
+                step_types: self.steps.installed().into_iter().collect(),
+            };
+            match crate::release::create_from_parts(
+                &parts,
+                &self.interpreter,
+                app,
+                &app.name,
+                &version,
+            )
+            .await
+            {
+                Ok(crated) => {
+                    let id = crated
+                        .document
+                        .pointer("/metadata/id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let parsed = Uuid::parse_str(&id).map_err(|failure| {
+                        format!("the created release's id refused to parse: {failure}")
+                    })?;
+                    if crated.created {
+                        outcome.created.push(parsed);
+                    } else {
+                        outcome.duplicates.push(parsed);
+                    }
+                }
+                Err(failure) => {
+                    outcome.skipped.push(format!(
+                        "{}: the tag `{tag}`'s create refused ({})",
+                        app.name, failure.detail
+                    ));
+                }
+            }
+        }
+        Ok(outcome)
+    }
 }
 
 /// The config's github entry to a registered provider.
