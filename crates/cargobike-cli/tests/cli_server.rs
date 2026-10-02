@@ -5,7 +5,7 @@
 
 use cargobike_cli::client::Client;
 use cargobike_cli::config::{AuthConfig, OutputFormat, Resolved, SecretRef};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 

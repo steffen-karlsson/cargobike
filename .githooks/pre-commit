@@ -1,0 +1,40 @@
+#!/bin/sh
+# The pre-commit gate: lint, clippy and the documentation currency are
+# HARD gates — a commit with a failing one of these is refused. Full tests
+# run in CI and via `make test` (they need a database, which a commit
+# should not).
+#
+# Install: `make hooks` (sets git's hooksPath to .githooks).
+# Bypassing with --no-verify is a review-events failure per AGENTS.md.
+
+set -u
+
+fail=0
+
+step() {
+    printf 'pre-commit: %s\n' "$1"
+}
+
+if [ -n "$(git diff --cached -w --name-only --diff-filter=ACMR)" ]; then
+    step "cargo fmt --all --check"
+    if ! cargo fmt --all --check; then
+        printf 'pre-commit: FAIL rustfmt; run `cargo fmt --all` and re-stage\n'
+        fail=1
+    fi
+
+    step "cargo clippy --all-targets -- -D warnings"
+    if ! cargo clippy --all-targets -- -D warnings; then
+        printf 'pre-commit: FAIL clippy; fix the lints and re-stage\n'
+        fail=1
+    fi
+
+    step "./scripts/docs-check.sh cached"
+    if ! ./scripts/docs-check.sh cached; then
+        printf 'pre-commit: FAIL the documentation currency; see the crate docs rule in AGENTS.md\n'
+        fail=1
+    fi
+else
+    printf 'pre-commit: nothing substantive staged; passing\n'
+fi
+
+exit $fail

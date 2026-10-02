@@ -75,6 +75,11 @@ CI additionally runs cargo-deny, the wasm32-wasip2 build of `cargobike-core`
 (`.github/workflows/ci.yml`); on pull requests the CI also runs the
 coverage (`cargo llvm-cov`) and security-audit (`cargo audit`) reports as
 concise comments on the PR.
+The first three gates are also the pre-commit hook's (`make hooks`
+installs it; git's `hooksPath` points at `.githooks`): a commit whose
+staged changes fail fmt, clippy, or the documentation currency is
+refused outright. Bypassing with `--no-verify` counts as a review
+failure.
 
 ## How to document
 

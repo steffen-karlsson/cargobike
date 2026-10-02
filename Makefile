@@ -1,4 +1,4 @@
-.PHONY: build build-release test lint fmt fmt-check clippy coverage audit docs-check ci clean
+.PHONY: build build-release test lint fmt fmt-check clippy coverage audit docs-check hooks ci clean
 
 build:
 	cargo build
@@ -19,6 +19,9 @@ fmt:
 
 fmt-check:
 	cargo fmt --check
+
+hooks:
+	git config core.hooksPath .githooks
 
 clippy:
 	cargo clippy --all-targets -- -D warnings
