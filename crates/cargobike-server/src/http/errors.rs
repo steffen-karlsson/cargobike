@@ -15,6 +15,7 @@ pub const INTERNAL_ERROR: &str = "InternalError";
 pub const INVALID_REQUEST: &str = "InvalidRequest";
 pub const STATE_CONFLICT: &str = "StateConflict";
 pub const TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
+pub const VERSION_NOT_VERIFIED: &str = "VersionNotVerified";
 const CANONICAL_FORBIDDEN_SLUG: &str = "forbidden-resource";
 const FORBIDDEN_RESOURCE: &str = "ForbiddenResource";
 

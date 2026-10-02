@@ -314,6 +314,19 @@ async fn provision_snapshot(
 ) -> Result<cargobike_engine::ReleaseSnapshot, ApiError> {
     use crate::http::errors;
     let application = app.name.clone();
+
+    // The version's scheme validation (the create's version policy's
+    // first cut; the tag/SHA verification rides the provider work).
+    version_scheme_of(app).validate(version).map_err(|error| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            errors::VERSION_NOT_VERIFIED,
+            "version-not-verified",
+            format!(
+                "the version `{version}` does not match the application's versioning rules: {error}"
+            ),
+        )
+    })?;
     let templates =
         crate::validation::load_templates(&state.config.borrow().clone()).map_err(|error| {
             ApiError::new(
@@ -356,13 +369,7 @@ async fn provision_snapshot(
             format!("the template refused to serialise: {failure}"),
         )
     })?;
-    let scheme = match app.versioning.scheme.as_str() {
-        "semver" => cargobike_core::version::VersionScheme::Semver,
-        "calver" => cargobike_core::version::VersionScheme::Calver {
-            calver_format: app.versioning.calver_format.clone(),
-        },
-        _ => cargobike_core::version::VersionScheme::Opaque,
-    };
+    let scheme = version_scheme_of(app);
     let mut compiled = cargobike_engine::template::compile(&source, &scheme).map_err(|error| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -618,6 +625,19 @@ fn headers_if_match(headers: &axum::http::HeaderMap) -> String {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned()
+}
+
+/// The registry's versioning block to the version scheme.
+fn version_scheme_of(
+    app: &crate::config::ApplicationEntry,
+) -> cargobike_core::version::VersionScheme {
+    match app.versioning.scheme.as_str() {
+        "semver" => cargobike_core::version::VersionScheme::Semver,
+        "calver" => cargobike_core::version::VersionScheme::Calver {
+            calver_format: app.versioning.calver_format.clone(),
+        },
+        _ => cargobike_core::version::VersionScheme::Opaque,
+    }
 }
 
 async fn get_release(

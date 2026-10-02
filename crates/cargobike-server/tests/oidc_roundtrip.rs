@@ -114,6 +114,33 @@ async fn test_oidc_token_passes_and_enforces_claims() {
         } ]
     });
 
+    // A local single-environment template (no gates, no approvals): the
+    // provision compiles it, so the fixture must not borrow the
+    // canonical workspace template's production half.
+    let templates_dir = std::env::temp_dir().join(format!("cb-oidc-templates-{port}"));
+    let _ = std::fs::create_dir_all(&templates_dir);
+    std::fs::write(
+        templates_dir.join("service.yaml"),
+        r#"
+name: service
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+environments:
+  - name: preview
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+      - id: cr
+        uses: builtin/change-request@1
+        with:
+          branch: ${{ steps.edit.outputs.branch }}
+"#,
+    )
+    .expect("template");
+
     // Config with one OIDC entry and a single registered application.
     let config_path = std::env::temp_dir().join(format!("cb-oidc-config-{port}.yaml"));
     std::fs::write(
@@ -121,9 +148,10 @@ async fn test_oidc_token_passes_and_enforces_claims() {
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
              database:\n  url: \"{fix_url}\"\n\n\
-             templates:\n  directory: ../../templates\n\n\
+             templates:\n  directory: {}\n\n\
              auth:\n  oidc:\n    - name: test-oidc\n      issuer: \"{issuer}\"\n      audience: cargobike\n      jwks_url: \"{issuer}/jwks\"\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:create, release:read]\n\n\
-             applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    releasers:\n      - oidc: test-oidc\n    environments:\n      preview:\n        concurrency: supersede\n"
+             applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    versioning:\n      scheme: semver\n      tag_format: \"v{{version}}\"\n    releasers:\n      - oidc: test-oidc\n    environments:\n      preview:\n        repo: {{ provider: github, id: \"42\" }}\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n",
+            templates_dir.display(),
         ),
     )
     .expect("config");

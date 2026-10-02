@@ -22,6 +22,30 @@ async fn test_sighup_swap_is_observed_without_restart() {
         listener.local_addr().expect("port").port()
     };
     let issuer = format!("http://127.0.0.1:{port}");
+    let templates_dir = std::env::temp_dir().join(format!("cb-reload-templates-{port}"));
+    let _ = std::fs::create_dir_all(&templates_dir);
+    std::fs::write(
+        templates_dir.join("service.yaml"),
+        r#"
+name: service
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+environments:
+  - name: preview
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+      - id: cr
+        uses: builtin/change-request@1
+        with:
+          branch: ${{ steps.edit.outputs.branch }}
+"#,
+    )
+    .expect("template");
+    let templates_dir_display = templates_dir.display().to_string();
     let config_path = std::env::temp_dir().join(format!("cb-reload-{port}.yaml"));
     // Two keys across the whole test: v1 knows only key-one; v2 only key-two.
     // DISTINCT plaintexts: argon2 verifies a value, not an entry name, so
@@ -36,7 +60,7 @@ async fn test_sighup_swap_is_observed_without_restart() {
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
              database:\n  url: \"{fix_url}\"\n\n\
-             templates:\n  directory: ../../templates\n\n\
+             templates:\n  directory: {templates_dir_display}\n\n\
              auth:\n  api_keys:\n    - name: key-one\n      hash: \"{hash_one}\"\n      grants: [release:create, application:read, template:read]\n\n\
              applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    releasers:\n      - api_key: key-one\n    environments:\n      preview:\n        concurrency: supersede\n"
         ),
@@ -79,9 +103,9 @@ async fn test_sighup_swap_is_observed_without_restart() {
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
              database:\n  url: \"{fix_url}\"\n\n\
-             templates:\n  directory: ../../templates\n\n\
+             templates:\n  directory: {templates_dir_display}\n\n\
              auth:\n  api_keys:\n    - name: key-two\n      hash: \"{hash_two}\"\n      grants: [release:create, release:read, application:read, template:read]\n\n\
-             applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    releasers:\n      - api_key: key-two\n    environments:\n      preview:\n        concurrency: supersede\n"
+             applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    versioning:\n      scheme: semver\n      tag_format: \"v{{version}}\"\n    releasers:\n      - api_key: key-two\n    environments:\n      preview:\n        repo: {{ provider: github, id: \"42\" }}\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("config v2");
