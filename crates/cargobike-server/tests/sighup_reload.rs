@@ -47,7 +47,12 @@ async fn test_sighup_swap_is_observed_without_restart() {
         .arg("--config")
         .arg(&config_path)
         .env("CARGOBIKE_SERVER_LOG_FORMAT", "text")
-        .stdout(std::fs::File::create("/private/tmp/cb-reload-server.log").expect("log file"))
+        // The platform's temp dir: a hard-coded mac path has no
+        // business in a CI job on another host family.
+        .stdout(
+            std::fs::File::create(std::env::temp_dir().join("cb-reload-server.log"))
+                .expect("log file"),
+        )
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("server spawns");

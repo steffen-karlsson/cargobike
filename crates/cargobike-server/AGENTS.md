@@ -42,6 +42,10 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
 - Integration tests boot the *real* server in-process on an ephemeral port
  (`tests/authed_lifecycle.rs`); prefer that over handler unit tests so the
  middleware stack and problem documents stay exercised.
+- No hardcoded machine paths in tests: scratch/log locations come from the
+ platform temp dir (`std::env::temp_dir()`); GitHub's runners are linux
+ hosts and a mac-first absolute path crashes the suite there (seen with the
+ reload test's log file).
 - OIDC roundtrips mint an RS256 token locally (no network). Keep the JWKS
  fixture self-contained; never test against live issuers.
 - New endpoints: cover the grant-negative path (403 with the right `code`),

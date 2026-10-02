@@ -143,7 +143,7 @@ async fn test_the_cli_client_walks_the_document_and_page() {
 
 #[tokio::test]
 async fn test_the_api_key_caught_by_the_bearer_header() {
-    let key_path = PathBuf::from("/tmp/cb-wiremock-test-key");
+    let key_path = std::env::temp_dir().join("cb-wiremock-test-key");
     std::fs::write(&key_path, "cb-wiremock-value").expect("write key");
     let server = mock_whoami_with_key("cb-wiremock-value").await;
     let client =

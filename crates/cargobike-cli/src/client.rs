@@ -268,15 +268,15 @@ mod tests {
             url: "http://localhost:8080".to_owned(),
             auth: AuthConfig::ApiKey {
                 api_key: SecretRef::File {
-                    file: std::path::PathBuf::from("/tmp/cb-cfgtest-key"),
+                    file: std::env::temp_dir().join("cb-cfgtest-key"),
                 },
             },
             ca_file: None,
             output: OutputFormat::Table,
         };
-        std::fs::write("/tmp/cb-cfgtest-key", "cb-key-1").expect("write key");
+        std::fs::write(std::env::temp_dir().join("cb-cfgtest-key"), "cb-key-1").expect("write key");
         let client = Client::new(&resolved).expect("builds");
         assert!(client.bearer.is_some());
-        std::fs::remove_file("/tmp/cb-cfgtest-key").expect("cleanup");
+        std::fs::remove_file(std::env::temp_dir().join("cb-cfgtest-key")).expect("cleanup");
     }
 }
