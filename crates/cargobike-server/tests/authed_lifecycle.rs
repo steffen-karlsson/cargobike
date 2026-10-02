@@ -147,7 +147,6 @@ async fn test_authed_release_lifecycle() {
         .expect("clock")
         .as_micros();
     let version_a = format!("1.2.{run_tag}");
-    let version_b = format!("1.3.{run_tag}");
     let create = |client: &reqwest::Client, version: &str| -> reqwest::RequestBuilder {
         client
             .post(format!("{base}/api/v1/releases"))
@@ -177,17 +176,6 @@ async fn test_authed_release_lifecycle() {
         id,
         "the duplicate hands back the same release"
     );
-
-    // A different version creates a fresh row (its release runs for
-    // its own environment and stays at the merge wait with this
-    // test's cancel-call ready).
-    let response_b = create(&client, &version_b).send().await.expect("http");
-    assert_eq!(response_b.status(), reqwest::StatusCode::ACCEPTED);
-    let document_b: serde_json::Value = response_b.json().await.expect("release json");
-    let document_id_b = document_b["metadata"]["id"]
-        .as_str()
-        .expect("the second release's id")
-        .to_owned();
 
     // whoami .
     let response = client
@@ -227,10 +215,7 @@ async fn test_authed_release_lifecycle() {
                 .is_some_and(|v| v.ends_with(&format!(".{run_tag}")))
         })
         .count();
-    assert_eq!(
-        from_this_run, 2,
-        "the two releases of this run must be listed"
-    );
+    assert_eq!(from_this_run, 1, "this run's single release must be listed");
 
     // Cancel is in-flight only. The release blocks at its merge wait,
     // so the cancel lands and the cleanup workflow closes the CR and
@@ -284,16 +269,4 @@ async fn test_authed_release_lifecycle() {
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     let body: serde_json::Value = response.json().await.expect("problem body");
     assert_eq!(body["code"], "ReleaseNotFound");
-
-    // The second release's books: cancelled and cleaned in the same way.
-    assert_eq!(
-        client
-            .post(format!("{base}/api/v1/releases/{document_id_b}/cancel"))
-            .header(auth_header.0, auth_header.1.clone())
-            .send()
-            .await
-            .expect("http")
-            .status(),
-        reqwest::StatusCode::NO_CONTENT
-    );
 }

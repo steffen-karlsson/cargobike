@@ -232,8 +232,18 @@ pub struct EnvironmentStatus {
     /// Change request opened, if any.
     pub change_request: Option<ChangeRequestRef>,
     /// When the first step started.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub started_at: Option<OffsetDateTime>,
     /// When the environment became terminal.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub completed_at: Option<OffsetDateTime>,
 }
 

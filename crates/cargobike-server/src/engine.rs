@@ -275,15 +275,6 @@ pub async fn host(
         cargobike_engine::builtin::register_builtins(&mut steps);
         Arc::new(steps)
     };
-    let services = Arc::new(InterpreterServices {
-        steps,
-        providers: Arc::new(providers),
-        credentials: Arc::new(ConfigCredentials { secrets }),
-        http: Arc::new(EgressHttpService::new(config).map_err(crate::config::ConfigError::Parse)?),
-        leases: Arc::new(LeaseRepository::new(pool.clone())),
-        statuses: Arc::new(SqlReleaseStatusStore::new(pool.clone())),
-        correlations: Arc::new(CorrelationRepository::new(pool.clone())),
-    });
 
     // DBOS: the app identity + the pinned binary version (the recovery
     // filter reads the recorded one).
@@ -292,6 +283,18 @@ pub async fn host(
     dbos_config.schema = DBOS_SCHEMA.to_owned();
     dbos_config.app_version = Some(env!("CARGO_PKG_VERSION").to_owned());
     let instance = dbos::DBOS::new(dbos_config);
+
+    let services = Arc::new(InterpreterServices {
+        steps,
+        providers: Arc::new(providers),
+        credentials: Arc::new(ConfigCredentials { secrets }),
+        http: Arc::new(EgressHttpService::new(config).map_err(crate::config::ConfigError::Parse)?),
+        leases: Arc::new(LeaseRepository::new(pool.clone())),
+        statuses: Arc::new(SqlReleaseStatusStore::new(pool.clone())),
+        correlations: Arc::new(CorrelationRepository::new(pool.clone())),
+        instance: instance.clone(),
+        cleanup_ref: Arc::new(std::sync::OnceLock::new()),
+    });
 
     let interpreter = cargobike_engine::register_interpreter(&instance, Arc::clone(&services))
         .map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?;
@@ -302,9 +305,11 @@ pub async fn host(
             providers: services.providers.clone(),
             leases: services.leases.clone(),
         }),
-    );
-    let cleanup =
-        cleanup.map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?;
+    )
+    .map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?;
+
+    // The supersede path's starter gets the cleanup's handle.
+    let _ = services.cleanup_ref.set(cleanup.clone());
 
     let reconciler = cargobike_engine::reconciler::register_reconciler(
         &instance,
@@ -313,8 +318,8 @@ pub async fn host(
             correlations: services.correlations.clone(),
             releases: Arc::new(SqlSignalSource { pool }),
         }),
-    );
-    let reconciler = reconciler;
+    )
+    .map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?;
 
     instance.launch().await.map_err(|failure| {
         crate::config::ConfigError::Parse(format!("the DBOS launch failed: {failure}"))
@@ -331,7 +336,6 @@ pub async fn host(
         batch_size: config.reconciler.batch_size,
     };
     let reconciled = reconciler
-        .map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?
         .start_with(reconciler_args, dbos::StartOptions::default())
         .await
         .map_err(|failure| {
