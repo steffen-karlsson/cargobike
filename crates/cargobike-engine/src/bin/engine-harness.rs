@@ -182,7 +182,11 @@ environments:
             providers: Arc::new(providers),
             credentials: Arc::new(cargobike_engine::mock::StubCredentials),
             http: Arc::new(cargobike_engine::mock::StubHttpService),
-            leases: Arc::new(cargobike_engine::LeaseRepository::new(pool)),
+            leases: Arc::new(cargobike_engine::LeaseRepository::new(pool.clone())),
+            statuses: Arc::new(cargobike_engine::SqlReleaseStatusStore::new(pool.clone())),
+            correlations: Arc::new(cargobike_engine::correlation::CorrelationRepository::new(
+                pool,
+            )),
         });
 
         eprintln!("boot: services ready");

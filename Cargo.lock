@@ -424,6 +424,7 @@ dependencies = [
  "cargobike-core",
  "cel",
  "dbos",
+ "hex",
  "humantime",
  "pretty_assertions",
  "rstest",
@@ -432,6 +433,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2 0.10.9",
  "sqlx",
  "thiserror",
  "time",
@@ -471,10 +473,14 @@ name = "cargobike-server"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "cargobike-core",
+ "cargobike-engine",
+ "cargobike-provider-github",
  "clap",
+ "dbos",
  "globset",
  "humantime",
  "jsonwebtoken",
@@ -494,6 +500,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

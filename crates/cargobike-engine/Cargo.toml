@@ -24,6 +24,8 @@ tracing = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 secrecy = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
 
 semver = { workspace = true }
 

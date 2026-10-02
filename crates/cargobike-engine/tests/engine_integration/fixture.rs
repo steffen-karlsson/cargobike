@@ -193,7 +193,11 @@ pub fn mock_services_with_http(
         providers: Arc::new(providers),
         credentials,
         http,
-        leases: Arc::new(cargobike_engine::LeaseRepository::new(pool)),
+        leases: Arc::new(cargobike_engine::LeaseRepository::new(pool.clone())),
+        statuses: Arc::new(cargobike_engine::SqlReleaseStatusStore::new(pool.clone())),
+        correlations: Arc::new(cargobike_engine::correlation::CorrelationRepository::new(
+            pool,
+        )),
     });
     (services, provider)
 }

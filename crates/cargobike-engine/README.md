@@ -26,14 +26,18 @@ What lives here (PRD §16 Phase 3 tasks mapped to modules):
 | `correlation` | `(provider, repo_id, cr_number) → (release, environment, step, attempt)` rows for webhook correlation | 3.6 |
 | `names` | Deterministic branch names via `engine.branch_format` format strings | 3.5 |
 | `snapshot` | `ReleaseSnapshot`: compiled template + registry inputs + pinned step-type versions + hash  | 3.9 |
-| `crash` + `mock` + `bin/engine-harness` | Feature-gated crash hooks (`--features crash-hooks`) and the harness binary; the mock provider is a small honest git host — state files with path-keyed texts, stateful change requests (a merged CR lands the head files on the base branch) | 3.15 (the crash-injection harness) |
+| `status` | The `ReleaseStatusStore` trait + the sqlx store: the interpreter's status writes (attempt/running/waiting/pending-approval/CR reference/terminal + the release's rollup), conditional updates so a terminal release never re-phases |
+| `crash` + `mock` + `bin/engine-harness` | Feature-gated crash hooks (`--features crash-hooks`) and the harness binary; the mock provider is a small honest git host — state files with path-keyed texts, stateful change requests (a merged CR lands the head files on the base branch) | (the crash-injection harness) |
 
 ## Status
 
-Phase 3 scope complete as library code. Known gaps (tracked in
-[`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md)): release-status
-persistence, correlation stamp wiring, queue-wake sends, production
-`PendingReleaseSource`, and server integration.
+The engine runs its full release reach: the interpreter writes the
+release's status at every boundary (attempt, running, waiting, the CR
+reference + the correlation stamp, each terminal phase and the rollup)
+via the `status` store, and the server's boot consumes the same services.
+Known gaps (tracked in [`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md)):
+the queue-wake sends, the supersede chain's cancel-and-cleanup half, the
+production signal seam's ETag/GraphQL batching, and the full SSRF guard.
 
 ## Usage
 

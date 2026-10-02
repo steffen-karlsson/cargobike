@@ -285,8 +285,33 @@ pub fn resolved_to_core(
     }
 }
 
+use crate::CompiledTemplate;
+
 /// humantime text of a parsed duration (the snapshot's canonical form).
 pub fn duration_text(duration: &StdDuration) -> String {
     let seconds = duration.as_secs_f64();
     humantime::format_duration(StdDuration::from_secs_f64(seconds)).to_string()
+}
+
+/// The snapshot's content hash: sha256 over the canonical JSON of the
+/// compiled template, the release identity, the registry's inputs, and
+/// the pinned step-type versions (the snapshot's identity; the fields'
+/// serialization is sorted by the map implementation, so the same
+/// content hashes the same).
+pub fn snapshot_content_hash(
+    template: &CompiledTemplate,
+    release: &ReleaseIdentity,
+    inputs: &BTreeMap<String, serde_json::Value>,
+    step_type_versions: &BTreeMap<String, String>,
+) -> Result<String, serde_json::Error> {
+    use sha2::{Digest, Sha256};
+    let body = serde_json::json!({
+        "template": template,
+        "release": release,
+        "inputs": inputs,
+        "step_type_versions": step_type_versions,
+    });
+    let bytes = serde_json::to_vec(&body)?;
+    let digest = Sha256::digest(&bytes);
+    Ok(format!("sha256:{}", hex::encode(digest)))
 }

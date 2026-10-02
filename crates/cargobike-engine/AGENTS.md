@@ -14,8 +14,13 @@ project-wide rules live in the root [`AGENTS.md`](../../AGENTS.md).
 - **At-least-once discipline (the idempotency strategy table)**: every side effect needs an
  idempotency answer. Provider calls that create objects must first look
  for them (`change-request` find-by-head; `commit-files` re-commit no-op).
- If you add a step type, add its the idempotency strategy table row to the PRD table comment or the
+ If you add a step type, add its row to the PRD's idempotency table or the
  PRD itself.
+- **Status bookkeeping**: the release's status writes are the engine's job
+ (the `status` store): every write rides its own durable step and the
+ store's updates are conditional (`AND NOT terminal`), so a cancel's
+ phase is never resurrected by a stale attempt's write. New interpreter
+ boundaries that change status facts go through `status_write`.
 - **Signal addressing **: never invent topic strings inline. Use
  `signals::merge_topic` / `approval_topic` / `lease_topic` and the
  `*_signal_key` helpers; a new wait means a new topic family + documented key.

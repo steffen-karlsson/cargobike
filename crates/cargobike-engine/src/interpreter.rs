@@ -12,15 +12,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cargobike_core::error::ReleaseError;
-use cargobike_core::model::EnvironmentPhase;
+use cargobike_core::model::{ChangeRequestRef, CrState, EnvironmentPhase};
 use cargobike_core::provider::Provider;
 use cargobike_core::step::{HttpService, StepContext, StepOutput};
 use cargobike_core::template::{OnModified, OnTimeout};
 use tracing::Span;
 
 use crate::concurrency::LeaseDecision;
+use crate::correlation::CorrelationRow;
 use crate::expr::{ExprContext, eval_gate, interpolate_params};
 use crate::leases::LeaseRepository;
+use crate::status::{ReleaseStatusStore, StatusError};
 
 use crate::signals::{InterpreterError, Signal, approval_topic, merge_topic};
 use crate::snapshot::ReleaseSnapshot;
@@ -68,6 +70,11 @@ pub struct InterpreterServices {
     pub http: Arc<dyn HttpService>,
     /// Lease rows .
     pub leases: Arc<LeaseRepository>,
+    /// The release's status writes (the bookkeeping).
+    pub statuses: Arc<dyn ReleaseStatusStore>,
+    /// The CR-correlation rows the change-request step stamps (the
+    /// webhook receiver and the reconciler sweep read them).
+    pub correlations: Arc<crate::correlation::CorrelationRepository>,
 }
 
 impl InterpreterServices {
@@ -98,41 +105,185 @@ pub fn register_interpreter(
 }
 
 /// The workflow body: environments × steps of the snapshot (
-/// pure-function rule).
+/// pure-function rule). The attempt lands first (the attempt record's
+/// bookkeeping), then the environments in declaration order; a failed
+/// environment stops the run (the later environments do not start).
 async fn run(
     args: InterpretArgs,
     services: Arc<InterpreterServices>,
 ) -> dbos::Result<InterpretResult, InterpreterError> {
+    let release_id = parse_release_id(&args.snapshot)?;
+    let attempt = dbos::workflow_id().unwrap_or_else(|| "unknown".to_owned());
+    status_write(
+        "status/attempt".to_owned(),
+        release_id,
+        &services.statuses,
+        move |store, release_id| {
+            let attempt = attempt.clone();
+            async move {
+                store
+                    .attempt_started(release_id, &attempt, time::OffsetDateTime::now_utc())
+                    .await
+            }
+        },
+    )
+    .await?;
     let mut outcomes = Vec::with_capacity(args.snapshot.template.environments.len());
     for environment in &args.snapshot.template.environments {
-        let outcome = run_environment(&args.snapshot, environment, &services).await;
+        let outcome = run_environment(&args.snapshot, environment, &services)
+            .await
+            .unwrap_or_else(|failure| error_to_outcome(environment, interpreter_error_of(failure)));
+        let stopped = matches!(
+            outcome.phase,
+            EnvironmentPhase::Failed | EnvironmentPhase::Canceled | EnvironmentPhase::Superseded
+        );
         outcomes.push(outcome);
+        if stopped {
+            break;
+        }
     }
     dbos::Result::Ok(InterpretResult {
         environments: outcomes,
     })
 }
 
-/// One environment: the gate decides a skip; steps run in order.
+/// The release id off the snapshot (a shared parse; the error is the
+/// interpreter's step-failed envelope).
+fn parse_release_id(snapshot: &ReleaseSnapshot) -> dbos::Result<UuidAlias, InterpreterError> {
+    let failure = |message: String| {
+        InterpreterError::Step(cargobike_core::step::StepError::Failed {
+            code: cargobike_core::error::STEP_FAILED.to_owned(),
+            message,
+        })
+    };
+    let parsed = match uuid::Uuid::parse_str(snapshot.release.id.as_str()) {
+        Ok(parsed) => parsed,
+        Err(parse_error) => {
+            return dbos::Result::Err(dbos::Error::Application(failure(format!(
+                "failed to parse the snapshot's release id: {parse_error}"
+            ))));
+        }
+    };
+    dbos::Result::Ok(parsed)
+}
+
+/// The release id's alias (the crate's uuid re-use).
+type UuidAlias = uuid::Uuid;
+
+/// The engine's error envelope to the interpreter's own error: an
+/// application error is held as itself; anything engine-level becomes
+/// a transient step error (a machinery refusal is not the workflow's
+/// semantics).
+fn interpreter_error_of(failure: dbos::Error<InterpreterError>) -> InterpreterError {
+    match failure {
+        dbos::Error::Application(failure) => failure,
+        other => InterpreterError::Step(cargobike_core::step::StepError::Transient(
+            other.to_string(),
+        )),
+    }
+}
+
+/// One status write as its own durable step (`weight: avoid the replay
+/// re-writing a recorded fact). The write closure takes its store and
+/// release id arguments so re-runs re-evaluate only the same statement.
+async fn status_write<W, Fut>(
+    label: String,
+    release_id: UuidAlias,
+    store: &Arc<dyn ReleaseStatusStore>,
+    write: W,
+) -> dbos::Result<(), InterpreterError>
+where
+    W: Fn(Arc<dyn ReleaseStatusStore>, UuidAlias) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Result<(), StatusError>> + Send,
+{
+    let write = Arc::new(write);
+    let outcome = dbos::step_with::<Result<bool, ()>, InterpreterError, _, _>(
+        label.as_str(),
+        dbos::StepOptions::default(),
+        move || {
+            let store = Arc::clone(store);
+            let write = Arc::clone(&write);
+            async move {
+                match write(store, release_id).await {
+                    Ok(()) => dbos::Result::Ok(Ok(true)),
+                    // Terminal refusals and not-found rows are recorded
+                    // as no-ops (a replay must not re-decide against a
+                    // stale release).
+                    Err(StatusError::Terminal | StatusError::NotFound(_)) => {
+                        dbos::Result::Ok(Ok(false))
+                    }
+                    Err(StatusError::Internal(failure)) => {
+                        tracing::error!(%failure, "a status write failed");
+                        dbos::Result::Ok(Ok(false))
+                    }
+                }
+            }
+        },
+    )
+    .await;
+    outcome.map(|_| ())
+}
+
+/// One environment: the gate decides a skip; steps run in order. The
+/// status writes ride the boundaries (running, waiting, a change
+/// request's opening, the terminal phase) — durable steps whose
+/// replays re-read the recorded fact rather than re-write it.
 async fn run_environment(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
     services: &InterpreterServices,
-) -> EnvironmentOutcome {
+) -> dbos::Result<EnvironmentOutcome, InterpreterError> {
+    let release_id = parse_release_id(snapshot)?;
     let mut context = snapshot.context(&environment.name);
     if let Some(when) = &environment.when {
         match eval_gate(when, &context) {
-            Ok(false) => return finished(environment, EnvironmentPhase::Skipped, None),
-            Err(error) => return error_to_outcome(environment, expr_failure(error)),
+            Ok(false) => {
+                // The gate said no: the environment skipped before any
+                // side effect, and no lease belonged to it.
+                status_write(
+                    format!("status/{}/skipped", environment.name),
+                    release_id,
+                    &services.statuses,
+                    |store, release_id| {
+                        let environment = environment.name.clone();
+                        async move {
+                            store
+                                .environment_terminal(
+                                    release_id,
+                                    &environment,
+                                    EnvironmentPhase::Skipped,
+                                    None,
+                                    time::OffsetDateTime::now_utc(),
+                                )
+                                .await
+                        }
+                    },
+                )
+                .await?;
+                return dbos::Result::Ok(finished(environment, EnvironmentPhase::Skipped, None));
+            }
+            Err(error) => {
+                return dbos::Result::Ok(error_to_outcome(environment, expr_failure(error)));
+            }
             Ok(true) => {}
         }
     }
-    // ..: the lease gates the environment's work.
+    // the lease gates the environment's work.
     match crate::concurrency::enter(&services.leases, snapshot, environment).await {
         Ok(LeaseDecision::Proceed) => {}
         Ok(LeaseDecision::WaitForLease) => {
+            status_write(
+                format!("status/{}/waiting", environment.name),
+                release_id,
+                &services.statuses,
+                |store, release_id| {
+                    let environment = environment.name.clone();
+                    async move { store.environment_waiting(release_id, &environment).await }
+                },
+            )
+            .await?;
+            // queue: the lease's release signal wakes it.
             loop {
-                // queue: the lease's release signal wakes it.
                 let taken = dbos::recv::<Signal, InterpreterError>(
                     Some(crate::signals::lease_topic(&environment.name).as_str()),
                     crate::concurrency::QUEUE_WAKE_TIMEOUT,
@@ -144,16 +295,30 @@ async fn run_environment(
                 match crate::concurrency::enter(&services.leases, snapshot, environment).await {
                     Ok(LeaseDecision::Proceed) => break,
                     Ok(LeaseDecision::WaitForLease) => continue,
-                    Err(error) => return error_to_outcome(environment, error),
+                    Err(error) => return dbos::Result::Ok(error_to_outcome(environment, error)),
                 }
             }
         }
         Err(concurrency_error) => {
-            return error_to_outcome(environment, concurrency_error);
+            return dbos::Result::Ok(error_to_outcome(environment, concurrency_error));
         }
     }
-    for step in &environment.steps {
-        match run_step(snapshot, environment, step, &mut context, services).await {
+    status_write(
+        format!("status/{}/running", environment.name),
+        release_id,
+        &services.statuses,
+        |store, release_id| {
+            let environment = environment.name.clone();
+            async move {
+                store
+                    .environment_running(release_id, &environment, time::OffsetDateTime::now_utc())
+                    .await
+            }
+        },
+    )
+    .await?;
+    for (index, step) in environment.steps.iter().enumerate() {
+        match run_step(snapshot, environment, index, step, &mut context, services).await {
             StepFlow::Continue => {}
             StepFlow::Skip => {
                 // the lease releases on skip, waking the queue.
@@ -167,12 +332,55 @@ async fn run_environment(
                         "queue release failed on skip"
                     );
                 }
-                return finished(environment, EnvironmentPhase::Skipped, None);
+                status_write(
+                    format!("status/{}/skipped", environment.name),
+                    release_id,
+                    &services.statuses,
+                    |store, release_id| {
+                        let environment = environment.name.clone();
+                        async move {
+                            store
+                                .environment_terminal(
+                                    release_id,
+                                    &environment,
+                                    EnvironmentPhase::Skipped,
+                                    None,
+                                    time::OffsetDateTime::now_utc(),
+                                )
+                                .await
+                        }
+                    },
+                )
+                .await?;
+                return dbos::Result::Ok(finished(environment, EnvironmentPhase::Skipped, None));
             }
             StepFlow::Error(failure) => {
                 // a failed environment KEEPS the lease for the fork
                 // resume; the supersede chain releases it server-side.
-                return error_to_outcome(environment, failure);
+                let terminal_phase = environment_phase_of(&failure);
+                let release_error = ReleaseError::new(failure.code(), failure.to_string());
+                status_write(
+                    format!("status/{}/terminal", environment.name),
+                    release_id,
+                    &services.statuses,
+                    |store, release_id| {
+                        let environment = environment.name.clone();
+                        let release_error = release_error.clone();
+                        async move {
+                            store
+                                .environment_terminal(
+                                    release_id,
+                                    &environment,
+                                    terminal_phase,
+                                    Some(release_error),
+                                    time::OffsetDateTime::now_utc(),
+                                )
+                                .await
+                        }
+                    },
+                )
+                .await?;
+                return dbos::Result::Ok(error_to_outcome(environment, failure));
             }
         }
     }
@@ -187,27 +395,34 @@ async fn run_environment(
             "queue release failed on complete"
         );
     }
-    finished(environment, EnvironmentPhase::Completed, None)
+    status_write(
+        format!("status/{}/completed", environment.name),
+        release_id,
+        &services.statuses,
+        |store, release_id| {
+            let environment = environment.name.clone();
+            async move {
+                store
+                    .environment_terminal(
+                        release_id,
+                        &environment,
+                        EnvironmentPhase::Completed,
+                        None,
+                        time::OffsetDateTime::now_utc(),
+                    )
+                    .await
+            }
+        },
+    )
+    .await?;
+    dbos::Result::Ok(finished(environment, EnvironmentPhase::Completed, None))
 }
 
-/// Maps an expression failure to the interpreter's envelope (
-/// `StepFailed` family: the step never evaluated).
-fn expr_failure(error: crate::expr::ExprError) -> InterpreterError {
-    InterpreterError::Step(cargobike_core::step::StepError::Failed {
-        code: cargobike_core::error::STEP_FAILED.to_owned(),
-        message: error.to_string(),
-    })
-}
-
-fn finished(
-    environment: &ResolvedEnvironment,
-    phase: EnvironmentPhase,
-    error: Option<ReleaseError>,
-) -> EnvironmentOutcome {
-    EnvironmentOutcome {
-        name: environment.name.clone(),
-        phase,
-        error,
+/// The release phase each failure maps to.
+pub const fn environment_phase_of(failure: &InterpreterError) -> EnvironmentPhase {
+    match failure {
+        InterpreterError::Cancelled => EnvironmentPhase::Canceled,
+        _ => EnvironmentPhase::Failed,
     }
 }
 
@@ -223,12 +438,25 @@ fn error_to_outcome(
     }
 }
 
-/// The phase each failure maps to.
-pub const fn environment_phase_of(failure: &InterpreterError) -> EnvironmentPhase {
-    match failure {
-        InterpreterError::Cancelled => EnvironmentPhase::Canceled,
-        _ => EnvironmentPhase::Failed,
+fn finished(
+    environment: &ResolvedEnvironment,
+    phase: EnvironmentPhase,
+    error: Option<ReleaseError>,
+) -> EnvironmentOutcome {
+    EnvironmentOutcome {
+        name: environment.name.clone(),
+        phase,
+        error,
     }
+}
+
+/// Maps an expression failure to the interpreter's envelope (
+/// `StepFailed` family: the step never evaluated).
+fn expr_failure(error: crate::expr::ExprError) -> InterpreterError {
+    InterpreterError::Step(cargobike_core::step::StepError::Failed {
+        code: cargobike_core::error::STEP_FAILED.to_owned(),
+        message: error.to_string(),
+    })
 }
 
 /// What one step told the environment.
@@ -241,11 +469,10 @@ enum StepFlow {
     Error(InterpreterError),
 }
 
-/// One step: action steps run their registered type; control steps walk
-/// the wait logic (the two kinds).
 async fn run_step(
     snapshot: &ReleaseSnapshot,
     environment: &ResolvedEnvironment,
+    index: usize,
     step: &ResolvedStep,
     context: &mut ExprContext,
     services: &InterpreterServices,
@@ -273,13 +500,53 @@ async fn run_step(
             timeout,
             on_timeout,
             ..
-        } => wait_approval(environment, step_id.as_str(), *timeout, *on_timeout).await,
+        } => {
+            // The wait's entry is the environment's PendingApproval (the
+            // approval endpoint's 409 rule keys on this state, and the
+            // reconciler's sweep finds the release through it).
+            if let Ok(release_id) = uuid::Uuid::parse_str(&snapshot.release.id) {
+                if let Err(engine) = status_write(
+                    format!("status/{}/pending-approval", environment.name),
+                    release_id,
+                    &services.statuses,
+                    |store, release_id| {
+                        let environment = environment.name.clone();
+                        async move {
+                            store
+                                .environment_pending_approval(release_id, &environment)
+                                .await
+                        }
+                    },
+                )
+                .await
+                {
+                    return StepFlow::Error(interpreter_error_of(engine));
+                }
+            }
+            wait_approval(environment, step_id.as_str(), *timeout, *on_timeout).await
+        }
         StepBody::WaitSleep { duration } => {
             let _slept = dbos::sleep::<InterpreterError>(*duration).await;
             StepFlow::Continue
         }
         StepBody::Action { .. } => {
-            dispatch_action(snapshot, environment, step, context, services).await
+            let flow = dispatch_action(snapshot, environment, step, context, services).await;
+            if let StepFlow::Continue = &flow {
+                if uses_change_request(step) {
+                    if let Err(engine) = after_change_request_continue(
+                        snapshot,
+                        environment,
+                        index,
+                        context,
+                        services,
+                    )
+                    .await
+                    {
+                        return StepFlow::Error(interpreter_error_of(engine));
+                    }
+                }
+            }
+            flow
         }
     }
 }
@@ -466,6 +733,116 @@ async fn wait_merge(
 /// head-SHA reference on_modified compares against).
 fn uses_change_request(step: &ResolvedStep) -> bool {
     matches!(&step.body, crate::template::StepBody::Action { uses, .. } if uses.starts_with("builtin/change-request"))
+}
+
+/// A change request just opened: the correlation row lands (the webhook
+/// receiver and the reconciler sweep join on it) and the environment's
+/// status carries the reference. The stamp rides a durable step, so a
+/// replay re-reads the recorded no-op rather than re-stamping.
+async fn after_change_request_continue(
+    snapshot: &ReleaseSnapshot,
+    environment: &ResolvedEnvironment,
+    index: usize,
+    context: &ExprContext,
+    services: &InterpreterServices,
+) -> dbos::Result<(), InterpreterError> {
+    let release_id = parse_release_id(snapshot)?;
+    let cr_step_id = environment.steps[index].id.as_str();
+    let record = context
+        .steps
+        .get(cr_step_id)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let number = record
+        .pointer("/outputs/number")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            InterpreterError::Step(cargobike_core::step::StepError::Failed {
+                code: cargobike_core::error::STEP_FAILED.to_owned(),
+                message: format!("the change-request step `{cr_step_id}` carried no number"),
+            })
+        })?;
+    let url = record
+        .pointer("/outputs/url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let head_sha = record
+        .pointer("/outputs/head_sha")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let environment_name = environment.name.clone();
+    let repo_of_env = snapshot
+        .repo_of(&environment.name)
+        .unwrap_or_else(|| cargobike_core::model::RepoRef::new("github", "0"));
+
+    // The correlation row: only when this CR awaits a merge (the sweep
+    // addresses the signal to the merge-wait step's topic).
+    if let Some(wait_step) = environment.steps[index + 1..]
+        .iter()
+        .find(|step| matches!(step.body, crate::template::StepBody::WaitMerge { .. }))
+    {
+        let row = CorrelationRow {
+            provider: repo_of_env.provider.clone(),
+            repo_id: repo_of_env.id.clone(),
+            cr_number: number as i64,
+            release_id,
+            environment: environment_name.clone(),
+            step_id: wait_step.id.clone(),
+            workflow_id: dbos::workflow_id().unwrap_or_else(|| "unknown".to_owned()),
+        };
+        let correlations = Arc::clone(&services.correlations);
+        if let Err(engine_failure) = dbos::step_with::<Result<bool, ()>, InterpreterError, _, _>(
+            format!("status/{}/correlation", environment_name).as_str(),
+            dbos::StepOptions::default(),
+            move || {
+                let correlations = Arc::clone(&correlations);
+                let row = row.clone();
+                async move {
+                    match correlations.stamp(&row).await {
+                        Ok(()) => dbos::Result::Ok(Ok(true)),
+                        Err(cause) => {
+                            // The stamp is recoverable: the sweep's
+                            // next pass or a retry re-stamps.
+                            tracing::warn!(%cause, "the correlation stamp failed");
+                            dbos::Result::Ok(Ok(false))
+                        }
+                    }
+                }
+            },
+        )
+        .await
+        {
+            return dbos::Result::Err(dbos::Error::Application(InterpreterError::Step(
+                cargobike_core::step::StepError::Transient(format!(
+                    "the correlation stamp's step failed: {engine_failure:.100}"
+                )),
+            )));
+        }
+    }
+
+    status_write(
+        format!("status/{}/change-request", environment_name),
+        release_id,
+        &services.statuses,
+        |store, release_id| {
+            let environment = environment_name.clone();
+            let reference = ChangeRequestRef {
+                number,
+                url: url.clone(),
+                target_repo: repo_of_env.clone(),
+                head_sha: head_sha.clone(),
+                state: CrState::Open,
+            };
+            async move {
+                store
+                    .environment_change_request(release_id, &environment, reference)
+                    .await
+            }
+        },
+    )
+    .await
 }
 
 /// The recorded outputs an earlier step left in the environment's
