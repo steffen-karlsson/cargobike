@@ -7,6 +7,19 @@
 
 use std::sync::Arc;
 
+/// The fixture database's serialization: the DB-backed tests in this
+/// binary + the harness-drive cases run concurrently under cargo's
+/// test threads and together exceed the fixture's connection budget;
+/// each test holds the lock for its whole span. The tokio mutex is
+/// async-aware, so a test's awaits don't block its owning thread.
+pub async fn db_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static THE_DB_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    THE_DB_LOCK
+        .get_or_init(tokio::sync::Mutex::default)
+        .lock()
+        .await
+}
+
 /// The database the durable tests use: the fixture URL (CI passes it via
 /// `CARGOBIKE_TEST_DATABASE_URL`; local development spins
 /// `scripts/spike-postgres.sh`).
@@ -108,6 +121,7 @@ environments:
 pub fn probe_snapshot(
     release_id: &str,
     application: &str,
+    version: &str,
     template: &str,
 ) -> cargobike_engine::ReleaseSnapshot {
     let mut compiled = cargobike_engine::template::compile(
@@ -138,7 +152,7 @@ pub fn probe_snapshot(
         release: cargobike_engine::ReleaseIdentity {
             id: release_id.to_owned(),
             application: application.to_owned(),
-            version: "1.0.0".to_owned(),
+            version: version.to_owned(),
             version_scheme: cargobike_core::version::VersionScheme::Semver,
         },
         inputs: std::collections::BTreeMap::new(),
@@ -156,6 +170,7 @@ pub fn probe_snapshot(
 pub fn mock_services(
     scratch: &str,
     pool: sqlx::PgPool,
+    instance: &dbos::DBOS,
     credentials: Arc<dyn cargobike_core::registry::CredentialStore>,
 ) -> (
     Arc<cargobike_engine::InterpreterServices>,
@@ -164,6 +179,7 @@ pub fn mock_services(
     mock_services_with_http(
         scratch,
         pool,
+        instance,
         credentials,
         Arc::new(cargobike_engine::mock::StubHttpService),
     )
@@ -174,6 +190,7 @@ pub fn mock_services(
 pub fn mock_services_with_http(
     scratch: &str,
     pool: sqlx::PgPool,
+    instance: &dbos::DBOS,
     credentials: Arc<dyn cargobike_core::registry::CredentialStore>,
     http: Arc<dyn cargobike_core::step::HttpService>,
 ) -> (
@@ -198,6 +215,8 @@ pub fn mock_services_with_http(
         correlations: Arc::new(cargobike_engine::correlation::CorrelationRepository::new(
             pool,
         )),
+        instance: instance.clone(),
+        cleanup_ref: Arc::new(std::sync::OnceLock::new()),
     });
     (services, provider)
 }

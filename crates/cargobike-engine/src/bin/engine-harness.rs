@@ -177,6 +177,7 @@ environments:
             mock.clone() as Arc<dyn cargobike_core::provider::Provider>,
         );
 
+        let instance = dbos::DBOS::new(config);
         let services = Arc::new(cargobike_engine::InterpreterServices {
             steps: Arc::new(steps),
             providers: Arc::new(providers),
@@ -187,10 +188,11 @@ environments:
             correlations: Arc::new(cargobike_engine::correlation::CorrelationRepository::new(
                 pool,
             )),
+            instance: instance.clone(),
+            cleanup_ref: Arc::new(std::sync::OnceLock::new()),
         });
 
         eprintln!("boot: services ready");
-        let instance = dbos::DBOS::new(config);
         let interpreter = cargobike_engine::register_interpreter(&instance, services)?;
         eprintln!("boot: registered interpreter");
         instance
@@ -256,8 +258,15 @@ environments:
         } else {
             eprintln!("boot: holding for DBOS recovery");
         }
+        // The hold self-expires: a driver that died leaves no eternal
+        // holder hoarding the database's connections.
+        let hold_started = std::time::Instant::now();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            if hold_started.elapsed() > std::time::Duration::from_secs(600) {
+                eprintln!("boot: the hold expired; the driver's run is over");
+                anyhow::bail!("the hold expired");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
 }

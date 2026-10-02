@@ -75,6 +75,45 @@ pub struct InterpreterServices {
     /// The CR-correlation rows the change-request step stamps (the
     /// webhook receiver and the reconciler sweep read them).
     pub correlations: Arc<crate::correlation::CorrelationRepository>,
+    /// The DBOS instance (the supersede path's cancel reads it; the
+    /// cloned handle is the same connection surface).
+    pub instance: dbos::DBOS,
+    /// The cleanup workflow's registration, set after both workflows
+    /// register (the supersede's starter needs the child handle; a
+    /// snapshot-pinned start with a deterministic child id).
+    pub cleanup_ref: Arc<
+        std::sync::OnceLock<dbos::WorkflowRef<crate::cleanup::CleanupArgs, (), InterpreterError>>,
+    >,
+}
+
+/// The status store's failure to the interpreter's envelope.
+pub(crate) fn status_to_interpreter_error(failure: crate::status::StatusError) -> InterpreterError {
+    use crate::status::StatusError as StoreError;
+    match failure {
+        StoreError::Terminal | StoreError::NotFound(_) => InterpreterError::Step(
+            cargobike_core::step::StepError::Transient(failure.to_string()),
+        ),
+        StoreError::Internal(text) => {
+            InterpreterError::Step(cargobike_core::step::StepError::Failed {
+                code: cargobike_core::error::STEP_FAILED.to_owned(),
+                message: text,
+            })
+        }
+    }
+}
+
+/// The interpreter's workflow id for a release (the convention the
+/// create's start, the cancel and the retry address, and the one the
+/// supersede path cancels by).
+pub fn interpret_workflow_id(release_id: impl std::fmt::Display) -> String {
+    format!("cargobike/interpret/{release_id}")
+}
+
+/// The cleanup attempt's workflow id for a release (the supersede's
+/// started child: deterministic ids converge; an existing cleanup joins
+/// instead of double-running).
+pub fn cleanup_workflow_id(release_id: impl std::fmt::Display) -> String {
+    format!("cargobike/cleanup/{release_id}")
 }
 
 impl InterpreterServices {
@@ -269,7 +308,7 @@ async fn run_environment(
         }
     }
     // the lease gates the environment's work.
-    match crate::concurrency::enter(&services.leases, snapshot, environment).await {
+    match crate::concurrency::enter(services, snapshot, environment).await {
         Ok(LeaseDecision::Proceed) => {}
         Ok(LeaseDecision::WaitForLease) => {
             status_write(
@@ -292,7 +331,7 @@ async fn run_environment(
                 let Some(Signal::LeaseReleased { .. }) = taken.ok().flatten() else {
                     continue;
                 };
-                match crate::concurrency::enter(&services.leases, snapshot, environment).await {
+                match crate::concurrency::enter(services, snapshot, environment).await {
                     Ok(LeaseDecision::Proceed) => break,
                     Ok(LeaseDecision::WaitForLease) => continue,
                     Err(error) => return dbos::Result::Ok(error_to_outcome(environment, error)),
@@ -323,7 +362,7 @@ async fn run_environment(
             StepFlow::Skip => {
                 // the lease releases on skip, waking the queue.
                 if let Err(release_failure) =
-                    crate::concurrency::release_lease(&services.leases, snapshot, environment).await
+                    crate::concurrency::release_lease(services, snapshot, environment).await
                 {
                     tracing::warn!(
                         %release_failure,
@@ -386,7 +425,7 @@ async fn run_environment(
     }
     // the lease releases on complete, waking the queue.
     if let Err(release_failure) =
-        crate::concurrency::release_lease(&services.leases, snapshot, environment).await
+        crate::concurrency::release_lease(services, snapshot, environment).await
     {
         tracing::warn!(
             %release_failure,

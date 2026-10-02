@@ -150,9 +150,10 @@ fn assert_convergence(scratch: &std::path::Path, milestone: &str) {
     );
 }
 
-#[allow(clippy::expect_used)]
-#[test]
-fn crash_at_every_step_boundary_converges() {
+#[allow(clippy::expect_used, clippy::needless_borrow)]
+#[tokio::test(flavor = "current_thread")]
+async fn crash_at_every_step_boundary_converges() {
+    let _the_db = crate::fixture::db_lock().await;
     let Some(database_url) = fixture_database_url() else {
         return;
     };

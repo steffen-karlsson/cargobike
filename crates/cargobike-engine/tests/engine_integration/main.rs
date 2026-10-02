@@ -6,6 +6,7 @@
 #![cfg(feature = "crash-hooks")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::print_stderr)]
 
+mod crash_harness;
 mod fixture;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use pretty_assertions::assert_eq;
 const RECONCILER_APP: &str = "reconcile-probe";
 /// The scan instance's app name.
 const SCAN_APP: &str = "secrets-scan";
+const SUPERSEDE_APP: &str = "supersede-probe";
 
 /// The correlation stamp carries the sweep's join keys; the merge wait's
 /// step id is the template's auto-generated one (two declared ids
@@ -34,6 +36,7 @@ const SECRET_NAME: &str = "notify-token";
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_reconciler_signals_a_stalled_merge_wait() {
+    let _the_db = fixture::db_lock().await;
     let Some(database_url) = fixture::fixture_database_url() else {
         return;
     };
@@ -47,13 +50,15 @@ async fn test_reconciler_signals_a_stalled_merge_wait() {
 
     let credentials: Arc<dyn cargobike_core::registry::CredentialStore> =
         Arc::new(cargobike_engine::mock::StubCredentials);
-    let (services, provider) = fixture::mock_services(&scratch, pool.clone(), credentials);
-    let snapshot = fixture::probe_snapshot(&release_id, RECONCILER_APP, fixture::WAIT_TEMPLATE);
+    let snapshot =
+        fixture::probe_snapshot(&release_id, RECONCILER_APP, "1.0.0", fixture::WAIT_TEMPLATE);
 
     let mut config = dbos::Config::new(RECONCILER_APP, &database_url);
     config.schema = schema;
     config.app_version = Some("reconcile-probe-1".to_owned());
     let instance = dbos::DBOS::new(config);
+    let (services, provider) =
+        fixture::mock_services(&scratch, pool.clone(), &instance, credentials);
 
     // Reconciler first (it borrows the registry's providers); the
     // interpreter's registration consumes its services.
@@ -167,6 +172,7 @@ async fn test_reconciler_signals_a_stalled_merge_wait() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_named_secrets_never_reach_dbos_state() {
+    let _the_db = fixture::db_lock().await;
     let Some(database_url) = fixture::fixture_database_url() else {
         return;
     };
@@ -184,19 +190,25 @@ async fn test_named_secrets_never_reach_dbos_state() {
     // step's header (resolved inside the step body), so the scan below
     // excludes real usage rather than an accidental non-event.
     let (http, seen_request) = RecordingHttpService::new();
-    let (services, _provider) =
-        fixture::mock_services_with_http(&scratch, pool.clone(), credentials, http.clone());
 
     let mut config = dbos::Config::new(SCAN_APP, &database_url);
     config.schema = schema.clone();
     config.app_version = Some("secrets-scan-1".to_owned());
     let instance = dbos::DBOS::new(config);
+    let (services, _provider) = fixture::mock_services_with_http(
+        &scratch,
+        pool.clone(),
+        &instance,
+        credentials,
+        http.clone(),
+    );
     let interpreter = cargobike_engine::register_interpreter(&instance, services)
         .expect("the interpreter registers before launch");
     instance.launch().await.expect("the instance launches");
 
     let release_id = uuid::Uuid::now_v7().to_string();
-    let snapshot = fixture::probe_snapshot(&release_id, SCAN_APP, fixture::SECRET_TEMPLATE);
+    let snapshot =
+        fixture::probe_snapshot(&release_id, SCAN_APP, "1.0.0", fixture::SECRET_TEMPLATE);
     let handle = interpreter
         .start_with(
             cargobike_engine::InterpretArgs { snapshot },
@@ -317,4 +329,234 @@ impl cargobike_core::step::HttpService for RecordingHttpService {
             body: Default::default(),
         })
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_supersede_cancels_the_old_attempt_and_cleans_up() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "cargobike_engine=debug,dbos=warn".to_owned()),
+        )
+        .try_init();
+
+    let _the_db = fixture::db_lock().await;
+    let Some(database_url) = fixture::fixture_database_url() else {
+        return;
+    };
+    let scratch = fixture::scratch_dir();
+    let schema = fixture::schema_for_test("supersede");
+    let pool = fixture::fixture_pool(&database_url).await;
+
+    let credentials: Arc<dyn cargobike_core::registry::CredentialStore> =
+        Arc::new(cargobike_engine::mock::StubCredentials);
+
+    let mut config = dbos::Config::new(SUPERSEDE_APP, &database_url);
+    config.schema = schema;
+    config.app_version = Some("supersede-1".to_owned());
+    let instance = dbos::DBOS::new(config);
+    let (services, provider) =
+        fixture::mock_services(&scratch, pool.clone(), &instance, credentials);
+
+    let cleanup = cargobike_engine::register_cleanup(
+        &instance,
+        Arc::new(cargobike_engine::CleanupServices {
+            providers: services.providers.clone(),
+            leases: services.leases.clone(),
+        }),
+    )
+    .expect("the cleanup registers before launch");
+    let _ = services.cleanup_ref.set(cleanup.clone());
+
+    let interpreter = cargobike_engine::register_interpreter(&instance, services)
+        .expect("the interpreter registers before launch");
+    instance.launch().await.expect("the instance launches");
+
+    // The rows first: the interpreter's status writes the release's
+    // documents; the server's insert is what would have created them.
+    let release_a = uuid::Uuid::now_v7().to_string();
+    let release_b = uuid::Uuid::now_v7().to_string();
+    let id_a = uuid::Uuid::parse_str(&release_a).expect("A's id");
+    let id_b = uuid::Uuid::parse_str(&release_b).expect("B's id");
+    // The previous run's rows: unique versions would be one answer; the
+    // simple one is a wipe of this test's own application rows.
+    sqlx::query("DELETE FROM releases WHERE application = $1")
+        .bind(SUPERSEDE_APP)
+        .execute(&pool)
+        .await
+        .expect("this application's old rows gone");
+    seed_release(&pool, &id_a, SUPERSEDE_APP, "1.0.0").await;
+    seed_release(&pool, &id_b, SUPERSEDE_APP, "1.1.0").await;
+
+    let workflow_a = cargobike_engine::interpreter::interpret_workflow_id(&release_a);
+    let handle_a = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs {
+                snapshot: fixture::probe_snapshot(
+                    &release_a,
+                    SUPERSEDE_APP,
+                    "1.0.0",
+                    fixture::WAIT_TEMPLATE,
+                ),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow_a),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("A starts");
+
+    // Waits until A's CR exists (the wait-merge point; the lease held).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+        if state.change_requests.len() == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "A never reached its CR; {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let mut data = query_release(&pool, &id_a).await;
+    assert_eq!(
+        data.pointer("/status/phase")
+            .and_then(serde_json::Value::as_str),
+        Some("Running"),
+        "A is running at its merge wait: {data}"
+    );
+
+    // Release B: the higher version; the supersede takes over: the lease
+    // transfers atomically, A is cancelled and cleaned, B proceeds.
+    let workflow_b = cargobike_engine::interpreter::interpret_workflow_id(&release_b);
+    let _handle_b = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs {
+                snapshot: fixture::probe_snapshot(
+                    &release_b,
+                    SUPERSEDE_APP,
+                    "1.1.0",
+                    fixture::WAIT_TEMPLATE,
+                ),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow_b),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("B starts");
+
+    // Asserts: the lease's holder is B; A's release is Superseded
+    // (terminal); A's CR is closed (the cleanup; the comment links B).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        data = query_release(&pool, &id_a).await;
+        let superseded = data
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Superseded");
+        let holder_is_b = holder_of(&pool, SUPERSEDE_APP)
+            .await
+            .map(|holder| holder == id_b)
+            .unwrap_or(false);
+        if superseded && holder_is_b {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the supersede chain never settled: release {data}, holder {:?}",
+            holder_of(&pool, SUPERSEDE_APP).await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // The mock's CR state: A's CR is closed (the cleanup) and B's own
+    // CR is the single open one.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+        let open = state
+            .change_requests
+            .values()
+            .filter(|summary| summary.state == "open")
+            .count();
+        if state.change_requests.len() == 2 && open == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the supersede's cleanup never closed A's CR: {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // A clean finish: B's attempt is cancelled (the lease and the CR
+    // are settled by the engine's own bookkeeping or a later test); A's
+    // handle is dropped (a cancelled attempt's result never resolves
+    // here).
+    drop(handle_a);
+    let _ = instance.cancel(&workflow_b).await;
+    instance.shutdown().await;
+}
+
+/// The release row's insert (a test's minimal document: the release the
+/// interpreter's status writes will fill).
+async fn seed_release(pool: &sqlx::PgPool, id: &uuid::Uuid, application: &str, version: &str) {
+    let now = time::OffsetDateTime::now_utc();
+    let document = serde_json::json!({
+        "metadata": {
+            "id": id.to_string(),
+            "created_at": now.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
+            "updated_at": now.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
+            "resource_version": 1,
+            "retried_from": serde_json::Value::Null,
+            "labels": {},
+            "annotations": {},
+        },
+        "spec": {
+            "application": application,
+            "version": version,
+            "source": { "provider": "github", "id": "42", "path": null },
+            "template": "harness@1",
+        },
+        "status": {
+            "phase": "Pending",
+            "error": serde_json::Value::Null,
+        },
+    });
+    sqlx::query(
+        "INSERT INTO releases (id, application, version, phase, terminal, resource_version, created_at, updated_at, document) VALUES ($1, $2, $3, 'Pending', FALSE, 1, $4, $4, $5)",
+    )
+    .bind(id)
+    .bind(application)
+    .bind(version)
+    .bind(now)
+    .bind(document)
+    .execute(pool)
+    .await
+    .expect("the release row's insert");
+}
+
+/// Reads the release's document half (the pool's own query).
+async fn query_release(pool: &sqlx::PgPool, id: &uuid::Uuid) -> serde_json::Value {
+    sqlx::query_scalar::<_, serde_json::Value>("SELECT document FROM releases WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .expect("the release row's document readable")
+        .expect("the release row exists")
+}
+
+/// The lease's holder for an application's environment.
+async fn holder_of(pool: &sqlx::PgPool, application: &str) -> Option<uuid::Uuid> {
+    sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT holder_release_id FROM leases WHERE application = $1",
+    )
+    .bind(application)
+    .fetch_optional(pool)
+    .await
+    .expect("the lease readable")
 }

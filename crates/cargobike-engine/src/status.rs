@@ -39,6 +39,24 @@ pub trait ReleaseStatusStore: Send + Sync {
         at: time::OffsetDateTime,
     ) -> Result<(), StatusError>;
 
+    /// One environment's record from the document (a None when the
+    /// release or the record is absent; the supersede chain reads the
+    /// old attempt's CR).
+    async fn load_environment(
+        &self,
+        release_id: Uuid,
+        environment: &str,
+    ) -> Result<Option<EnvironmentStatus>, StatusError>;
+
+    /// The (release id, current attempt's workflow id) pairs of the
+    /// releases waiting on this application+environment's lease (the
+    /// queue's wake list). Empty when nothing waits.
+    async fn waiting_releases(
+        &self,
+        application: &str,
+        environment: &str,
+    ) -> Result<Vec<(Uuid, String)>, StatusError>;
+
     /// An environment reached PendingApproval (the wait's entry); the
     /// release's phase follows.
     async fn environment_pending_approval(
@@ -243,6 +261,67 @@ impl SqlReleaseStatusStore {
 
 #[async_trait]
 impl ReleaseStatusStore for SqlReleaseStatusStore {
+    async fn load_environment(
+        &self,
+        release_id: Uuid,
+        environment: &str,
+    ) -> Result<Option<EnvironmentStatus>, StatusError> {
+        let document = match self.load_document(release_id).await {
+            Ok(document) => document,
+            Err(StatusError::NotFound(_)) => return Ok(None),
+            Err(other) => return Err(other),
+        };
+        let found = document
+            .pointer("/status/environments")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| {
+                        item.get("name").and_then(serde_json::Value::as_str) == Some(environment)
+                    })
+                    .cloned()
+            });
+        if let Some(item) = &found {
+            match serde_json::from_value::<EnvironmentStatus>(item.clone()) {
+                Ok(record) => return Ok(Some(record)),
+                Err(failure) => {
+                    tracing::error!(%failure, "the env record refused to decode");
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    async fn waiting_releases(
+        &self,
+        application: &str,
+        environment: &str,
+    ) -> Result<Vec<(Uuid, String)>, StatusError> {
+        sqlx::query_as::<_, (Uuid, Option<String>)>(
+            "SELECT r.id, \
+             (SELECT elem->>'workflow_id' \
+              FROM jsonb_array_elements(r.document #> '{status,attempts}') elem \
+              ORDER BY elem->>'started_at' DESC LIMIT 1) \
+             FROM releases r, \
+                  LATERAL jsonb_array_elements(r.document #> '{status,environments}') env \
+             WHERE r.document #>> '{spec,application}' = $1 \
+               AND env->>'name' = $2 \
+               AND env->>'phase' = 'Waiting'",
+        )
+        .bind(application)
+        .bind(environment)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StatusError::Internal(error.to_string()))
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|(id, workflow)| workflow.map(|wf| (id, wf)))
+                .collect()
+        })
+    }
+
     async fn attempt_started(
         &self,
         release_id: Uuid,

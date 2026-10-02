@@ -36,6 +36,7 @@ crash-hooks = []
 anyhow_harness = []
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rstest = { workspace = true }
 pretty_assertions = { workspace = true }
 
