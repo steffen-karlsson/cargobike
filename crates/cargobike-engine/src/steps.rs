@@ -25,8 +25,30 @@ impl StepRegistry {
     }
 
     /// Registers one versioned step instance; a later insert at the same
-    /// name@version replaces the earlier one (the config reload semantics).
-    pub fn register(&mut self, step: Arc<dyn StepType>) {
+    /// name@version replaces the earlier one (the config reload
+    /// semantics). The control surface is reserved: a sidecar cannot
+    /// register a step named like a control step (`wait`…, F-34) or
+    /// shade the engine built-ins' namespace.
+    pub fn register(&mut self, step: Arc<dyn StepType>) -> Result<(), StepRegistryError> {
+        let name = step.name().to_owned();
+        let reserved = name == "wait"
+            || name.starts_with("wait:")
+            || name.starts_with("wait/")
+            || name.starts_with("builtin/");
+        if reserved {
+            return Err(StepRegistryError::Reserved(name));
+        }
+        self.entries
+            .entry(name)
+            .or_default()
+            .insert(step.version().to_owned(), step);
+        Ok(())
+    }
+
+    /// The engine's own install (the built-ins registering themselves);
+    /// the `builtin/` namespace belongs to this install, so the
+    /// reservation does not apply to it (see [`register_builtins`]).
+    pub fn register_built_in(&mut self, step: Arc<dyn StepType>) {
         self.entries
             .entry(step.name().to_owned())
             .or_default()
@@ -81,6 +103,11 @@ pub enum StepRegistryError {
     /// The base name is not installed.
     #[error("the step `{0}` is not installed")]
     UnknownStep(String),
+    /// The registration named the interpreter's control surface or the
+    /// engine's built-in namespace (F-34/F-33); only the engine's own
+    /// install writes there.
+    #[error("the step name `{0}` is reserved")]
+    Reserved(String),
     /// The version is not installed; alternatives listed.
     #[error("the step `{name}` has no version {version}; installed: {installed:?}")]
     UnknownVersion {
@@ -105,6 +132,7 @@ impl std::fmt::Debug for StepRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cargobike_core::step::{StepError, StepOutput};
 
     /// A do-nothing step type so registry resolution tests have a target.
     struct Dummy;
@@ -130,10 +158,50 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_a_sidecar_cannot_register_a_control_step_or_a_builtin_shade() {
+        let mut registry = StepRegistry::new();
+        // The control step's own name shape is refused outright.
+        struct Named(&'static str);
+        #[async_trait::async_trait]
+        impl StepType for Named {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn version(&self) -> &str {
+                "1"
+            }
+            async fn execute(
+                &self,
+                _ctx: &cargobike_core::step::StepContext,
+                _release: &cargobike_core::model::Release,
+                _env: &cargobike_core::step::EnvRef,
+                _params: &serde_json::Value,
+            ) -> Result<StepOutput, StepError> {
+                Ok(StepOutput::SkipEnvironment)
+            }
+        }
+        for reserved in ["wait: merge", "wait/merge", "wait", "builtin/http-call"] {
+            let failure = registry
+                .register(Arc::new(Named(reserved)))
+                .expect_err("the reserved name refuses");
+            assert!(
+                failure.to_string().contains("reserved"),
+                "the refusal names the reservation: {failure}"
+            );
+        }
+        // A plain sidecar name still installs.
+        registry
+            .register(Arc::new(Named("sidecar/notify")))
+            .expect("an unreserved sidecar name installs");
+    }
+
     /// Harness with one registered dummy step.
     fn registry() -> StepRegistry {
         let mut registry = StepRegistry::new();
-        registry.register(Arc::new(Dummy));
+        // The test's dummy names the builtin namespace (the engine's
+        // own install shape), so it uses the built-in door.
+        registry.register_built_in(Arc::new(Dummy));
         registry
     }
 
@@ -214,7 +282,7 @@ environments:
 
         // Registered instead: the same template compiles (the positive).
         let mut installed = registry();
-        installed.register(std::sync::Arc::new(CommitFilesDummy));
+        installed.register_built_in(std::sync::Arc::new(CommitFilesDummy));
         crate::template::compile_with(template, &schemes, &installed)
             .expect("registered step compiles");
     }

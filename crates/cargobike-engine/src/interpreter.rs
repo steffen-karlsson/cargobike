@@ -64,7 +64,10 @@ pub struct EnvironmentOutcome {
 }
 
 /// Everything the interpreter runs against, part of the registered
-/// closure (the executor snapshots the registry at launch).
+/// closure (the executor snapshots the registry at launch). Cloning is
+/// deliberate: a test's override of one field (`max_step_output`) is a
+/// struct-update off the fixture's values.
+#[derive(Clone)]
 pub struct InterpreterServices {
     /// Step types installed (the registry).
     pub steps: Arc<StepRegistry>,
@@ -90,6 +93,14 @@ pub struct InterpreterServices {
     pub cleanup_ref: Arc<
         std::sync::OnceLock<dbos::WorkflowRef<crate::cleanup::CleanupArgs, (), InterpreterError>>,
     >,
+    /// The step's output byte cap (F-40; config `engine.max_step_output`,
+    /// default 1MiB): a step's serialized output over the cap is a
+    /// refused step, so large file contents cannot ride into the
+    /// durable store.
+    pub max_step_output: usize,
+    /// The CEL's limits (F-27; config `engine.cel.*`, defaults are the
+    /// crate's): the length bound the gates/params evaluate under.
+    pub cel_limits: crate::expr::Limits,
 }
 
 /// The status store's failure to the interpreter's envelope.
@@ -318,6 +329,9 @@ async fn run_environment(
 ) -> dbos::Result<EnvironmentOutcome, InterpreterError> {
     let release_id = parse_release_id(snapshot)?;
     let mut context = snapshot.context(&environment.name);
+    // The config-wired CEL bounds (F-27): the runtime's gates and the
+    // parameters evaluate under them.
+    context.limits = services.cel_limits;
     if let Some(when) = &environment.when {
         match eval_gate(when, &context) {
             Ok(false) => {
@@ -1173,6 +1187,7 @@ async fn dispatch_action(
     // the run exactly-once per attempt (the replays skip the body) and the
     // template's retry policy maps onto `StepOptions` .
     let options = step_options(step);
+    let max_step_output = services.max_step_output;
     let ran = dbos::step_with::<StepOutput, InterpreterError, _, _>(
         format!("builtin/{}/{}", environment.name, step.id).as_str(),
         options,
@@ -1202,7 +1217,25 @@ async fn dispatch_action(
                 )
                 .await
                 {
-                    Ok(output) => dbos::Result::Ok(output),
+                    Ok(output) => {
+                        // F-40: large file contents cannot ride into
+                        // the durable store; over the cap is a
+                        // permanent step refusal (the value's gone).
+                        let encoded = serde_json::to_vec(&output).unwrap_or_default();
+                        if encoded.len() as u64 > max_step_output as u64 {
+                            dbos::Result::Err(dbos::Error::Application(
+                                InterpreterError::Step(cargobike_core::step::StepError::Failed {
+                                    code: cargobike_core::error::STEP_FAILED.to_owned(),
+                                    message: format!(
+                                        "the step's output is {} bytes; the cap is {max_step_output}",
+                                        encoded.len()
+                                    ),
+                                }),
+                            ))
+                        } else {
+                            dbos::Result::Ok(output)
+                        }
+                    }
                     Err(step_failure) => dbos::Result::Err(dbos::Error::Application(
                         InterpreterError::Step(step_failure),
                     )),

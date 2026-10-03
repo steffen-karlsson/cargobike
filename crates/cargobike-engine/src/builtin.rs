@@ -264,10 +264,10 @@ impl StepType for SetLabels {
 
 /// Registers the four built-ins (the startup's install).
 pub fn register_builtins(registry: &mut crate::steps::StepRegistry) {
-    registry.register(Arc::new(CommitFiles));
-    registry.register(Arc::new(ChangeRequest));
-    registry.register(Arc::new(HttpCall));
-    registry.register(Arc::new(SetLabels));
+    registry.register_built_in(Arc::new(CommitFiles));
+    registry.register_built_in(Arc::new(ChangeRequest));
+    registry.register_built_in(Arc::new(HttpCall));
+    registry.register_built_in(Arc::new(SetLabels));
 }
 
 /// The step's provider (the resolved by `RepoRef.provider`).

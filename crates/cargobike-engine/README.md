@@ -15,10 +15,10 @@ What lives here (PRD §16 Phase 3 tasks mapped to modules):
 | Module | Contents | Task |
 |---|---|---|
 | `template` | YAML template compiler: structure validation, `include:` expansion, auto/declared step IDs, wait-rule bounds, scheme-specific gate checks  | 3.1 |
-| `expr` | CEL runtime for `when:` gates and `${{ ... }}` parameters; pure functions only; length/depth limits  | 3.2 |
-| `steps` | Versioned `StepRegistry` (`name@version`, versions side by side) | 3.3 |
+| `expr` | CEL runtime for `when:` gates and `${{ ... }}` parameters; pure functions only; length/depth limits (the config's `engine.cel.max_expression_length` wires through the context's `Limits`; `max_cost` stands for the depth bound — cel 0.14 has no runtime-cost API, documented per boot)  | 3.2 |
+| `steps` | Versioned `StepRegistry` (`name@version`, versions side by side); registration refuses the reserved surface (`wait`-shaped control names and the `builtin/` namespace — a sidecar cannot shade them; the engine's own install goes through `register_built_in`) | 3.3 |
 | `builtin` | The four action steps: `commit-files@1` (fused edit+commit per the idempotency strategy table), `change-request@1` (find-by-head first), `http-call@1`, `set-labels@1` | 3.5–3.8 |
-| `interpreter` | The `cargobike.interpret.v1` durable workflow: control steps (`wait: merge` recv + provider re-verify + content verification, `wait: approval`, `wait: sleep`), snapshot-pinned execution, retry→`StepOptions` mapping | 3.4, 3.9, 3.11 |
+| `interpreter` | The `cargobike.interpret.v2` durable workflow (F-40's output cap rides the services: a step's serialized output over `engine.max_step_output` is a permanent step refusal): control steps (`wait: merge` recv + provider re-verify + content verification, `wait: approval`, `wait: sleep`), snapshot-pinned execution, retry→`StepOptions` mapping | 3.4, 3.9, 3.11 |
 | `signals` | Topic vocabulary (`merge/{env}/{step}`, `approval/{env}/{step}`, `lease/{env}`), typed `Signal` envelopes, idempotency keys, `Forks::Skip` decision  | 3.10 |
 | `leases` / `concurrency` | Per-`(application, environment)` lease rows; `supersede` atomic transfer with the version-order guard, `queue` blocking, `reject` (the lease serialisation design) | 3.12 |
 | `cleanup` | `cargobike.cleanup.v1`: close CR with remarked comment, delete branch, release/transfers lease | 3.13 |

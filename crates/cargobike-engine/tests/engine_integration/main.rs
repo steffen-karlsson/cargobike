@@ -22,6 +22,8 @@ const SCAN_APP: &str = "secrets-scan";
 const SUPERSEDE_APP: &str = "supersede-probe";
 /// The fork reproducer's app name.
 const FORK_APP: &str = "fork-retry-probe";
+/// The output-cap probe's app name.
+const OUTCAP_APP: &str = "out-cap-probe";
 
 /// The correlation stamp carries the sweep's join keys; the merge wait's
 /// step id is the template's auto-generated one (two declared ids
@@ -714,6 +716,95 @@ async fn test_fork_retry_reruns_only_the_failed_step() {
         state.commit_runs == 2,
         "the fork must not re-run the recorded commit (commit_runs = {}): {state:?}",
         state.commit_runs
+    );
+    instance.shutdown().await;
+}
+
+/// The F-40 cap: a step's serialized output over `max_step_output`
+/// is a permanent step refusal — the release fails naming the cap.
+#[tokio::test(flavor = "current_thread")]
+async fn test_a_step_output_over_the_cap_refuses_the_step() {
+    let _the_db = fixture::db_lock().await;
+    let Some(database_url) = fixture::fixture_database_url() else {
+        return;
+    };
+    let scratch = fixture::scratch_dir();
+    let schema = fixture::schema_for_test("outcap");
+    let pool = fixture::fixture_pool(&database_url).await;
+
+    let mut config = dbos::Config::new(OUTCAP_APP, &database_url);
+    config.schema = schema;
+    config.app_version = Some("out-cap-1".to_owned());
+    let instance = dbos::DBOS::new(config);
+    let (services, _provider) = fixture::mock_services(
+        &scratch,
+        pool.clone(),
+        &instance,
+        Arc::new(cargobike_engine::mock::StubCredentials),
+    );
+    // The cap: 4 bytes — the commit-files' output's own JSON already
+    // exceeds it, so the first step's run refuses at the recording.
+    let capped = Arc::new(cargobike_engine::InterpreterServices {
+        max_step_output: 4,
+        cel_limits: cargobike_engine::expr::DEFAULT_LIMITS,
+        ..(*services).clone()
+    });
+
+    sqlx::query("DELETE FROM releases WHERE application = $1")
+        .bind(OUTCAP_APP)
+        .execute(&pool)
+        .await
+        .expect("this application's rows clear");
+    let interpreter = cargobike_engine::register_interpreter(&instance, capped)
+        .expect("the interpreter registers before launch");
+    instance.launch().await.expect("the instance launches");
+
+    let release_id = uuid::Uuid::now_v7().to_string();
+    let release_uuid = uuid::Uuid::parse_str(&release_id).expect("the cap uuid");
+    seed_release(&pool, &release_uuid, OUTCAP_APP, "1.0.0").await;
+    let workflow = cargobike_engine::interpreter::interpret_workflow_id(&release_id);
+    let _handle = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs {
+                snapshot: fixture::dual_env_snapshot(
+                    &release_id,
+                    OUTCAP_APP,
+                    "1.0.0",
+                    fixture::DUAL_ENV_TEMPLATE,
+                ),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the capped run starts");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut document = query_release(&pool, &release_uuid).await;
+    loop {
+        if document
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Failed")
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the capped step never refused: {document}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        document = query_release(&pool, &release_uuid).await;
+    }
+    let message = document
+        .pointer("/status/error/message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("the cap is"),
+        "the refusal names the cap: {message}"
     );
     instance.shutdown().await;
 }

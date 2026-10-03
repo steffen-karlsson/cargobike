@@ -107,18 +107,26 @@
 - [ ] Cleanup workflow body: provider calls run directly in the workflow body,
   not inside `dbos::step` (no checkpoint/backoff bounds; deviations from §6.7).
   Make each compensation durable/retryable.
-- [ ] F-34 reservation: `StepRegistry::register` accepts any name;
-  `has_step_name` (control-step reservation) exists but is not enforced, so a
-  sidecar could still register `wait: merge`.
+- [x] F-34 reservation: `StepRegistry::register` refuses `wait`-shaped
+  control names and `builtin/`-prefixed types (`StepRegistryError::
+  Reserved`); the engine's own install goes through
+  `register_built_in`, and the unit test refuses all four shapes
+  (`wait`, `wait: merge`, `wait/merge`, `builtin/http-call`) while an
+  unreserved sidecar name still installs.
 
 ## 4. CEL / engine knobs (F-27, F-40)
 
-- [ ] `engine.cel.max_cost` / `cel_max_expression_length` config exist but the
-  evaluator ignores them (`expr::check` hardcodes `DEFAULT_LIMITS`); wire the
-  config through. Alternatively drop the config keys or document the depth
-  limit substitution (spike follow-up notes cel 0.14 has no runtime cost API).
-- [ ] F-40 / `engine.max_step_output` is parsed but never enforced — no output
-  size cap on `StepOutput::Continue` payloads anywhere.
+- [x] The CEL knobs wire: `engine.cel.max_expression_length` flows from
+  the server's boot into the interpreter services' `Limits` and the
+  contexts check against it (a unit test pins the bound's refusal);
+  `engine.cel.max_cost` stands for the depth bound — cel 0.14 exposes
+  no runtime-cost API (the substitution is documented in the spike doc
+  and boot-noted when a non-default is configured).
+- [x] F-40 / `engine.max_step_output` is enforced: the interpreter's
+  step dispatch checks the serialized output's byte size before the
+  checkpoint; over the cap is a permanent step refusal (the
+  integration test runs a 4-byte cap and asserts the release fails
+  naming the cap).
 
 ## 5. CLI gaps (PRD §3, §4.8, §9.7, Phase 4 tasks 4.6/4.7/4.8)
 

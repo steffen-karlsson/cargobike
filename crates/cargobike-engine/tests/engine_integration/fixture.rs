@@ -288,6 +288,8 @@ pub fn mock_services_with_http(
         )),
         instance: instance.clone(),
         cleanup_ref: Arc::new(std::sync::OnceLock::new()),
+        max_step_output: 1024 * 1024,
+        cel_limits: cargobike_engine::expr::DEFAULT_LIMITS,
     });
     (services, provider)
 }

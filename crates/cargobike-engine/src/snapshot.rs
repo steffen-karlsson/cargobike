@@ -82,6 +82,9 @@ impl ReleaseSnapshot {
             },
             inputs: self.inputs.clone(),
             steps: std::collections::HashMap::new(),
+            // The provision's compile-time default; the interpreter's
+            // run overrides the services' config-wired limit.
+            limits: crate::expr::DEFAULT_LIMITS,
         }
     }
 

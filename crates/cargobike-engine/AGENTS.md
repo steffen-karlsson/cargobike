@@ -21,6 +21,11 @@ project-wide rules live in the root [`AGENTS.md`](../../AGENTS.md).
  store's updates are conditional (`AND NOT terminal`), so a cancel's
  phase is never resurrected by a stale attempt's write. New interpreter
  boundaries that change status facts go through `status_write`.
+- **The step registry's reservation (F-34)**: `register` is fallible —
+ `wait`-shaped control names and `builtin/`-prefixed types are refused
+ from non-engine installers (the built-ins' own `register_built_in`
+ bypasses only for the engine's own bodies). Tests register dummy
+ builtin-named steps through the built-in door.
 - **Signal addressing **: never invent topic strings inline. Use
  `signals::merge_topic` / `approval_topic` / `lease_topic` and the
  `*_signal_key` helpers; a new wait means a new topic family + documented key.

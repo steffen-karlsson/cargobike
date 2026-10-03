@@ -32,6 +32,12 @@ pub const DEFAULT_LIMITS: Limits = Limits {
     max_depth: 24,
 };
 
+impl Default for Limits {
+    fn default() -> Self {
+        DEFAULT_LIMITS
+    }
+}
+
 /// The expression's evaluation failure modes.
 #[derive(Debug, thiserror::Error)]
 pub enum ExprError {
@@ -73,6 +79,9 @@ pub struct ExprContext {
     pub inputs: BTreeMap<String, serde_json::Value>,
     /// Recorded outputs of earlier steps, keyed by step ID .
     pub steps: HashMap<String, serde_json::Value>,
+    /// The length/depth bounds (`engine.cel.*`; the wired defaults are
+    /// the crate's).
+    pub limits: Limits,
 }
 
 /// `release.*` (the context note: `release.{id, application, version}`).
@@ -184,19 +193,20 @@ impl ExprContext {
         map
     }
 
-    /// Size and depth checks (the limits; both configurable).
+    /// Size and depth checks (the limits; the config overrides them).
     fn check(&self, source: &str) -> Result<(), ExprError> {
-        if source.len() > DEFAULT_LIMITS.max_expression_length {
+        let limits = &self.limits;
+        if source.len() > limits.max_expression_length {
             return Err(ExprError::Limit(format!(
                 "expression length {} exceeds {}",
                 source.len(),
-                DEFAULT_LIMITS.max_expression_length
+                limits.max_expression_length
             )));
         }
-        if source.matches('(').count() > DEFAULT_LIMITS.max_depth {
+        if source.matches('(').count() > limits.max_depth {
             return Err(ExprError::Limit(format!(
                 "nesting deeper than {} is refused",
-                DEFAULT_LIMITS.max_depth
+                limits.max_depth
             )));
         }
         Ok(())
@@ -352,6 +362,25 @@ mod tests {
     use serde_json::json;
 
     /// The documented context, per-variant.
+    #[test]
+    fn test_the_configured_limits_govern_the_checks() {
+        let mut context = context("1.0.0");
+        context.limits = Limits {
+            max_expression_length: 4,
+            max_depth: 2,
+        };
+        // A long expression refuses on the length bound (the config's
+        // `engine.cel.max_expression_length`).
+        let refusal = eval_gate(r"steps.cr.outputs.number == 42", &context)
+            .expect_err("the length bound refuses");
+        assert!(matches!(refusal, ExprError::Limit(_)), "got {refusal:?}");
+        // Deep nesting exceeds the depth bound.
+        context.limits.max_expression_length = 4_096;
+        let refusal = eval_gate("((((((1))))) )".replace(") )", ")").as_str(), &context)
+            .expect_err("the depth bound refuses");
+        assert!(matches!(refusal, ExprError::Limit(_)), "got {refusal:?}");
+    }
+
     fn context(version: &str) -> ExprContext {
         let mut env_inputs: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         env_inputs.insert("cluster".to_owned(), json!("test"));
@@ -369,6 +398,7 @@ mod tests {
             },
             inputs: env_inputs,
             steps,
+            limits: DEFAULT_LIMITS,
         }
     }
 

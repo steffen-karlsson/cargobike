@@ -313,7 +313,24 @@ pub async fn host(
         correlations: Arc::new(CorrelationRepository::new(pool.clone())),
         instance: instance.clone(),
         cleanup_ref: Arc::new(std::sync::OnceLock::new()),
+        max_step_output: crate::config::parse_size(&config.engine.max_step_output)
+            .unwrap_or(1024 * 1024) as usize,
+        cel_limits: cargobike_engine::expr::Limits {
+            max_expression_length: config.engine.cel_max_expression_length as usize,
+            max_depth: cargobike_engine::expr::DEFAULT_LIMITS.max_depth,
+        },
     });
+
+    // The honest knob reading (F-27's spike note): cel 0.14 exposes no
+    // runtime-cost API, so `engine.cel.max_cost` stands for the depth
+    // bound's substitute; surfaced here, once per boot.
+    if config.engine.cel_max_cost != 2_000_000 {
+        tracing::debug!(
+            configured = config.engine.cel_max_cost,
+            depth_bound = cargobike_engine::expr::DEFAULT_LIMITS.max_depth,
+            "engine.cel.max_cost has no runtime-cost API in cel 0.14; the depth bound stands"
+        );
+    }
 
     let interpreter = cargobike_engine::register_interpreter(&instance, Arc::clone(&services))
         .map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?;
