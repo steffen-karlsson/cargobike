@@ -299,7 +299,14 @@ pub async fn host(
     // filter reads the recorded one).
     let database_url = materialise(&config.database.url, &config.secrets)?;
     let mut dbos_config = dbos::Config::new(DBOS_APP_NAME, database_url.expose_secret());
-    dbos_config.schema = DBOS_SCHEMA.to_owned();
+    // The config's DBOS schema (the boot's own namespace; tests point
+    // each boot at a fresh one so a previous suite's abandoned
+    // workflow rows are never adopted by this boot's recovery).
+    dbos_config.schema = if config.database.dbos_schema.is_empty() {
+        DBOS_SCHEMA.to_owned()
+    } else {
+        config.database.dbos_schema.clone()
+    };
     dbos_config.app_version = Some(env!("CARGO_PKG_VERSION").to_owned());
     let instance = dbos::DBOS::new(dbos_config);
 

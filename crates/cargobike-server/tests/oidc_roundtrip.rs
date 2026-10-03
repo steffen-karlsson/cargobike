@@ -147,9 +147,9 @@ environments:
         &config_path,
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
-             database:\n  url: \"{fix_url}\"\n\n\
+             database:\n  url: \"{fix_url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {}\n\n\
-             auth:\n  oidc:\n    - name: test-oidc\n      issuer: \"{issuer}\"\n      audience: cargobike\n      jwks_url: \"{issuer}/jwks\"\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:create, release:read]\n\n\
+             auth:\n  oidc:\n    - name: test-oidc\n      issuer: \"{issuer}\"\n      audience: cargobike\n      jwks_url: \"{issuer}/jwks\"\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:create, release:read, release:cancel]\n\n\
              applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    versioning:\n      scheme: semver\n      tag_format: \"v{{version}}\"\n    releasers:\n      - oidc: test-oidc\n    environments:\n      preview:\n        repo: {{ provider: github, id: \"42\" }}\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n",
             templates_dir.display(),
         ),
@@ -203,6 +203,16 @@ environments:
         response.text().await
     );
     assert!(response.headers().get("Location").is_some());
+    // The release id (the drain at the test's end uses it; its
+    // interpreter must reach terminal before this binary exits, or its
+    // orphaned PENDING row poisons later boots' recovery).
+    let created_location = response
+        .headers()
+        .get("Location")
+        .expect("Location")
+        .to_str()
+        .expect("ascii")
+        .to_owned();
 
     // whoami reports the resolved identity and grants .
     let response = client
@@ -305,4 +315,20 @@ environments:
     let body: serde_json::Value = response.json().await.expect("body");
     assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
     assert_eq!(body["code"], "InvalidToken");
+
+    // The drain: the created release leaves this process terminal
+    // (Canceled), so the shared dbos schema carries no PENDING row the
+    // next boot's recovery would adopt (the CI flake's disease).
+    let cancel = client
+        .post(format!("{issuer}{created_location}/cancel"))
+        .header("Authorization", format!("Bearer {good}"))
+        .send()
+        .await
+        .expect("the cancel sends");
+    assert_eq!(
+        cancel.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the drain's cancel: {:?}",
+        cancel.text().await
+    );
 }

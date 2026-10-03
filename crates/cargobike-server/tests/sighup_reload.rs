@@ -59,7 +59,7 @@ environments:
         &config_path,
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
-             database:\n  url: \"{fix_url}\"\n\n\
+             database:\n  url: \"{fix_url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_dir_display}\n\n\
              auth:\n  api_keys:\n    - name: key-one\n      hash: \"{hash_one}\"\n      grants: [release:create, application:read, template:read]\n\n\
              applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    releasers:\n      - api_key: key-one\n    environments:\n      preview:\n        concurrency: supersede\n"
@@ -102,7 +102,7 @@ environments:
         &config_path,
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
-             database:\n  url: \"{fix_url}\"\n\n\
+             database:\n  url: \"{fix_url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_dir_display}\n\n\
              auth:\n  api_keys:\n    - name: key-two\n      hash: \"{hash_two}\"\n      grants: [release:create, release:read, application:read, template:read]\n\n\
              applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    versioning:\n      scheme: semver\n      tag_format: \"v{{version}}\"\n    releasers:\n      - api_key: key-two\n    environments:\n      preview:\n        repo: {{ provider: github, id: \"42\" }}\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n"

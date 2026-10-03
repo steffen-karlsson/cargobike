@@ -138,6 +138,7 @@ server:
 
 database:
   url: "{url}"
+  dbos_schema: "cbtest-{port}"
 
 templates:
   directory: {templates}

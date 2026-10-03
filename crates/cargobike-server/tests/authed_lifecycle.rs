@@ -86,7 +86,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
         &config_path,
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: http://127.0.0.1:{port}\n\n\
-             database:\n  url: \"{url}\"\n\n\
+             database:\n  url: \"{url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_display}\n\n\
              auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\
              applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n"

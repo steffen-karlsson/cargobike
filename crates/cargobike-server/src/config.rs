@@ -120,6 +120,16 @@ pub struct DatabaseSection {
     /// Pool cap (the default 10).
     #[serde(default = "default_pool")]
     pub max_connections: u32,
+    /// The DBOS system tables' schema (default `dbos`); a deployment's
+    /// own namespace. Test suites point each boot at its own schema so
+    /// one boot's recovery cannot adopt another's abandoned workflow
+    /// rows (the CI flake's disease).
+    #[serde(default = "default_dbos_schema")]
+    pub dbos_schema: String,
+}
+
+fn default_dbos_schema() -> String {
+    "dbos".to_owned()
 }
 
 fn default_pool() -> u32 {
