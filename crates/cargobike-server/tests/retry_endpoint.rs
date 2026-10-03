@@ -103,6 +103,19 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
     Some((format!("http://127.0.0.1:{port}"), mock, scratch))
 }
 
+/// The retry tests' serialization: each boots its own server against
+/// the SAME fixture schema (`dbos`) and scripts the mock's state file;
+/// concurrent boots have raced the inject and the boot's sweep (seen in
+/// CI once: the refusal flag consumed by the other test's run). A lock
+/// for the whole test's span is the dispositive fix.
+async fn the_retry_lanes_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static THE_LANES: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    THE_LANES
+        .get_or_init(tokio::sync::Mutex::default)
+        .lock()
+        .await
+}
+
 /// The authorised client wrapper.
 struct Api {
     base: String,
@@ -187,6 +200,7 @@ async fn poll_phase(api: &Api, id: &str, want: &str) -> serde_json::Value {
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::expect_used, clippy::print_stderr)]
 async fn test_retry_forks_a_failed_release_to_completion() {
+    let _the_lane = the_retry_lanes_lock().await;
     let Some((base, mock, _scratch)) = test_server().await else {
         return;
     };
@@ -238,6 +252,7 @@ async fn test_retry_forks_a_failed_release_to_completion() {
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::expect_used, clippy::print_stderr)]
 async fn test_retry_new_copies_the_release_with_retried_from() {
+    let _the_lane = the_retry_lanes_lock().await;
     let Some((base, mock, _scratch)) = test_server().await else {
         return;
     };
