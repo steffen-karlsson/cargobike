@@ -37,11 +37,24 @@ pub struct WebhookArgs {
 /// The tag-push create seam: the registry scan + the tag-format
 /// extraction + the tag-protection check + the create core live on the
 /// server (the engine consumes their result). The outcome records what
-/// the push did for the audit surface.
+/// the push did for the audit surface — and carries what the workflow
+/// body must start afterward: the interpreter's own start is refused
+/// from inside a step (dbos's step rule), so the creator plans the
+/// release and the body addresses it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PlannedRelease {
+    /// The release row's id (the interpreter's workflow id derives from
+    /// it).
+    pub release_id: Uuid,
+    /// The pinned snapshot the interpreter is to run (provisioned by
+    /// the creator, addressed by the body).
+    pub snapshot: crate::ReleaseSnapshot,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TagPushOutcome {
-    /// Releases created by this push.
-    pub created: Vec<Uuid>,
+    /// Releases created by this push (the body starts each).
+    pub created: Vec<PlannedRelease>,
     /// Releases that already existed and were left alone.
     pub duplicates: Vec<Uuid>,
     /// Skips with reasons (protection refused, no trigger, ...).
@@ -61,13 +74,17 @@ pub trait TagPushCreator: Send + Sync {
     ) -> Result<TagPushOutcome, String>;
 }
 
-/// The webhook workflow's services (the correlation read + the server's
-/// create seam).
+/// The webhook workflow's services (the correlation read, the server's
+/// create seam, and the interpreter's registration the body starts).
 pub struct WebhookServices {
     /// CR correlation rows (the closed-PR path's input).
     pub correlations: Arc<CorrelationRepository>,
     /// The tag-push create seam (the server's impl).
     pub creator: Arc<dyn TagPushCreator>,
+    /// The interpreter's registration (the body starts the created
+    /// releases; a step may not).
+    pub interpreter:
+        dbos::WorkflowRef<crate::InterpretArgs, crate::InterpretResult, InterpreterError>,
 }
 
 /// Registers the webhook workflow BEFORE launch (the registry snapshot).
@@ -140,7 +157,25 @@ async fn deliver(
                     skipped: vec![],
                 }
             });
+            // The body starts each planned release (a step may not; the
+            // start's own id dedupe converges replays).
+            for plan in &outcome.created {
+                let workflow_id = crate::interpreter::interpret_workflow_id(plan.release_id);
+                let _ = services
+                    .interpreter
+                    .start_with(
+                        crate::InterpretArgs {
+                            snapshot: plan.snapshot.clone(),
+                        },
+                        dbos::StartOptions {
+                            workflow_id: Some(workflow_id.as_str()),
+                            ..dbos::StartOptions::default()
+                        },
+                    )
+                    .await;
+            }
             tracing::info!(
+                delivery = %args.delivery_id,
                 created = outcome.created.len(),
                 duplicates = outcome.duplicates.len(),
                 skipped = %outcome.skipped.len(),

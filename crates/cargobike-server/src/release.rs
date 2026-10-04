@@ -452,18 +452,27 @@ pub(crate) struct CoreParts<'a> {
     pub step_types: BTreeMap<String, String>,
 }
 
-pub(crate) async fn create_from_parts(
+/// The row half of a create: validation + provision + the
+/// non-terminal-unique insert. The interpreter's start is a separate
+/// step in the caller's flow — a start from inside a durable step is
+/// refused by the DBOS surface, so the webhook's creator runs THIS and
+/// the workflow's body starts the interpreters. The fresh outcome
+/// carries the snapshot for the start; a duplicate carries none.
+pub(crate) struct CreateRow {
+    pub outcome: CreateOutcome,
+    /// The row's id (a fresh insert's own; nil on the duplicate answer —
+    /// the duplicate carries no snapshot so nothing starts).
+    pub release_id: Uuid,
+    pub snapshot: Option<cargobike_engine::ReleaseSnapshot>,
+}
+
+pub(crate) async fn create_release_row(
     parts: &CoreParts<'_>,
-    interpreter: &dbos::WorkflowRef<
-        cargobike_engine::InterpretArgs,
-        cargobike_engine::InterpretResult,
-        cargobike_engine::InterpreterError,
-    >,
     app: &crate::config::ApplicationEntry,
     application: &str,
     version: &str,
     retried_from: Option<&str>,
-) -> Result<CreateOutcome, crate::http::errors::ApiError> {
+) -> Result<CreateRow, crate::http::errors::ApiError> {
     let id = Uuid::now_v7();
     let now = sqlx::types::time::OffsetDateTime::now_utc();
 
@@ -523,15 +532,43 @@ pub(crate) async fn create_from_parts(
         .map_err(repository_to_api)?;
     if let Some(existing_json) = existing {
         // a duplicate create answers 200 with the existing release.
-        return Ok(CreateOutcome {
-            document: existing_json,
-            created: false,
+        let existing_id = existing_json
+            .pointer("/metadata/id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|text| Uuid::parse_str(text).ok())
+            .unwrap_or_else(Uuid::nil);
+        return Ok(CreateRow {
+            outcome: CreateOutcome {
+                document: existing_json,
+                created: false,
+            },
+            release_id: existing_id,
+            snapshot: None,
         });
     }
+    Ok(CreateRow {
+        outcome: CreateOutcome {
+            document,
+            created: true,
+        },
+        release_id: id,
+        snapshot: Some(snapshot),
+    })
+}
 
-    // The interpreter's start (the workflow id deduplicates; a replayed
-    // create joins the workflow already running).
-    let workflow_id = format!("cargobike/interpret/{id}");
+/// The interpreter's start for a provisioned, already-inserted release
+/// (the workflow id deduplicates; a replayed create joins the running
+/// workflow).
+pub(crate) async fn start_release_interpreter(
+    interpreter: &dbos::WorkflowRef<
+        cargobike_engine::InterpretArgs,
+        cargobike_engine::InterpretResult,
+        cargobike_engine::InterpreterError,
+    >,
+    release_id: Uuid,
+    snapshot: cargobike_engine::ReleaseSnapshot,
+) {
+    let workflow_id = format!("cargobike/interpret/{release_id}");
     if let Err(failure) = interpreter
         .start_with(
             cargobike_engine::InterpretArgs { snapshot },
@@ -542,12 +579,30 @@ pub(crate) async fn create_from_parts(
         )
         .await
     {
-        tracing::error!(release = %id, %failure, "the interpreter's start refused");
+        tracing::error!(release = %release_id, %failure, "the interpreter's start refused");
     }
-    Ok(CreateOutcome {
-        document,
-        created: true,
-    })
+}
+
+/// The full create: row + interpreter start (the HTTP create's and the
+/// webhook's compat shape; the webhook body uses the split halves).
+pub(crate) async fn create_from_parts(
+    parts: &CoreParts<'_>,
+    interpreter: &dbos::WorkflowRef<
+        cargobike_engine::InterpretArgs,
+        cargobike_engine::InterpretResult,
+        cargobike_engine::InterpreterError,
+    >,
+    app: &crate::config::ApplicationEntry,
+    application: &str,
+    version: &str,
+    retried_from: Option<&str>,
+) -> Result<CreateOutcome, crate::http::errors::ApiError> {
+    let created = create_release_row(parts, app, application, version, retried_from).await?;
+    let Some(snapshot) = created.snapshot else {
+        return Ok(created.outcome);
+    };
+    start_release_interpreter(interpreter, created.release_id, snapshot).await;
+    Ok(created.outcome)
 }
 
 /// repository_to_api lives at the http edge; the core's shared mapping.

@@ -322,12 +322,22 @@ async fn test_a_signed_tag_push_creates_the_release() {
     assert_eq!(status, 202, "an acted-upon delivery fast-acks: {json}");
     assert_eq!(json["received"], serde_json::json!(true));
 
-    // The created release lands (poll the list API).
+    // The created release lands AND the interpreter runs: the release
+    // carries the attempt its workflow recorded and the environment
+    // has left Pending (a merge-wait holds the phase at Running — the
+    // webhook workflow's body starts the interpreter; a step may not;
+    // pinned here).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let client = reqwest::Client::new();
+    let interpreter_ran =
+    // Runs until the webhook-created release's interpreter has
+    // recorded its attempt and moved the environment out of Pending;
+    // the deadline panics (a miss is a failure, not a false).
     loop {
         let page = client
-            .get(format!("{base}/api/v1/releases?application=tag-service"))
+            .get(format!(
+                "{base}/api/v1/releases?application=tag-service&version=1.5.0"
+            ))
             .header("authorization", format!("Bearer {API_KEY}"))
             .send()
             .await
@@ -335,21 +345,27 @@ async fn test_a_signed_tag_push_creates_the_release() {
         let page_json: serde_json::Value = page.json().await.expect("the page");
         let found = page_json["items"]
             .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .any(|item| item["spec"]["version"] == serde_json::json!("1.5.0"))
-            })
-            .unwrap_or(false);
-        if found {
-            break;
+            .and_then(|items| items.first().map(|item| item.to_owned()));
+        if let Some(item) = found {
+            let attempt_open = item
+                .pointer("/status/attempts/0/workflow_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some();
+            let env_left_pending = item
+                .pointer("/status/environments/0/phase")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|phase| phase != "Pending");
+            if attempt_open && env_left_pending {
+                break true;
+            }
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the tag push never created the release: {page_json}"
+            "the tag push never ran its interpreter: {page_json}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    assert!(interpreter_ran, "the interpreter never ran");
 }
 
 #[tokio::test(flavor = "current_thread")]

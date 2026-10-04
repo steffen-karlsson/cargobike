@@ -156,7 +156,7 @@ pub fn register_interpreter(
     instance: &dbos::DBOS,
     services: Arc<InterpreterServices>,
 ) -> dbos::Result<dbos::WorkflowRef<InterpretArgs, InterpretResult, InterpreterError>> {
-    instance.register_workflow(INTERPRETER_WORKFLOW, {
+    let current = instance.register_workflow(INTERPRETER_WORKFLOW, {
         let services = Arc::clone(&services);
         move |args: InterpretArgs| {
             let services = Arc::clone(&services);
@@ -164,14 +164,16 @@ pub fn register_interpreter(
         }
     })?;
     // The legacy registration (§6.8's drain window): a v1 workflow
-    // under recovery replays through its own name. Its pre-change step
-    // rows decode through the same body; anything it decodes fails on
-    // is recorded as the step's failure text rather than silently
-    // re-run.
-    instance.register_workflow(INTERPRETER_WORKFLOW_LEGACY, move |args: InterpretArgs| {
+    // under recovery replays through its own name. It is NOT what
+    // callers start — the returned ref is the current one always.
+    instance.register_workflow(INTERPRETER_WORKFLOW_LEGACY, {
         let services = Arc::clone(&services);
-        async move { run(args, services).await }
-    })
+        move |args: InterpretArgs| {
+            let services = Arc::clone(&services);
+            async move { run(args, services).await }
+        }
+    })?;
+    Ok(current)
 }
 
 /// The workflow body: environments × steps of the snapshot (

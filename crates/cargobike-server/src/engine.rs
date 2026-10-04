@@ -360,12 +360,12 @@ pub async fn host(
         &instance,
         Arc::new(cargobike_engine::WebhookServices {
             correlations: services.correlations.clone(),
+            interpreter: interpreter.clone(),
             creator: Arc::new(ServerTagPushCreator {
                 pool: pool.clone(),
                 config: config_rx,
                 providers: services.providers.clone(),
                 steps: services.steps.clone(),
-                interpreter: interpreter.clone(),
             }),
         }),
     )
@@ -484,11 +484,6 @@ struct ServerTagPushCreator {
     config: tokio::sync::watch::Receiver<Arc<Config>>,
     providers: Arc<cargobike_core::registry::ProviderRegistry>,
     steps: Arc<cargobike_engine::StepRegistry>,
-    interpreter: dbos::WorkflowRef<
-        cargobike_engine::InterpretArgs,
-        cargobike_engine::InterpretResult,
-        cargobike_engine::InterpreterError,
-    >,
 }
 
 /// The version inside a tag: the format's `{version}` placeholder
@@ -581,18 +576,13 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                 config: config.clone(),
                 step_types: self.steps.installed().into_iter().collect(),
             };
-            match crate::release::create_from_parts(
-                &parts,
-                &self.interpreter,
-                app,
-                &app.name,
-                &version,
-                None,
-            )
-            .await
-            {
-                Ok(crated) => {
-                    let id = crated
+            // The row half only: the interpreter's start is refused
+            // from inside a step, so the creator plans and the webhook
+            // workflow's body addresses the interpreters.
+            match crate::release::create_release_row(&parts, app, &app.name, &version, None).await {
+                Ok(created_row) => {
+                    let id = created_row
+                        .outcome
                         .document
                         .pointer("/metadata/id")
                         .and_then(serde_json::Value::as_str)
@@ -601,8 +591,13 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                     let parsed = Uuid::parse_str(&id).map_err(|failure| {
                         format!("the created release's id refused to parse: {failure}")
                     })?;
-                    if crated.created {
-                        outcome.created.push(parsed);
+                    if created_row.outcome.created {
+                        outcome.created.push(cargobike_engine::PlannedRelease {
+                            release_id: parsed,
+                            snapshot: created_row.snapshot.unwrap_or_else(|| {
+                                unreachable!("a fresh row always carries its snapshot")
+                            }),
+                        });
                     } else {
                         outcome.duplicates.push(parsed);
                     }

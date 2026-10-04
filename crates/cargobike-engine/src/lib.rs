@@ -40,6 +40,6 @@ pub use status::{ReleaseStatusStore, SqlReleaseStatusStore, StatusError, rollup 
 pub use steps::{StepRegistry, StepRegistryError};
 pub use template::{CompiledTemplate, TemplateError, compile, compile_with};
 pub use webhook::{
-    TagPushCreator, TagPushOutcome, WEBHOOK_WORKFLOW, WebhookArgs, WebhookServices,
+    PlannedRelease, TagPushCreator, TagPushOutcome, WEBHOOK_WORKFLOW, WebhookArgs, WebhookServices,
     register_webhook,
 };
