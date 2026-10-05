@@ -29,7 +29,7 @@ What lives here (PRD §16 Phase 3 tasks mapped to modules):
 | `names` | Deterministic branch names via `engine.branch_format` format strings | 3.5 |
 | `snapshot` | `ReleaseSnapshot`: compiled template + registry inputs + pinned step-type versions + hash  | 3.9 |
 | `status` | The `ReleaseStatusStore` trait + the sqlx store: the interpreter's status writes (attempt/running/waiting/pending-approval/CR reference/terminal + the release's rollup), conditional updates so a terminal release never re-phases; `load_document`/`environments_posted` (every provisioned environment opens `Pending` so a partial start can never roll `Completed`) and `release_reopened` (the F-23 fork's re-arm) |
-| `crash` + `mock` + `bin/engine-harness` | Feature-gated crash hooks (`--features crash-hooks`) and the harness binary; the mock provider is a small honest git host — state files with path-keyed texts, stateful change requests (a merged CR lands the head files on the base branch), and webhook verification that mirrors the production HMAC contract | (the crash-injection harness) |
+| `crash` + `mock` + `bin/engine-harness` | Feature-gated crash hooks (`--features crash-hooks`) and the harness binary; the mock provider is a small honest git host — state files with path-keyed texts, stateful change requests (a merged CR lands the head files on the base branch), and webhook verification that mirrors the production HMAC contract; the one-shot commit failure is repo-keyed (`fail_next_commit_for`), so an adopted foreign replay cannot spend a test's flag | (the crash-injection harness) |
 
 ## Status
 

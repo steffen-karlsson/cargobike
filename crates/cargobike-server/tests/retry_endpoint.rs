@@ -116,6 +116,12 @@ async fn the_retry_lanes_lock() -> tokio::sync::MutexGuard<'static, ()> {
         .await
 }
 
+/// The boot's port (the per-boot namespace's tag, shared by the
+/// fixture's repo ids and the delivery/workflow ids).
+fn boot_port(base: &str) -> String {
+    base.rsplit(':').next().unwrap_or("0").to_owned()
+}
+
 /// The authorised client wrapper.
 struct Api {
     base: String,
@@ -204,10 +210,12 @@ async fn test_retry_forks_a_failed_release_to_completion() {
     let Some((base, mock, _scratch)) = test_server().await else {
         return;
     };
+    let port = boot_port(&base);
     let api = Api::new(base, "retry-alpha");
 
     // The first attempt fails at the injected `prod` commit.
-    mock.fail_next_commit().expect("the inject scripts");
+    mock.fail_next_commit_for(&format!("alpha-env-{port}"))
+        .expect("the inject scripts");
     let document = api.create("1.1.0").await;
     let id = document["metadata"]["id"].as_str().expect("id").to_owned();
     let failed = poll_phase(&api, &id, "Failed").await;
@@ -256,9 +264,11 @@ async fn test_retry_new_copies_the_release_with_retried_from() {
     let Some((base, mock, _scratch)) = test_server().await else {
         return;
     };
+    let port = boot_port(&base);
     let api = Api::new(base, "retry-beta");
 
-    mock.fail_next_commit().expect("the inject scripts");
+    mock.fail_next_commit_for(&format!("beta-env-{port}"))
+        .expect("the inject scripts");
     let original = api.create("1.2.0").await;
     let original_id = original["metadata"]["id"].as_str().expect("id").to_owned();
     poll_phase(&api, &original_id, "Failed").await;

@@ -56,10 +56,12 @@ pub struct MockState {
     pub branches: BTreeMap<String, String>,
     /// File texts: `{branch}/{path}` -> serialized document.
     pub files: BTreeMap<String, String>,
-    /// One-shot commit inject: the NEXT commit refuses (the fork
-    /// reproducer's failing step), then the flag clears.
+    /// One-shot commit inject, keyed to one repo: the NEXT commit that
+    /// repo makes refuses, then the key clears (the fork reproducer's
+    /// failing step; the repo key keeps a foreign replay — a boot
+    /// abandoning interpreters — from eating the flag).
     #[serde(default)]
-    pub fail_next_commit: bool,
+    pub fail_next_commit_for: Option<String>,
 }
 
 /// A change request compact enough for the state file.
@@ -154,10 +156,10 @@ impl MockProvider {
     }
 
     /// Scripts the next commit to fail (the fork reproducer's set-up).
-    pub fn fail_next_commit(&self) -> Result<(), ProviderError> {
+    pub fn fail_next_commit_for(&self, repo_id: &str) -> Result<(), ProviderError> {
         let path = self.state_file();
         let mut state = MockState::load(&path);
-        state.fail_next_commit = true;
+        state.fail_next_commit_for = Some(repo_id.to_owned());
         state.save(&path);
         Ok(())
     }
@@ -278,7 +280,7 @@ impl Provider for MockProvider {
 
     async fn commit_files(
         &self,
-        _repo: &RepoRef,
+        repo: &RepoRef,
         branch: &str,
         edits: &[Edit],
         _message: &str,
@@ -286,10 +288,12 @@ impl Provider for MockProvider {
     ) -> ProviderResult<CommitResult> {
         let path = self.state_file();
         let mut state = MockState::load(&path);
-        if state.fail_next_commit {
+        if state.fail_next_commit_for.as_deref() == Some(repo.id.as_str()) {
             // The injection's own one-shot semantics: recorded BEFORE
             // the refusal, so the retry's re-run cannot loop on it.
-            state.fail_next_commit = false;
+            // The repo key scopes it: no foreign workflow's commit (an
+            // adopted interpreter's replay) can spend this flag.
+            state.fail_next_commit_for = None;
             state.save(&path);
             return Err(ProviderError::Request(
                 "the injected commit failure".to_owned(),

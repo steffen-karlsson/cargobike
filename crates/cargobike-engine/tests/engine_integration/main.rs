@@ -612,7 +612,9 @@ async fn test_fork_retry_reruns_only_the_failed_step() {
     seed_release(&pool, &release_uuid, FORK_APP, "1.0.0").await;
 
     // The first attempt: the `prod` commit fails via the injection.
-    provider.fail_next_commit().expect("the inject scripts");
+    provider
+        .fail_next_commit_for("42")
+        .expect("the inject scripts");
     let workflow = cargobike_engine::interpreter::interpret_workflow_id(&release_id);
     let _handle = interpreter
         .start_with(
