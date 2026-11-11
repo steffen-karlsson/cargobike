@@ -359,9 +359,14 @@
 - [x] Supersede end-to-end (F-70/F-73/F-74): `test_supersede_cancels_the_
   old_attempt_and_cleans_up` — the lease's holder becomes B, A's release
   goes Superseded/terminal, A's CR closes and B's stays open.
-- [ ] Queue wake behaviour (F-71) — the send is wired; a QUEUED release's
-  wake-from-block E2E (enter → HeldBy → the queue's hold → the release's
-  wake → the run continues) is still untested.
+- [x] Queue wake behaviour (F-71): the E2E lives in the engine's
+  integration suite (`test_queue_wakes_when_the_lease_releases`) —
+  A acquires the lease and blocks at its merge wait, B queues
+  (`Waiting`, the holder still A), A's merge is noticed by the
+  reconciler sweep (the merge wait is signal-driven), A completes,
+  and the lease release sends `LeaseReleased` to B's waiting attempt:
+  the holder flips to B and B's own CR opens (the run continued, not
+  the 3600s wake-timeout re-poll).
 - [ ] Approval auth matrix (F-96): self-approval, distinct count, reject,
   409-while-not-PendingApproval, attempt+head-SHA binding — approvals endpoint
   doesn't exist yet (Phase 5.5, but keep the CLI-side covered by 4.6/4.9 too).

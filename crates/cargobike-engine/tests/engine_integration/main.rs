@@ -26,6 +26,8 @@ const FORK_APP: &str = "fork-retry-probe";
 const OUTCAP_APP: &str = "out-cap-probe";
 /// The reject-policy probe's app name.
 const REJECT_APP: &str = "reject-probe";
+/// The queue-wake E2E's app name.
+const QUEUE_APP: &str = "queue-probe";
 
 /// The correlation stamp carries the sweep's join keys; the merge wait's
 /// step id is the template's auto-generated one (two declared ids
@@ -693,6 +695,221 @@ async fn holder_of(pool: &sqlx::PgPool, application: &str) -> Option<uuid::Uuid>
 /// from the last failure, INHERITS the recorded `stage` commit (its
 /// replay must not re-run), completes, appends the attempt record with
 /// `fork_from`.
+/// The queue's wake (F-71): A holds the lease at its merge wait, B
+/// queues (`Waiting`), A's merge unblocks the lease — the release sends
+/// the `LeaseReleased` signal to the waiting attempt and B's run
+/// continues to its own CR.
+#[tokio::test(flavor = "current_thread")]
+async fn test_queue_wakes_when_the_lease_releases() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "cargobike_engine=debug,dbos=warn".to_owned()),
+        )
+        .try_init();
+
+    let _the_db = fixture::db_lock().await;
+    let Some(database_url) = fixture::fixture_database_url() else {
+        return;
+    };
+    let scratch = fixture::scratch_dir();
+    let schema = fixture::schema_for_test("queue");
+    let pool = fixture::fixture_pool(&database_url).await;
+
+    let credentials: Arc<dyn cargobike_core::registry::CredentialStore> =
+        Arc::new(cargobike_engine::mock::StubCredentials);
+
+    let release_a = uuid::Uuid::now_v7().to_string();
+    let release_b = uuid::Uuid::now_v7().to_string();
+    let id_a = uuid::Uuid::parse_str(&release_a).expect("A's id");
+    let id_b = uuid::Uuid::parse_str(&release_b).expect("B's id");
+
+    let mut config = dbos::Config::new(QUEUE_APP, &database_url);
+    config.schema = schema;
+    config.app_version = Some("queue-1".to_owned());
+    let instance = dbos::DBOS::new(config);
+    let (services, provider) =
+        fixture::mock_services(&scratch, pool.clone(), &instance, credentials);
+
+    // The reconciler first (it borrows the registry's providers; the
+    // interpreter's registration consumes its services): the merge
+    // wait is signal-driven, so the sweep is what notices A's merge,
+    // completes A — and A's lease release sends the F-71 wake to B.
+    let correlation_repository = Arc::new(
+        cargobike_engine::correlation::CorrelationRepository::new(pool.clone()),
+    );
+    let reconciler = cargobike_engine::reconciler::register_reconciler(
+        &instance,
+        Arc::new(cargobike_engine::reconciler::ReconcilerServices {
+            providers: services.providers.clone(),
+            correlations: Arc::clone(&correlation_repository),
+            releases: cargobike_engine::reconciler::InMemoryPendingReleaseSource::fixture(&[
+                id_a, id_b,
+            ]),
+        }),
+    )
+    .expect("the reconciler registers before launch");
+    let interpreter = cargobike_engine::register_interpreter(&instance, services)
+        .expect("the interpreter registers before launch");
+    instance.launch().await.expect("the instance launches");
+    let reconcile_loop = reconciler
+        .start_with(
+            cargobike_engine::reconciler::ReconcileArgs {
+                interval: std::time::Duration::from_millis(250),
+                batch_size: 10,
+            },
+            dbos::StartOptions {
+                workflow_id: Some("queue-reconcile-loop"),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the reconciler loop starts");
+    let _ = reconcile_loop;
+
+    clear_application_rows(&pool, QUEUE_APP).await;
+    seed_release(&pool, &id_a, QUEUE_APP, "1.0.0").await;
+    seed_release(&pool, &id_b, QUEUE_APP, "1.1.0").await;
+
+    // A: acquires the lease and blocks at its merge wait (one open CR).
+    let workflow_a = cargobike_engine::interpreter::interpret_workflow_id(&release_a);
+    let _handle_a = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs {
+                snapshot: fixture::probe_snapshot(
+                    &release_a,
+                    QUEUE_APP,
+                    "1.0.0",
+                    fixture::QUEUE_TEMPLATE,
+                ),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow_a),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("A starts");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+        if state.change_requests.len() == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "A never reached its CR; {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        holder_of(&pool, QUEUE_APP).await,
+        Some(id_a),
+        "A holds the lease at its merge wait"
+    );
+
+    // B: queues behind A — the environment's phase says `Waiting`.
+    let workflow_b = cargobike_engine::interpreter::interpret_workflow_id(&release_b);
+    let _handle_b = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs {
+                snapshot: fixture::probe_snapshot(
+                    &release_b,
+                    QUEUE_APP,
+                    "1.1.0",
+                    fixture::QUEUE_TEMPLATE,
+                ),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow_b),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("B starts");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let data = query_release(&pool, &id_b).await;
+        let waiting = data
+            .pointer("/status/environments/0/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Waiting");
+        if waiting {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B never queued behind the lease: {data}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        holder_of(&pool, QUEUE_APP).await,
+        Some(id_a),
+        "B queued: the lease is still A's"
+    );
+
+    // The unblock: A's CR merges, A completes, the lease releases —
+    // and the F-71 wake sends `LeaseReleased` to B's attempt.
+    let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+    let a_cr = state
+        .change_requests
+        .values()
+        .find(|summary| summary.state == "open")
+        .expect("A's open CR");
+    provider.mark_merged(a_cr.number).expect("A's CR merges");
+
+    // Asserts: A completes; the wake runs B — the lease transfers to B
+    // and B reaches its own CR (the queue's run continues, not a
+    // wake-timeout re-poll).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let data_a = query_release(&pool, &id_a).await;
+        let data_b = query_release(&pool, &id_b).await;
+        let a_done = data_a
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Completed");
+        let b_ran = data_b
+            .pointer("/status/environments/0/phase")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|phase| phase != "Waiting");
+        let holder_is_b = holder_of(&pool, QUEUE_APP).await == Some(id_b);
+        if a_done && b_ran && holder_is_b {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wake never ran B: A {data_a}, B {data_b}, holder {:?}",
+            holder_of(&pool, QUEUE_APP).await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    // B's own CR exists (the run continued past the enter).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+        let open = state
+            .change_requests
+            .values()
+            .filter(|summary| summary.state == "open")
+            .count();
+        if state.change_requests.len() == 2 && open == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B's CR never opened after the wake: {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // B is left mid-flight (its own merge wait): the drain closes its
+    // workflow; a cancelled attempt's result never resolves here.
+    let _ = instance.cancel(&workflow_b).await;
+    instance.shutdown().await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn test_fork_retry_reruns_only_the_failed_step() {
     let _the_db = fixture::db_lock().await;

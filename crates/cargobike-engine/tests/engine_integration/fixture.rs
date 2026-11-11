@@ -113,6 +113,32 @@ environments:
         uses: builtin/commit-files@1
 "#;
 
+/// The `concurrency: queue` template: the queue-wake E2E's shape —
+/// A holds the lease at its merge wait, B queues, A's merge unblocks
+/// the lease and B proceeds (F-71).
+pub const QUEUE_TEMPLATE: &str = r#"
+name: queued
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+environments:
+  - name: stage
+    concurrency: queue
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+      - id: cr
+        uses: builtin/change-request@1
+        with:
+          branch: ${{ steps.edit.outputs.branch }}
+      - wait: merge
+        timeout: 7d
+        on_modified: fail
+        on_timeout: fail
+"#;
+
 /// A one-step template for the secrets scan: an `http-call` whose header
 /// value references the named secret.
 pub const SECRET_TEMPLATE: &str = r#"

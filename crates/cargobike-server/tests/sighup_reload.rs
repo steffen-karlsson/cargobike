@@ -62,7 +62,7 @@ environments:
              database:\n  url: \"{fix_url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_dir_display}\n\n\
              auth:\n  api_keys:\n    - name: key-one\n      hash: \"{hash_one}\"\n      grants: [release:create, application:read, template:read]\n\n\
-             applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    releasers:\n      - api_key: key-one\n    environments:\n      preview:\n        concurrency: supersede\n"
+             applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    releasers:\n      - api_key: key-one\n    environments:\n      preview:\n        concurrency: supersede\n        repo: {{ provider: github, id: \"42\" }}\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("config v1");

@@ -91,9 +91,12 @@ cargo test -p cargobike-engine --features crash-hooks \
 
 - `tests/engine_integration/` (in-process, over the mock provider): the
   reconciler's send-only contract — a stalled `wait: merge` is woken by the
-  sweep and converges `Completed` — and the secrets invariant (a named
-  secret resolved for an `http-call` step reaches DBOS's persisted state on
-  no surface).
+  sweep and converges `Completed` — the queue's wake (F-71: A holds the
+  lease at its merge wait, B queues, A's completion releases the lease and
+  B's waiting attempt runs on), the supersede's cancel+cleanup, the reject
+  policy's in-document failure (F-74/F-38), the fork reproducer, the
+  output cap, and the secrets invariant (a named secret resolved for an
+  `http-call` step reaches DBOS's persisted state on no surface).
 - `tests/crash_harness.rs` kills a real harness process at every action
   step's boundary and asserts recovery converges without duplicated side
   effects.
