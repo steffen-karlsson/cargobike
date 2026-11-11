@@ -1,0 +1,15 @@
+# The reconciler's batched CR lookup (F-69): one request carries every
+# pending CR of a repository (keyed by the global node id the REST
+# lookup primed), instead of one REST GET per row.
+query ReconcilerPullRequests($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    __typename
+    ... on PullRequest {
+      id
+      number
+      state
+      headRefOid
+      url
+    }
+  }
+}

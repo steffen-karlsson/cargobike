@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use cargobike_core::edits::apply_to_document;
 use cargobike_core::model::{CrState, RepoRef as CoreRepoRef};
 use cargobike_core::provider::{
-    ChangeRequest, CommitResult, CommitStatus, Edit, EditFormat, Provider, ProviderCaps,
+    ChangeRequest, CommitResult, CommitStatus, CrLookup, Edit, EditFormat, Provider, ProviderCaps,
     ProviderError, ProviderResult,
 };
 use octocrab::params::repos::Reference;
@@ -109,9 +109,119 @@ fn minimal_permissions() -> std::collections::HashMap<String, String> {
 #[derive(Clone)]
 pub struct GithubProvider {
     mode: ClientMode,
+    /// F-69's conditional-request half: the CR GETs (the reconciler
+    /// sweep and the merge verification are the pollers) carry
+    /// `If-None-Match` with the last ETag; a 304 answers from this
+    /// cache — the request still happens but costs no quota (GitHub
+    /// does not count conditional 304s against the primary rate
+    /// limit). TTL-bounded: a stale entry only costs one fresh GET.
+    cr_etags: moka::sync::Cache<String, CachedCr>,
+}
+
+/// The typed GraphQL query for the reconciler's batched lookups
+/// (F-69, PRD 4.3): checked against the trimmed GitHub SDL at
+/// compile time.
+#[derive(graphql_client::GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/reconciler_pull_requests.graphql",
+    response_derives = "Debug, Clone"
+)]
+struct ReconcilerPullRequests;
+
+/// The ETag cache's key: the repo identity plus the CR number.
+fn cr_cache_key(repo: &CoreRepoRef, number: u64) -> String {
+    format!("{}:{}:{number}", repo.provider, repo.id)
+}
+
+/// One cached CR: the ETag that identifies the state (absent when
+/// the server sent none — then no conditional request, but the global
+/// node id still serves the batched lookups) and the state itself (a
+/// 304 hands back this pair).
+#[derive(Clone)]
+struct CachedCr {
+    etag: Option<String>,
+    change_request: ChangeRequest,
 }
 
 impl GithubProvider {
+    /// F-69's conditional form: the CR GET carries the last ETag as
+    /// `If-None-Match` and a 304 answers from the cache — the request
+    /// still happens but costs no quota (GitHub does not count
+    /// conditional 304s against the primary rate limit). The result is
+    /// always cached (with or without a server ETag): the batched
+    /// lookups key on the cached global node id, and a stale entry only
+    /// costs one fresh GET. The raw call (octocrab's own route) keeps
+    /// the response's headers visible.
+    async fn fetch_cr(
+        &self,
+        github: &octocrab::Octocrab,
+        repo: &CoreRepoRef,
+        number: u64,
+    ) -> ProviderResult<ChangeRequest> {
+        let (owner, name) = owner_name(self, repo).await?;
+        let route = format!("/repos/{owner}/{name}/pulls/{number}");
+        let key = cr_cache_key(repo, number);
+        let mut headers = http::HeaderMap::new();
+        if let Some(cached) = self.cr_etags.get(&key) {
+            if let Some(etag) = cached.etag.clone() {
+                let etag = http::HeaderValue::from_str(&etag).map_err(|failure| {
+                    ProviderError::Request(format!(
+                        "the cached ETag refused to re-serialise: {failure}"
+                    ))
+                })?;
+                headers.insert("If-None-Match", etag);
+            }
+        }
+        let conditional = if headers.is_empty() {
+            None
+        } else {
+            Some(headers)
+        };
+        let response = github
+            ._get_with_headers(route, conditional)
+            .await
+            .map_err(request_failure)?;
+        if response.status() == http::StatusCode::NOT_MODIFIED {
+            // The provider's own truth: unchanged since the fetch the
+            // ETag came from.
+            return self
+                .cr_etags
+                .get(&key)
+                .map(|cached| cached.change_request)
+                .ok_or_else(|| {
+                    ProviderError::Request(
+                        "a 304 arrived without a cached change request".to_owned(),
+                    )
+                });
+        }
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let response = octocrab::map_github_error(response)
+            .await
+            .map_err(request_failure)?;
+        let body = github
+            .body_to_string(response)
+            .await
+            .map_err(request_failure)?;
+        let pull: octocrab::models::pulls::PullRequest =
+            serde_json::from_str(&body).map_err(|failure| {
+                ProviderError::Request(format!("the change request refused to decode: {failure}"))
+            })?;
+        let change_request = change_request_shape(&pull);
+        self.cr_etags.insert(
+            key,
+            CachedCr {
+                etag,
+                change_request: change_request.clone(),
+            },
+        );
+        Ok(change_request)
+    }
+
     /// Builds the client with the auth's token lifecycle absorbed at
     /// construction (the octocrab caches installation tokens internally).
     pub fn new(auth: &GithubAuth) -> Result<Self, ProviderError> {
@@ -178,7 +288,19 @@ impl GithubProvider {
             },
             GithubAuth::Token(_) => ClientMode::Static(client),
         };
-        Ok(Self { mode })
+        Ok(Self {
+            mode,
+            cr_etags: Self::cr_etag_cache(),
+        })
+    }
+
+    /// The conditional-request cache: one hour of TTL, bounded (the
+    /// entries are small and the sweep's working set is per-app).
+    fn cr_etag_cache() -> moka::sync::Cache<String, CachedCr> {
+        moka::sync::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(3600))
+            .max_capacity(1024)
+            .build()
     }
 
     /// A provider over a prebuilt octocrab client (the tests point one
@@ -186,6 +308,7 @@ impl GithubProvider {
     pub fn from_octocrab(github: octocrab::Octocrab) -> Self {
         Self {
             mode: ClientMode::Static(github),
+            cr_etags: Self::cr_etag_cache(),
         }
     }
 
@@ -197,6 +320,7 @@ impl GithubProvider {
     #[doc(hidden)]
     pub fn from_app_client(app: octocrab::Octocrab, base_url: Option<&str>) -> Self {
         Self {
+            cr_etags: Self::cr_etag_cache(),
             mode: ClientMode::PerRepo {
                 app,
                 base_url: base_url.map(str::to_owned),
@@ -538,14 +662,121 @@ impl Provider for GithubProvider {
         repo: &CoreRepoRef,
         number: u64,
     ) -> ProviderResult<ChangeRequest> {
-        let (owner, name) = owner_name(self, repo).await?;
         let github = self.client_for(repo).await?;
-        let pull = github
-            .pulls(owner.clone(), name)
-            .get(number)
-            .await
-            .map_err(request_failure)?;
-        Ok(change_request_shape(&pull))
+        self.fetch_cr(&github, repo, number).await
+    }
+
+    /// F-69's batched half: one GraphQL `nodes` request carries every
+    /// pending CR of a repository — the group — instead of one REST GET
+    /// per row. The group is the repository because the auth scope is:
+    /// a per-repo installation token (F-122) cannot read another
+    /// repository's nodes, and the static shapes share one client
+    /// either way. Lookups whose CR the provider has not fetched yet
+    /// (no cached global id) ride the REST lookup, which primes the id
+    /// for the next sweep. GraphQL failures fall back to per-row REST
+    /// for the whole group: correctness first, the batch is the
+    /// optimisation.
+    async fn get_change_requests(
+        &self,
+        lookups: &[CrLookup<'_>],
+    ) -> ProviderResult<Vec<ChangeRequest>> {
+        if lookups.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut results: Vec<Option<ChangeRequest>> = lookups.iter().map(|_| None).collect();
+        let mut groups: std::collections::BTreeMap<(String, String), Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (index, lookup) in lookups.iter().enumerate() {
+            groups
+                .entry((lookup.repo.provider.clone(), lookup.repo.id.clone()))
+                .or_default()
+                .push(index);
+        }
+        for ((provider, id), indexes) in &groups {
+            let repo = CoreRepoRef::new(provider, id);
+            // Priming: fetch (or serve) any CR without a cached global
+            // id through the REST path first; those results are final.
+            let mut batch: Vec<(usize, String)> = Vec::new();
+            for &index in indexes {
+                let number = lookups[index].number;
+                let key = cr_cache_key(&repo, number);
+                let cached_id = self
+                    .cr_etags
+                    .get(&key)
+                    .and_then(|cached| cached.change_request.node_id.clone());
+                match cached_id {
+                    Some(node_id) => batch.push((index, node_id)),
+                    None => {
+                        let change_request = self.get_change_request(&repo, number).await?;
+                        results[index] = Some(change_request);
+                    }
+                }
+            }
+            if batch.is_empty() {
+                continue;
+            }
+            let github = self.client_for(&repo).await?;
+            let ids: Vec<String> = batch.iter().map(|(_, id)| id.clone()).collect();
+            use graphql_client::GraphQLQuery;
+            let request = <ReconcilerPullRequests as GraphQLQuery>::build_query(
+                reconciler_pull_requests::Variables { ids },
+            );
+            let response: Result<reconciler_pull_requests::ResponseData, _> =
+                github.graphql(&request).await;
+            let Ok(response) = response else {
+                // Fall back per-row: the batch is best-effort.
+                for &(index, _) in &batch {
+                    let number = lookups[index].number;
+                    results[index] = Some(self.get_change_request(&repo, number).await?);
+                }
+                continue;
+            };
+            let nodes = response.nodes;
+            for (index, id) in &batch {
+                let number = lookups[*index].number;
+                let node = nodes
+                    .iter()
+                    .flatten()
+                    .filter_map(|node| match node {
+                        reconciler_pull_requests::ReconcilerPullRequestsNodes::PullRequest(
+                            pull,
+                        ) if pull.id == *id => Some(pull.clone()),
+                        _ => None,
+                    })
+                    .find(|pull| pull.number as u64 == number);
+                if let Some(pull) = node {
+                    results[*index] = Some(ChangeRequest {
+                        number,
+                        url: pull.url.clone(),
+                        head_sha: pull.head_ref_oid.clone(),
+                        state: match pull.state {
+                            reconciler_pull_requests::PullRequestState::MERGED => CrState::Merged,
+                            reconciler_pull_requests::PullRequestState::CLOSED => CrState::Closed,
+                            reconciler_pull_requests::PullRequestState::OPEN => CrState::Open,
+                            // An unknown state deserialises as Other:
+                            // open is the conservative read (an
+                            // open-looking CR keeps its wait pending,
+                            // never skips a merge).
+                            reconciler_pull_requests::PullRequestState::Other(_) => CrState::Open,
+                        },
+                        node_id: Some(id.clone()),
+                    });
+                } else {
+                    // The id no longer names this CR: the REST truth.
+                    results[*index] = Some(self.get_change_request(&repo, number).await?);
+                }
+            }
+        }
+        // Every lookup has gone through the REST path or the GraphQL
+        // node by this point — a hole would be a bookkeeping bug, and
+        // fabricating a state would be a correctness hole.
+        let mut resolved = Vec::with_capacity(lookups.len());
+        for (result, _) in results.into_iter().zip(lookups) {
+            resolved.push(result.ok_or_else(|| {
+                ProviderError::Request("a batched lookup went unresolved".to_owned())
+            })?);
+        }
+        Ok(resolved)
     }
 
     async fn create_change_request(
@@ -941,5 +1172,6 @@ fn change_request_shape(pull: &octocrab::models::pulls::PullRequest) -> ChangeRe
         } else {
             CrState::Open
         },
+        node_id: pull.node_id.clone(),
     }
 }

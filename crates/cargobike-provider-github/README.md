@@ -33,9 +33,12 @@ Components:
 The Phase 4 REST/webhook surface is implemented, with the wiremock lifecycle
 suite green; the GHES `api_url` base rides the provider's build (the config's
 `api_url` reaches `Octocrab::builder().base_uri`), and F-122's per-repo
-installation mode is in (below). Still pending: 4.3's
-`graphql_client` typed queries. Known gaps tracked in
-[`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md) §6.
+installation mode is in (below). The reconciler's F-69 efficiency surface is
+in: the CR GETs are conditional (`If-None-Match` + a TTL cache — a 304
+answers from the cache and costs no primary-rate-limit quota) and the batched
+lookups ride one GraphQL `nodes` request per repository (4.3, below). Known
+gaps tracked in [`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md)
+§6.
 
 ### Minimal GitHub App permission set (F-66)
 
@@ -82,6 +85,30 @@ closed on non-fast-forward) when the v1.1 step type arrives.
 
 Construction happens at the server's boot (single place), behind the provider
 registry:
+
+### Conditional CR lookups + batched GraphQL (F-69, 4.3)
+
+Every CR GET (`get_change_request`) sends the last ETag as `If-None-Match`; a
+`304` answers from the provider's in-process TTL cache (one hour, bounded),
+which is the state the ETag identifies — the request still happens but GitHub
+does not count conditional `304`s against the primary rate limit. The cache
+also records the CR's global node id, which the batched half keys on:
+
+```rust
+use cargobike_core::provider::{CrLookup, Provider};
+
+let lookups = [CrLookup { repo: &repo, number: 7 }, CrLookup { repo: &repo, number: 8 }];
+// One GraphQL `nodes` request for both CRs of the repository.
+let states = provider.get_change_requests(&lookups).await?;
+```
+
+The batch's unit is the repository (a per-repo installation token is
+repository-scoped and cannot read another repository's nodes). Lookups the
+provider has not fetched yet prime via the REST path (which caches the node
+id for the next sweep); a GraphQL failure falls back per-row REST for the
+whole group — the batch is the optimisation, never the correctness
+mechanism. The query is a `graphql_client`-generated one, checked at compile
+time against the trimmed GitHub SDL in `graphql/schema.graphql`.
 
 ### Per-repo installation lookup (F-122)
 
@@ -147,7 +174,11 @@ cargo test -p cargobike-provider-github
   creation with the missing-then-present read, the fused edit+commit
   plus its no-op replay, change requests (create twice = one pull),
   labels, comments, commit statuses, the review/tag-protection checks,
-  GraphQL auto-merge, tag and release creation, and the branch delete.
+  GraphQL auto-merge, tag and release creation, and the branch delete;
+  the ETag roundtrip (the conditional header fires, a `304` serves the
+  cache, a `200` refreshes the ETag) and the batched lookup (both CRs
+  of a batch ride ONE `/graphql` request; the REST lanes see only the
+  priming; a GraphQL failure falls back per-row).
 - Unit tests cover webhook verification/normalisation and the RFC 4231
   signing vectors.
 

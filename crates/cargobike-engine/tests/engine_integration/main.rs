@@ -175,6 +175,15 @@ async fn test_reconciler_signals_a_stalled_merge_wait() {
         EnvironmentPhase::Completed,
         "the merge wait completes on the reconciler's signal"
     );
+    // F-69's batching proof: every sweep pass was ONE batched lookup
+    // carrying its rows (never a per-row lookup loop). At least one
+    // pass observed the correlation row — an empty log would mean the
+    // sweep never looked at all.
+    let batches = cargobike_engine::mock::MockState::load(&provider.state_file()).batched_lookups;
+    assert!(
+        !batches.is_empty() && batches.iter().all(|&size| size >= 1),
+        "each sweep pass batched its rows: {batches:?}"
+    );
     instance.shutdown().await;
 }
 

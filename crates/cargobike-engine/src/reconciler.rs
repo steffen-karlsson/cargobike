@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cargobike_core::provider::Provider as _ProviderContract;
+use cargobike_core::model::RepoRef;
+use cargobike_core::provider::{CrLookup, Provider as _ProviderContract};
 use cargobike_core::registry::ProviderRegistry;
 use uuid::Uuid;
 
@@ -197,35 +198,60 @@ async fn sweep(services: &ReconcilerServices, batch_size: u32) -> Result<u32, In
         if rows.is_empty() {
             break;
         }
-        for row in &rows {
-            // The join: only live releases' correlations speak .
-            if !pending.contains(&row.release_id) {
-                continue;
-            }
-            let repo = cargobike_core::model::RepoRef::new(&row.provider, &row.repo_id);
-            let Ok(provider) = services.providers.resolve(&repo) else {
-                continue; // the provider is gone; the correlation is stale
+        // The join first: only live releases' correlations speak .
+        let live: Vec<&crate::correlation::CorrelationRow> = rows
+            .iter()
+            .filter(|row| pending.contains(&row.release_id))
+            .collect();
+        // One batched lookup per provider (F-69): the page's rows of a
+        // provider ride a single `get_change_requests` call, which the
+        // GitHub provider serves as one GraphQL request per repository.
+        let mut by_provider: std::collections::BTreeMap<
+            &str,
+            Vec<&crate::correlation::CorrelationRow>,
+        > = std::collections::BTreeMap::new();
+        for row in &live {
+            by_provider
+                .entry(row.provider.as_str())
+                .or_default()
+                .push(row);
+        }
+        for rows in by_provider.values() {
+            let repos: Vec<RepoRef> = rows
+                .iter()
+                .map(|row| RepoRef::new(&row.provider, &row.repo_id))
+                .collect();
+            let Ok(provider) = services.providers.resolve(&repos[0]) else {
+                continue; // the provider is gone; the correlations are stale
             };
-            let Ok(change_request) =
-                _ProviderContract::get_change_request(&*provider, &repo, row.cr_number as u64)
-                    .await
+            let lookups: Vec<CrLookup<'_>> = rows
+                .iter()
+                .zip(&repos)
+                .map(|(row, repo)| CrLookup {
+                    repo,
+                    number: row.cr_number as u64,
+                })
+                .collect();
+            let Ok(states) = _ProviderContract::get_change_requests(&*provider, &lookups).await
             else {
                 continue; // unavailable this cycle: the next sweep retries 
             };
-            let merged = matches!(change_request.state, cargobike_core::model::CrState::Merged);
-            let closed = matches!(change_request.state, cargobike_core::model::CrState::Closed);
-            if !(merged || closed) {
-                continue; // still open: nothing to send
+            for (row, change_request) in rows.iter().zip(states) {
+                let merged = matches!(change_request.state, cargobike_core::model::CrState::Merged);
+                let closed = matches!(change_request.state, cargobike_core::model::CrState::Closed);
+                if !(merged || closed) {
+                    continue; // still open: nothing to send
+                }
+                let (key, topic, message) = reconciler_send_form(row, merged);
+                let options = dbos::SendOptions {
+                    topic: Some(topic.as_ref() as &str),
+                    idempotency_key: Some(key.as_str()),
+                    ..dbos::SendOptions::default()
+                };
+                let _result: dbos::Result<(), dbos::EngineOnly> =
+                    dbos::send_with(&row.workflow_id, &message, options).await;
+                sent += 1;
             }
-            let (key, topic, message) = reconciler_send_form(row, merged);
-            let options = dbos::SendOptions {
-                topic: Some(topic.as_ref() as &str),
-                idempotency_key: Some(key.as_str()),
-                ..dbos::SendOptions::default()
-            };
-            let _result: dbos::Result<(), dbos::EngineOnly> =
-                dbos::send_with(&row.workflow_id, &message, options).await;
-            sent += 1;
         }
         if let Some(last) = rows.last().cloned() {
             cursor = Some((last.provider, last.repo_id, last.cr_number));

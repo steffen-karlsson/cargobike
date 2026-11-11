@@ -56,6 +56,10 @@ pub struct MockState {
     pub branches: BTreeMap<String, String>,
     /// File texts: `{branch}/{path}` -> serialized document.
     pub files: BTreeMap<String, String>,
+    /// The sizes of every batched CR lookup (F-69's batching proof:
+    /// the reconciler's sweep is one call carrying its page's rows).
+    #[serde(default)]
+    pub batched_lookups: Vec<usize>,
     /// One-shot commit inject, keyed to one repo: the NEXT commit that
     /// repo makes refuses, then the key clears (the fork reproducer's
     /// failing step; the repo key keeps a foreign replay — a boot
@@ -113,6 +117,9 @@ fn core_request_of_summary(summary: &CrSummary) -> CoreChangeRequest {
         url: summary.url.clone(),
         head_sha: summary.head_sha.clone(),
         state: cr_state_of(&summary.state),
+        // The mock has no global node ids: the batched lookups'
+        // default per-row path serves it.
+        node_id: None,
     }
 }
 
@@ -480,6 +487,23 @@ impl Provider for MockProvider {
             .insert(head.to_owned(), summary.clone());
         state.save(&path);
         Ok(core_request_of_summary(&summary))
+    }
+
+    /// F-69's batching proof: the mock records each batched lookup's
+    /// size, then serves per-row (the default's own shape).
+    async fn get_change_requests(
+        &self,
+        lookups: &[cargobike_core::provider::CrLookup<'_>],
+    ) -> ProviderResult<Vec<CoreChangeRequest>> {
+        let path = self.state_file();
+        let mut state = MockState::load(&path);
+        state.batched_lookups.push(lookups.len());
+        state.save(&path);
+        let mut results = Vec::with_capacity(lookups.len());
+        for lookup in lookups {
+            results.push(self.get_change_request(lookup.repo, lookup.number).await?);
+        }
+        Ok(results)
     }
 
     async fn get_change_request(

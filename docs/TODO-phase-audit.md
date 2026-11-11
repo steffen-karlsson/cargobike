@@ -175,8 +175,15 @@
 - [x] Reconciler production seam: `SqlSignalSource` over the `releases`
   join (`engine.rs`'s PendingReleaseSource impl), registered with the
   reconciler at boot.
-- [ ] Reconciler efficiency: ETag conditional requests and batched GraphQL
-  lookups (F-69, 4.3) — current sweep does per-row REST `get_change_request`.
+- [x] Reconciler efficiency: ETag conditional requests and batched GraphQL
+  lookups (F-69, 4.3) — the CR GET carries the last ETag as
+  `If-None-Match` (a 304 answers from the provider's TTL cache: the
+  request still happens but costs no primary-rate-limit quota), and the
+  sweep batches its page's rows per provider through the new
+  `Provider::get_change_requests`, which the GitHub provider serves as
+  ONE GraphQL `nodes` request per repository (keyed by the REST lookup's
+  cached global node id; uncached CRs prime via REST; any GraphQL
+  failure falls back per-row REST for the group — correctness first).
 - [x] Cleanup workflow body: each compensation (CR close, branch
   delete, lease settle) now runs inside its own `dbos::step` with a
   bounded retry policy (transient provider wobble retries 3×; a
@@ -313,9 +320,14 @@
   webhook note (signature verification needs no API permission),
   the `allow_direct_commit` bypass caveat, and the installation-scope
   recommendation.
-- [ ] `graphql_client` typed queries (4.3): absent — reconciler batching and
-  compile-time schema checks; current GraphQL is an ad hoc
-  `enablePullRequestAutoMerge` payload.
+- [x] `graphql_client` typed queries (4.3): the reconciler's batched
+  lookup rides a `graphql_client`-generated query
+  (`graphql/reconciler_pull_requests.graphql`) checked at compile time
+  against a trimmed GitHub SDL (`graphql/schema.graphql` — the object
+  types and fields the query touches; committing GitHub's full
+  introspection dump for one query would be worse). The ad hoc
+  `enablePullRequestAutoMerge` payload remains — octocrab's own
+  typed surface, and the reconciler's query is generated.
 - [x] `update_branch` returns `Unsupported` (F-46): reconciled as a
   documented v1 deviation — no v1 step type consumes the op (the
   `update-branch` step is v1.1), and octocrab 0.54 has no wrapper for

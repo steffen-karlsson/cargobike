@@ -1,0 +1,30 @@
+# A trimmed view of GitHub's GraphQL schema: the object types and
+# fields the reconciler's batched lookup (F-69) touches. graphql_client
+# checks the query against this SDL at compile time (PRD 4.3); the
+# server accepts the query as long as it is valid against its own
+# schema, which this SDL mirrors field-for-field.
+schema {
+  query: Query
+}
+
+type Query {
+  nodes(ids: [ID!]!): [Node]!
+}
+
+interface Node {
+  id: ID!
+}
+
+type PullRequest implements Node {
+  id: ID!
+  number: Int!
+  state: PullRequestState!
+  headRefOid: String!
+  url: String!
+}
+
+enum PullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+}

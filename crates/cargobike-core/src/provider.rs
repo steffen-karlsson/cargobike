@@ -133,6 +133,23 @@ pub struct ChangeRequest {
     pub head_sha: String,
     /// State of the CR.
     pub state: crate::model::CrState,
+    /// The provider's global node id (GitHub's `node_id`), when the
+    /// provider has one — the batched lookups (F-69) key on it.
+    /// Absent on providers without a global id, and on CRs fetched
+    /// before this field existed; the batched path falls back to the
+    /// per-row lookup without it.
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+/// One entry of a batched CR lookup (F-69): the repo the CR lives in
+/// plus its provider number.
+#[derive(Clone, Debug)]
+pub struct CrLookup<'a> {
+    /// The CR's repository.
+    pub repo: &'a RepoRef,
+    /// The CR's provider number.
+    pub number: u64,
 }
 
 /// Branch protection state of a base branch .
@@ -217,6 +234,23 @@ pub trait Provider: Send + Sync {
         repo: &RepoRef,
         number: u64,
     ) -> ProviderResult<ChangeRequest>;
+
+    /// Batched CR state lookups (F-69): the reconciler sweep and any
+    /// other multi-CR poll ask once per batch instead of once per row.
+    /// Results return in the input order. The default serves per-row
+    /// from [`Provider::get_change_request`]; providers with a batched
+    /// surface (the GitHub provider's GraphQL) override — and may
+    /// fall back per lookup, which is indistinguishable to callers.
+    async fn get_change_requests(
+        &self,
+        lookups: &[CrLookup<'_>],
+    ) -> ProviderResult<Vec<ChangeRequest>> {
+        let mut results = Vec::with_capacity(lookups.len());
+        for lookup in lookups {
+            results.push(self.get_change_request(lookup.repo, lookup.number).await?);
+        }
+        Ok(results)
+    }
 
     /// Finds an open CR by head branch .
     async fn find_change_request_by_head(

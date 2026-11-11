@@ -735,3 +735,277 @@ async fn test_the_provider_lifecycle_against_mocked_github() {
         .await
         .expect("the branch deletes");
 }
+
+/// F-69's conditional-request half: the CR GET carries `If-None-Match`
+/// with the last ETag, a 304 answers from the provider's cache (the
+/// state the ETag identifies — no quota cost), and a 200 refreshes the
+/// cache with the new ETag. The wiremock lanes mount in priority order
+/// (later mounts win), so the conditional lane lands last.
+#[tokio::test(flavor = "current_thread")]
+async fn test_change_request_gets_are_conditional_on_the_etag() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Match, ResponseTemplate};
+
+    let server = wiremock::MockServer::start().await;
+    let builder = octocrab::Octocrab::builder()
+        .personal_token(TOKEN.to_owned())
+        .base_uri(server.uri())
+        .expect("the mocked base uri sets");
+    let provider = GithubProvider::from_octocrab(builder.build().expect("the client builds"));
+
+    // The repo metadata (the owner/name resolution reads it).
+    wiremock::Mock::given(method("GET"))
+        .and(path(format!("/repositories/{REPO_ID}")))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42,
+                "name": "my-service",
+                "full_name": REPO_PATH,
+                "default_branch": "main",
+                "url": fake_url("repo"),
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    // The first GET: no conditional header, answers open with ETag v1.
+    wiremock::Mock::given(method("GET"))
+        .and(path(format!("{REPO_FULL_PATH}/pulls/7")))
+        .respond_with(move |request: &wiremock::Request| {
+            if request.headers.contains_key("if-none-match") {
+                // The later lanes own the conditional requests.
+                return ResponseTemplate::new(http::StatusCode::NOT_FOUND.as_u16());
+            }
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("etag", "\"v1\"")
+                .set_body_json(pull_json(7, "open", false, READY_HEAD_SHA))
+        })
+        .mount(&server)
+        .await;
+
+    let repo = RepoRef::new("github", REPO_ID);
+    let first = provider
+        .get_change_request(&repo, 7)
+        .await
+        .expect("the first lookup");
+    assert!(matches!(first.state, CrState::Open), "the pull is open");
+
+    // The conditional lane, mounted LAST (highest priority): a GET
+    // carrying `If-None-Match: "v1"` answers 304 — the cache serves.
+    wiremock::Mock::given(method("GET"))
+        .and(path(format!("{REPO_FULL_PATH}/pulls/7")))
+        .and(header("if-none-match", "\"v1\""))
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(http::StatusCode::NOT_MODIFIED.as_u16())
+        })
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let second = provider
+        .get_change_request(&repo, 7)
+        .await
+        .expect("the conditional lookup");
+    assert!(
+        matches!(second.state, CrState::Open),
+        "the 304 serves the cached state"
+    );
+    let conditional_hits = server
+        .received_requests()
+        .await
+        .expect("the requests")
+        .into_iter()
+        .filter(|request| {
+            path(format!("{REPO_FULL_PATH}/pulls/7")).matches(request)
+                && header("if-none-match", "\"v1\"").matches(request)
+        })
+        .count();
+    assert_eq!(
+        conditional_hits, 1,
+        "exactly one lookup carried the conditional header"
+    );
+
+    // The refresh lane: the ETag is stale (the pull merged out-of-band)
+    // — the 200 replaces the cached state and the new ETag.
+    wiremock::Mock::given(method("GET"))
+        .and(path(format!("{REPO_FULL_PATH}/pulls/7")))
+        .and(header("if-none-match", "\"v1\""))
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"v2\"")
+                .set_body_json(pull_json(7, "closed", true, READY_HEAD_SHA))
+        })
+        // Priority 1: under the 304 lane, which is how the lane's
+        // answer flips from 304 to 200.
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let third = provider
+        .get_change_request(&repo, 7)
+        .await
+        .expect("the refreshed lookup");
+    assert!(
+        matches!(third.state, CrState::Merged),
+        "the 200 refreshes the state"
+    );
+}
+
+/// F-69's batched half: after the REST lookup primes each CR's global
+/// node id (and its ETag cache), the batched lookup carries every CR
+/// of the batch in ONE GraphQL `nodes` request — the REST endpoints
+/// see no second traffic, and the states come from the GraphQL body.
+#[tokio::test(flavor = "current_thread")]
+async fn test_batched_lookups_ride_one_graphql_request() {
+    use cargobike_core::provider::{CrLookup, Provider as _};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Match, Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let builder = octocrab::Octocrab::builder()
+        .personal_token(TOKEN.to_owned())
+        .base_uri(server.uri())
+        .expect("the mocked base uri sets");
+    let provider = GithubProvider::from_octocrab(builder.build().expect("the client builds"));
+
+    // The repo metadata (the owner/name resolution reads it).
+    Mock::given(method("GET"))
+        .and(path(format!("/repositories/{REPO_ID}")))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42,
+                "name": "my-service",
+                "full_name": REPO_PATH,
+                "default_branch": "main",
+                "url": fake_url("repo"),
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    // The REST CR lanes (the priming lookups).
+    for number in [7_u64, 8] {
+        Mock::given(method("GET"))
+            .and(path(format!("{REPO_FULL_PATH}/pulls/{number}")))
+            .respond_with(move |_: &wiremock::Request| {
+                ResponseTemplate::new(200).set_body_json(pull_json(
+                    number,
+                    "open",
+                    false,
+                    READY_HEAD_SHA,
+                ))
+            })
+            .mount(&server)
+            .await;
+    }
+
+    // The batch lane: ONE GraphQL request answers the whole batch. The
+    // 7 merges, the 8 stays open — the states the sweep would signal.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "nodes": [
+                    {
+                        "__typename": "PullRequest",
+                        "id": "PR_7",
+                        "number": 7,
+                        "state": "MERGED",
+                        "headRefOid": READY_HEAD_SHA,
+                        "url": format!("https://github.com/{REPO_PATH}/pull/7"),
+                    },
+                    {
+                        "__typename": "PullRequest",
+                        "id": "PR_8",
+                        "number": 8,
+                        "state": "OPEN",
+                        "headRefOid": READY_HEAD_SHA,
+                        "url": format!("https://github.com/{REPO_PATH}/pull/8"),
+                    },
+                ]}
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let repo = RepoRef::new("github", REPO_ID);
+    // Priming: the REST lookups fetch both CRs (node ids cached).
+    for number in [7_u64, 8] {
+        let change_request = provider
+            .get_change_request(&repo, number)
+            .await
+            .expect("the priming lookup");
+        assert!(
+            matches!(change_request.state, CrState::Open),
+            "the priming lookup serves the REST state"
+        );
+    }
+
+    // The batch: both CRs in ONE call.
+    let lookups = [
+        CrLookup {
+            repo: &repo,
+            number: 7,
+        },
+        CrLookup {
+            repo: &repo,
+            number: 8,
+        },
+    ];
+    let batch = provider
+        .get_change_requests(&lookups)
+        .await
+        .expect("the batched lookup");
+    assert_eq!(batch.len(), 2, "one result per lookup");
+    assert!(matches!(batch[0].state, CrState::Merged), "the 7 merged");
+    assert!(matches!(batch[1].state, CrState::Open), "the 8 stays open");
+
+    let requests = server.received_requests().await.expect("the requests");
+    let graphql = requests
+        .iter()
+        .filter(|request| path("/graphql").matches(request))
+        .count();
+    assert_eq!(graphql, 1, "the whole batch rode one GraphQL request");
+    let body_ids: Vec<String> = requests
+        .iter()
+        .filter(|request| path("/graphql").matches(request))
+        .flat_map(|request| {
+            let body: serde_json::Value = request.body_json().expect("the graphql body");
+            body["variables"]["ids"]
+                .as_array()
+                .expect("the ids list")
+                .iter()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let body_ids: Vec<&str> = body_ids.iter().map(String::as_str).collect();
+    assert_eq!(
+        body_ids,
+        ["PR_7", "PR_8"],
+        "the request carried both node ids"
+    );
+    // The REST lanes saw only the priming: no per-row lookups.
+    for number in [7_u64, 8] {
+        let rest = requests
+            .iter()
+            .filter(|request| path(format!("{REPO_FULL_PATH}/pulls/{number}")).matches(request))
+            .count();
+        assert_eq!(rest, 1, "the pull {number} lane saw only its priming");
+    }
+
+    // A GraphQL failure falls back per-row (the REST truth): a scoped
+    // lane with top priority answers the next request with a 500.
+    let _fail_lane = Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(|_: &wiremock::Request| ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount_as_scoped(&server)
+        .await;
+    let batch = provider
+        .get_change_requests(&lookups)
+        .await
+        .expect("the fallback batch");
+    assert!(
+        matches!(batch[0].state, CrState::Open),
+        "the failed batch fell back to the REST truth"
+    );
+}

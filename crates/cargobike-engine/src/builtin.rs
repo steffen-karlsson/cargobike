@@ -567,6 +567,7 @@ mod tests {
                 url: "https://cr/7".to_owned(),
                 head_sha: "sha".to_owned(),
                 state: CrState::Open,
+                node_id: None,
             })
         }
 
@@ -895,6 +896,7 @@ mod tests {
             url: "https://cr/7".to_owned(),
             head_sha: "sha".to_owned(),
             state: CrState::Open,
+            node_id: None,
         });
         let output = ChangeRequest
             .execute(&context(provider), &release(), &env_ref(true), &params())

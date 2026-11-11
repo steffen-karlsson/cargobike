@@ -13,6 +13,13 @@ Crate-specific how-to; project-wide rules in the root
 - **Repository identity is the immutable ID** (`RepoRef.id`), not the
  owner/name path. Operations that must resolve a path (`owner_name`) derive
  it via `get_repo_path` and treat it as a display label only .
+- **GraphQL**: the reconciler's batched lookup is a `graphql_client`-generated
+ query (`graphql/reconciler_pull_requests.graphql`) validated at compile time
+ against the trimmed GitHub SDL (`graphql/schema.graphql`). The SDL mirrors
+ GitHub's own types field-for-field but only carries what the query touches —
+ keep it that way (committing a full introspection dump for one query is
+ worse), and when the query grows, grow the SDL with exactly the fields the
+ new selection needs.
 - **Trait compatibility**: every method added to
  `cargobike_core::provider::Provider` must either be implemented here with a
  capability gate or match the engine/mock contract that the other Provider
