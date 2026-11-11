@@ -28,7 +28,7 @@ Phase 4 scope (4.5/4.6 complete; 4.9's CLI-half tests exist). The OIDC
 exchange, the `-o` honouring, the auth/CA overrides, `--since`, and
 `release retry` (`--new` included) landed (audit §5's ticked items).
 Pending (audit TODO §5): `cargobike validate` (4.8),
-`release approve`, `--events`.
+`release approve`.
 
 ## Usage
 
@@ -62,6 +62,9 @@ cargobike release retry 0192f0d0-... --new    # a fresh row carrying retried_fro
 cargobike release delete 0192f0d0-...
 
 # Output control.
+cargobike release get 0192f0d0-... --events  # + the event log: the table adds
+                                             # sequence/at/kind/environment/reason rows,
+                                             # JSON/YAML wrap as {release, events}
 cargobike release get 0192f0d0-... -o json
 cargobike release list -o yaml
 

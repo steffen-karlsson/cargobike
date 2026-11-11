@@ -60,6 +60,39 @@ pub fn documents(
     }
 }
 
+/// The event rows (US-3's `--events` half): `sequence, at, kind,
+/// environment, reason` — the environment is blank for release-level
+/// events.
+pub fn event_rows(items: &[serde_json::Value]) -> Vec<[String; 5]> {
+    items
+        .iter()
+        .map(|item| {
+            [
+                item.get("sequence")
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|sequence| sequence.to_string())
+                    .unwrap_or_default(),
+                item.get("at")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                item.get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                item.pointer("/data/environment")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                item.get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            ]
+        })
+        .collect()
+}
+
 fn rendered(result: Result<String, impl std::fmt::Display>) -> Result<String, std::fmt::Error> {
     result.map_err(|_| std::fmt::Error)
 }
@@ -82,6 +115,21 @@ mod tests {
             rendered,
             "0192-1\tweb\t1.2.3\tPendingApproval\n0192-2\tweb\t1.3.0\tCompleted\n"
         );
+    }
+
+    #[test]
+    fn test_event_rows_read_the_log_items() {
+        let items = json!([
+            { "sequence": 1, "at": "2026-01-01T00:00:00Z", "kind": "created",
+              "reason": "why", "data": {} },
+            { "sequence": 2, "at": "2026-01-01T00:01:00Z", "kind": "environment-running",
+              "reason": "running", "data": { "environment": "preview" } },
+        ]);
+        let rows = event_rows(items.as_array().expect("items"));
+        assert_eq!(rows[0][0], "1");
+        assert_eq!(rows[0][3], "", "release-level events have no environment");
+        assert_eq!(rows[1][2], "environment-running");
+        assert_eq!(rows[1][3], "preview");
     }
 
     #[test]

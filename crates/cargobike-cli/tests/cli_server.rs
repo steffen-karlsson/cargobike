@@ -583,6 +583,73 @@ async fn run_watch(
     .expect("joined")
 }
 
+/// US-3: `release get --events` — the table adds the log's rows
+/// after the document's, the JSON wraps as `{release, events}`.
+#[tokio::test]
+async fn test_release_get_events_appends_the_log() {
+    let (server, id) = mock_release_surface().await;
+    let events_path = format!("/api/v1/releases/{id}/events");
+    Mock::given(method("GET"))
+        .and(path(events_path))
+        .respond_with(|_: &Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    { "sequence": 1, "at": "2026-01-01T00:00:00Z", "kind": "created",
+                      "actor": {}, "reason": "the release created",
+                      "data": {}, "hash": "aa", "prev": "" },
+                    { "sequence": 2, "at": "2026-01-01T00:01:00Z",
+                      "kind": "environment-running", "actor": {},
+                      "reason": "entered execution",
+                      "data": { "environment": "preview" }, "hash": "bb", "prev": "aa" },
+                ],
+                "cursor": 2,
+                "has_more": false,
+            }))
+        })
+        .mount(&server)
+        .await;
+    let uri = server.uri();
+    let id_for_table = id.clone();
+    let table = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("cargobike")
+            .expect("the binary")
+            .env("CARGOBIKE_URL", uri)
+            .args(["release", "get", &id_for_table, "--events"])
+            .output()
+            .expect("runs")
+    })
+    .await
+    .expect("joined");
+    let text = String::from_utf8_lossy(&table.stdout);
+    assert!(
+        text.contains("environment-running	preview	entered execution"),
+        "the table carries the event rows: {text}"
+    );
+    assert!(
+        text.contains("created		the release created"),
+        "release-level events keep the blank environment column: {text}"
+    );
+
+    let uri = server.uri();
+    let json_out = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("cargobike")
+            .expect("the binary")
+            .env("CARGOBIKE_URL", uri)
+            .args(["release", "get", &id, "--events", "-o", "json"])
+            .output()
+            .expect("runs")
+    })
+    .await
+    .expect("joined");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json_out.stdout).expect("one parseable document");
+    assert!(
+        parsed["release"]["metadata"]["id"].is_string(),
+        "the wrapper carries the release"
+    );
+    assert_eq!(parsed["events"].as_array().map(Vec::len), Some(2));
+}
+
 /// US-4's matrix, the `--until` half: the environment's own terminal
 /// event ends the watch — completed exits 0.
 #[tokio::test]

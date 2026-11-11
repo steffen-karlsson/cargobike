@@ -246,7 +246,11 @@
 - [x] `release list --since` present: an RFC 3339 stamp passes through; a
   humantime duration (`24h`) converts to now-minus (query encoding is a
   small private helper; the server's refusal surfaces unknown inputs).
-- [ ] `release get --events` flag missing (US-3; server endpoint Phase 5.4).
+- [x] `release get --events` (US-3): the table adds the log's
+  `sequence, at, kind, environment, reason` rows after the document's
+  (release-level events keep the blank environment column); JSON/YAML
+  wrap as one parseable `{release, events}` document. Wiremock drives
+  both formats through the binary.
 - [x] **`-o` obeys the format now (F-108/F-145)**: every verb renders the
   resolved format; `CARGOBIKE_OUTPUT` fills in when the flag is missing
   (E2E: `-o json`, `-o yaml`, the env format on list/get).

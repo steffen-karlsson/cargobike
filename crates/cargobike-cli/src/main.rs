@@ -140,10 +140,15 @@ enum ReleaseCommand {
         #[arg(long)]
         timeout: Option<String>,
     },
-    /// Prints the release document.
+    /// Prints the release document (with the event log when asked).
     Get {
         /// The release ID (UUIDv7).
         id: Uuid,
+        /// Appends the release's event log (US-3): the table adds the
+        /// `sequence, at, kind, environment, reason` rows; JSON/YAML
+        /// wrap as `{release, events}`.
+        #[arg(long)]
+        events: bool,
     },
     /// Cancels a pending release (; the server's cleanup starts).
     Cancel {
@@ -495,14 +500,49 @@ async fn release_verb(
             print!("{rendered}");
             Ok(0)
         }
-        ReleaseCommand::Get { id } => {
+        ReleaseCommand::Get { id, events } => {
             let document = client
                 .get_json(&format!("{url}/{id}"))
                 .await
                 .map_err(call_failure)?;
-            let rendered = render::documents(output, &document)
-                .map_err(|failure| (12, failure.to_string()))?;
-            print!("{rendered}");
+            if !events {
+                let rendered = render::documents(output, &document)
+                    .map_err(|failure| (12, failure.to_string()))?;
+                print!("{rendered}");
+                return Ok(0);
+            }
+            // US-3's `--events`: the event log beside the document.
+            // The table keeps the document's row and adds the log's;
+            // the structured formats wrap as `{release, events}` (one
+            // parseable document, not two blobs).
+            let body = client
+                .get_json(&format!("{url}/{id}/events?limit=500"))
+                .await
+                .map_err(call_failure)?;
+            let items = body
+                .get("items")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            match output {
+                OutputFormat::Table => {
+                    let rendered = render::documents(output, &document)
+                        .map_err(|failure| (12, failure.to_string()))?;
+                    print!("{rendered}");
+                    for row in render::event_rows(&items) {
+                        println!("{}", row.join("\t"));
+                    }
+                }
+                _ => {
+                    let wrapped = serde_json::json!({
+                        "release": document,
+                        "events": items,
+                    });
+                    let rendered = render::documents(output, &wrapped)
+                        .map_err(|failure| (12, failure.to_string()))?;
+                    print!("{rendered}");
+                }
+            }
             Ok(0)
         }
         ReleaseCommand::Retry { id, new } => {
