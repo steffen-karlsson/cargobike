@@ -47,6 +47,29 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
             return None;
         }
     };
+    // The shared fixture DB's leftovers: lease rows outlive their
+    // releases (a supersede guard cannot read a deleted holder's
+    // version), so this run's applications start with clean rows.
+    {
+        #[allow(clippy::expect_used)]
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("the fixture database connects");
+        for application in ["my-service", "keyed-service"] {
+            sqlx::query("DELETE FROM leases WHERE application = $1")
+                .bind(application)
+                .execute(&pool)
+                .await
+                .expect("the lease rows wipe");
+            sqlx::query("DELETE FROM releases WHERE application = $1")
+                .bind(application)
+                .execute(&pool)
+                .await
+                .expect("the release rows wipe");
+        }
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -89,7 +112,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
              database:\n  url: \"{url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_display}\n\n\
              auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\
-             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n"
+             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/keyed/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("write the test config");
@@ -177,6 +200,41 @@ async fn test_authed_release_lifecycle() {
         "the duplicate hands back the same release"
     );
 
+    // The `Idempotency-Key` header (F-109): a fresh create with a key
+    // answers 202, and a retried create with the SAME key — even with a
+    // different body — converges on that release with 200 instead of
+    // provisioning a second one.
+    let key = format!("create-key-{run_tag}");
+    let keyed = client
+        .post(format!("{base}/api/v1/releases"))
+        .header(auth_header.0, auth_header.1.clone())
+        .header("Idempotency-Key", &key)
+        .json(&serde_json::json!({ "application": "keyed-service", "version": format!("2.0.{run_tag}") }))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(keyed.status(), reqwest::StatusCode::ACCEPTED);
+    let keyed_document: serde_json::Value = keyed.json().await.expect("release json");
+    let keyed_id = keyed_document["metadata"]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let retried = client
+        .post(format!("{base}/api/v1/releases"))
+        .header(auth_header.0, auth_header.1.clone())
+        .header("Idempotency-Key", &key)
+        .json(&serde_json::json!({ "application": "keyed-service", "version": format!("3.0.{run_tag}") }))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(retried.status(), reqwest::StatusCode::OK);
+    let retried_document: serde_json::Value = retried.json().await.expect("release json");
+    assert_eq!(
+        retried_document["metadata"]["id"].as_str().expect("id"),
+        keyed_id,
+        "the key's retry converges on the first attempt's release"
+    );
+
     // whoami .
     let response = client
         .get(format!("{base}/api/v1/whoami"))
@@ -215,7 +273,10 @@ async fn test_authed_release_lifecycle() {
                 .is_some_and(|v| v.ends_with(&format!(".{run_tag}")))
         })
         .count();
-    assert_eq!(from_this_run, 1, "this run's single release must be listed");
+    assert_eq!(
+        from_this_run, 1,
+        "this run's my-service release must be listed (the keyed create is keyed-service)"
+    );
 
     // Cancel is in-flight only. The release blocks at its merge wait,
     // so the cancel lands and the cleanup workflow closes the CR and
@@ -269,4 +330,71 @@ async fn test_authed_release_lifecycle() {
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     let body: serde_json::Value = response.json().await.expect("problem body");
     assert_eq!(body["code"], "ReleaseNotFound");
+
+    // The keyed create's release drains too (a non-terminal row would
+    // poison the next boot's recovery against the shared fixture DB).
+    let keyed_cancel = client
+        .post(format!("{base}/api/v1/releases/{keyed_id}/cancel"))
+        .header(auth_header.0, auth_header.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(
+        keyed_cancel.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the keyed release's drain: {:?}",
+        keyed_cancel.text().await
+    );
+    // The keyed release's row goes too — then the same key provisions
+    // fresh (the key's mapping followed the row out via the cascade).
+    assert_eq!(
+        client
+            .delete(format!("{base}/api/v1/releases/{keyed_id}"))
+            .header(auth_header.0, auth_header.1.clone())
+            .send()
+            .await
+            .expect("http")
+            .status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
+    let fresh_after_delete = client
+        .post(format!("{base}/api/v1/releases"))
+        .header(auth_header.0, auth_header.1.clone())
+        .header("Idempotency-Key", &key)
+        .json(&serde_json::json!({ "application": "keyed-service", "version": format!("4.0.{run_tag}") }))
+        .send()
+        .await
+        .expect("http");
+    let fresh_status = fresh_after_delete.status();
+    let fresh_document: serde_json::Value = fresh_after_delete.json().await.expect("release json");
+    assert_eq!(
+        fresh_status,
+        reqwest::StatusCode::ACCEPTED,
+        "a key whose release was deleted provisions fresh: {fresh_document}"
+    );
+    // The fresh release drains too (cancel + delete), leaving no
+    // non-terminal row behind against the shared fixture DB.
+    let fresh_id = fresh_document["metadata"]["id"].as_str().expect("id");
+    let cancel = client
+        .post(format!("{base}/api/v1/releases/{fresh_id}/cancel"))
+        .header(auth_header.0, auth_header.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(
+        cancel.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the fresh release's drain: {:?}",
+        cancel.text().await
+    );
+    assert_eq!(
+        client
+            .delete(format!("{base}/api/v1/releases/{fresh_id}"))
+            .header(auth_header.0, auth_header.1.clone())
+            .send()
+            .await
+            .expect("http")
+            .status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
 }

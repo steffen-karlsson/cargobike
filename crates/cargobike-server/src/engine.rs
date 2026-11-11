@@ -579,7 +579,9 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
             // The row half only: the interpreter's start is refused
             // from inside a step, so the creator plans and the webhook
             // workflow's body addresses the interpreters.
-            match crate::release::create_release_row(&parts, app, &app.name, &version, None).await {
+            match crate::release::create_release_row(&parts, app, &app.name, &version, None, None)
+                .await
+            {
                 Ok(created_row) => {
                     let id = created_row
                         .outcome

@@ -90,6 +90,49 @@ fn application_owned(application: &str) -> String {
     application.to_owned()
 }
 
+impl ReleaseRepository {
+    /// The release a create idempotency key already named (F-109):
+    /// `None` when the key is new or its release was deleted (the
+    /// retried create provisions fresh then).
+    pub async fn find_by_idempotency_key(
+        &self,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, RepositoryError> {
+        let row: Option<Row> = sqlx::query_as::<_, Row>(
+            "SELECT releases.id, releases.application, releases.version, releases.phase, \
+             releases.terminal, releases.resource_version, releases.document \
+             FROM create_idempotency_keys \
+             JOIN releases ON releases.id = create_idempotency_keys.release_id \
+             WHERE create_idempotency_keys.key = $1",
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| RepositoryError::Internal(error.to_string()))?;
+        Ok(row.map(Row::into_json))
+    }
+
+    /// Records a key → release mapping (F-109). First writer wins: a
+    /// racing create with the same key keeps its own release and the
+    /// mapping points at whoever landed first.
+    pub async fn record_idempotency_key(
+        &self,
+        key: &str,
+        release_id: &Uuid,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query(
+            "INSERT INTO create_idempotency_keys (key, release_id) VALUES ($1, $2) \
+             ON CONFLICT (key) DO NOTHING",
+        )
+        .bind(key)
+        .bind(release_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| RepositoryError::Internal(error.to_string()))?;
+        Ok(())
+    }
+}
+
 fn dedup_lost() -> RepositoryError {
     RepositoryError::Internal("duplicate create raced and the row vanished".to_owned())
 }
@@ -428,6 +471,7 @@ pub(crate) async fn create_release_core(
     application: &str,
     version: &str,
     retried_from: Option<&str>,
+    idempotency_key: Option<&str>,
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
     let parts = CoreParts {
         releases: &state.releases,
@@ -447,6 +491,7 @@ pub(crate) async fn create_release_core(
         application,
         version,
         retried_from,
+        idempotency_key,
     )
     .await
 }
@@ -479,9 +524,37 @@ pub(crate) async fn create_release_row(
     application: &str,
     version: &str,
     retried_from: Option<&str>,
+    idempotency_key: Option<&str>,
 ) -> Result<CreateRow, crate::http::errors::ApiError> {
     let id = Uuid::now_v7();
     let now = sqlx::types::time::OffsetDateTime::now_utc();
+
+    // The key precedes everything (F-109): a retried create with the
+    // same `Idempotency-Key` converges on the release the first attempt
+    // produced, whatever the body says — the caller already has this
+    // release, and a re-provision would only fork the caller's intent.
+    if let Some(key) = idempotency_key {
+        if let Some(existing_json) = parts
+            .releases
+            .find_by_idempotency_key(key)
+            .await
+            .map_err(repository_to_api)?
+        {
+            let existing_id = existing_json
+                .pointer("/metadata/id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|text| Uuid::parse_str(text).ok())
+                .unwrap_or_else(Uuid::nil);
+            return Ok(CreateRow {
+                outcome: CreateOutcome {
+                    document: existing_json,
+                    created: false,
+                },
+                release_id: existing_id,
+                snapshot: None,
+            });
+        }
+    }
 
     // The provision first: the compiled template's environment list is
     // the doc's initial shape (every environment opens `Pending`, so a
@@ -563,6 +636,25 @@ pub(crate) async fn create_release_row(
     })
 }
 
+/// The key half of a fresh create (F-109): first writer wins; the
+/// racing loser keeps its own release but the mapping names the
+/// winner, so the NEXT retry converges.
+async fn record_create_key(
+    parts: &CoreParts<'_>,
+    idempotency_key: Option<&str>,
+    release_id: &Uuid,
+) {
+    if let Some(key) = idempotency_key {
+        if let Err(failure) = parts.releases.record_idempotency_key(key, release_id).await {
+            tracing::error!(
+                release = %release_id,
+                %failure,
+                "the create idempotency key failed to record"
+            );
+        }
+    }
+}
+
 /// The interpreter's start for a provisioned, already-inserted release
 /// (the workflow id deduplicates; a replayed create joins the running
 /// workflow).
@@ -603,11 +695,21 @@ pub(crate) async fn create_from_parts(
     application: &str,
     version: &str,
     retried_from: Option<&str>,
+    idempotency_key: Option<&str>,
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
-    let created = create_release_row(parts, app, application, version, retried_from).await?;
+    let created = create_release_row(
+        parts,
+        app,
+        application,
+        version,
+        retried_from,
+        idempotency_key,
+    )
+    .await?;
     let Some(snapshot) = created.snapshot else {
         return Ok(created.outcome);
     };
+    record_create_key(parts, idempotency_key, &created.release_id).await;
     start_release_interpreter(interpreter, created.release_id, snapshot).await;
     Ok(created.outcome)
 }

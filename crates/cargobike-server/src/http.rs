@@ -205,9 +205,18 @@ async fn list_releases(
 async fn create_release(
     State(state): State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<axum::response::Response, ApiError> {
     let _ = &caller; // authorization below 
+    // F-109: the caller-supplied create identity — a retried request
+    // with the same key converges on the first attempt's release.
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
     let application = body
         .get("application")
         .and_then(serde_json::Value::as_str)
@@ -252,7 +261,15 @@ async fn create_release(
         Err(error) => return Err(auth_to_api(&error)),
     };
 
-    let outcome = create_release_core(state.as_ref(), app, &application, &version, None).await?;
+    let outcome = create_release_core(
+        state.as_ref(),
+        app,
+        &application,
+        &version,
+        None,
+        idempotency_key.as_deref(),
+    )
+    .await?;
     if !outcome.created {
         // a duplicate create answers 200 with the existing release.
         return Ok((StatusCode::OK, axum::Json(outcome.document)).into_response());
@@ -592,6 +609,7 @@ async fn retry_release(
         &application,
         &version,
         Some(id.to_string().as_str()),
+        None,
     )
     .await?;
     let location = format!(

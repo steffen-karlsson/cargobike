@@ -249,8 +249,13 @@
   (`owner_id`) authorization in `authorize_create`, periodic rescan +
   SIGHUP rescan, name-collision error, discovered-name validation + skip
   logging, per-env custom `match`. Config shapes parse; nothing consumes them.
-- [ ] `Idempotency-Key` header acceptance on create (F-109 second half;
-  primary dedupe exists).
+- [x] `Idempotency-Key` header acceptance on create (F-109 second
+  half): the key precedes everything — a retried create with the same
+  key converges on the first attempt's release with 200 (whatever the
+  body), a fresh key records `key → release` after the insert
+  (first writer wins, `ON DELETE CASCADE` follows the release out so a
+  deleted release's key provisions fresh). The lifecycle E2E covers
+  202 → same-key 200 → delete → same-key 202.
 - [ ] Create response should also surface `paused`-application rejection
   (F-142) — `paused` shapes parse but enforce nowhere (per-app and per-env).
 - [ ] Curated env overrides list (F-125) covers 6 scalars; PRD's curated list +
