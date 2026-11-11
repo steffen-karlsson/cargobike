@@ -402,9 +402,11 @@ pub struct ProviderConfig {
 pub struct ProviderAuth {
     /// The App ID, string .
     pub app_id: String,
-    /// The App's installation the provider drives (the per-repo
-    /// installation lookup is pending work; until then the config
-    /// pins one installation).
+    /// The App's installation the provider drives. Present = the
+    /// provider pins that installation (and the webhook receiver
+    /// refuses deliveries from any other, F-51). ABSENT = F-122's
+    /// per-repo shape: each repository call resolves its own
+    /// installation and mints a repository-scoped token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_id: Option<String>,
     /// Private key (the secret-shaped).

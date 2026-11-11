@@ -23,6 +23,9 @@ cargobike-core = { path = "../cargobike-core" }
 jsonwebtoken.workspace = true
 http = "1.5.0"
 globset.workspace = true
+# The scoped-token cache (F-122): the async lock and the expiry clock.
+tokio = { workspace = true }
+time = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6.5"

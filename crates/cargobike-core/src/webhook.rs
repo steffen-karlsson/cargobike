@@ -30,12 +30,48 @@ pub enum NormalisedEvent {
         /// Who closed it (the actor; correlation errs on the empty
         /// side but keeps the sender when the payload carries it).
         sender: String,
+        /// The repository's owner/name (F-49/F-51: the provider's
+        /// allow/deny globs match against it; empty when the payload
+        /// carries none).
+        #[serde(default)]
+        repository_path: String,
+        /// The delivery's installation id (F-51: the installation
+        /// allowlist check; GitHub App deliveries carry one).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        installation_id: Option<u64>,
     },
     /// Any other event: persisted, acknowledged, ignored .
     Unrecognised {
         /// Provider event name, recorded for the audit log.
         provider_event: String,
     },
+}
+
+impl NormalisedEvent {
+    /// The repository's owner/name, when the delivery carried one
+    /// (the allowlist glob match's subject; F-49/F-51).
+    pub fn repository_path(&self) -> Option<&str> {
+        match self {
+            Self::TagPush(push) => {
+                (!push.repository_path.is_empty()).then_some(push.repository_path.as_str())
+            }
+            Self::ChangeRequestClosed {
+                repository_path, ..
+            } => (!repository_path.is_empty()).then_some(repository_path.as_str()),
+            Self::Unrecognised { .. } => None,
+        }
+    }
+
+    /// The delivery's installation id, when it carried one (F-51).
+    pub fn installation_id(&self) -> Option<u64> {
+        match self {
+            Self::TagPush(push) => push.installation_id,
+            Self::ChangeRequestClosed {
+                installation_id, ..
+            } => *installation_id,
+            Self::Unrecognised { .. } => None,
+        }
+    }
 }
 
 /// A tag push delivery .
@@ -51,6 +87,15 @@ pub struct TagPush {
     pub repository_id: String,
     /// Pusher display name (the actor; the reconciler uses the same).
     pub sender: String,
+    /// The repository's owner/name (F-49/F-51: the provider's allow/
+    /// deny globs match against it; empty when the payload carries
+    /// none).
+    #[serde(default)]
+    pub repository_path: String,
+    /// The delivery's installation id (F-51: the installation
+    /// allowlist check; GitHub App deliveries carry one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<u64>,
 }
 
 /// The repository id's read: GitHub carries numbers, the other halves
@@ -137,6 +182,16 @@ pub fn normalise(event_name: &str, body: &[u8]) -> VerifyResult {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
+                    // F-49/F-51: the allowlist's glob subject and the
+                    // installation pin's comparison value.
+                    repository_path: delivery
+                        .pointer("/repository/full_name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    installation_id: delivery
+                        .pointer("/installation/id")
+                        .and_then(serde_json::Value::as_u64),
                 }));
             }
             Ok(NormalisedEvent::Unrecognised {
@@ -179,11 +234,25 @@ pub fn normalise(event_name: &str, body: &[u8]) -> VerifyResult {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            // F-49/F-51: the allowlist's glob subject (the base repo's
+            // full name, the delivery repository's as fallback) and the
+            // installation pin's comparison value.
+            let repository_path = delivery
+                .pointer("/pull_request/base/repo/full_name")
+                .or_else(|| delivery.pointer("/repository/full_name"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let installation_id = delivery
+                .pointer("/installation/id")
+                .and_then(serde_json::Value::as_u64);
             Ok(NormalisedEvent::ChangeRequestClosed {
                 number,
                 merged,
                 repository_id,
                 sender,
+                repository_path,
+                installation_id,
             })
         }
         other => Ok(NormalisedEvent::Unrecognised {
@@ -231,11 +300,78 @@ mod tests {
             sha: "abc123".to_owned(),
             repository_id: "123456".to_owned(),
             sender: "ska".to_owned(),
+            repository_path: "org/repo".to_owned(),
+            installation_id: Some(42),
         });
         let json = serde_json::to_value(&event).expect("event must serialise");
         assert_eq!(json["kind"], "tag-push");
         let back: NormalisedEvent = serde_json::from_value(json).expect("event must deserialise");
         assert_eq!(back, event);
+    }
+
+    #[test]
+    fn test_a_tag_push_carries_the_allowlist_fields() {
+        // F-49/F-51: the repository path and the installation id ride
+        // the normalised event (the receiver's allowlist matches them).
+        let event = normalise(
+            "push",
+            br#"{"ref":"refs/tags/v1.0.0","after":"abc",
+                 "repository":{"id":42,"full_name":"my-org/my-service"},
+                 "installation":{"id":7},
+                 "sender":{"login":"ska"}}"#,
+        )
+        .expect("the push normalises");
+        let NormalisedEvent::TagPush(push) = &event else {
+            panic!("a tag push: {event:?}");
+        };
+        assert_eq!(push.repository_path, "my-org/my-service");
+        assert_eq!(push.installation_id, Some(7));
+        assert_eq!(event.repository_path(), Some("my-org/my-service"));
+        assert_eq!(event.installation_id(), Some(7));
+    }
+
+    #[test]
+    fn test_a_closed_pull_request_carries_the_allowlist_fields() {
+        // The base repo's full name is the CR correlation's repository
+        // path (the delivery repository's is the fallback).
+        let event = normalise(
+            "pull_request",
+            br#"{"action":"closed",
+                 "pull_request":{"number":9,"merged":true,
+                   "base":{"repo":{"id":42,"full_name":"my-org/my-service"}}},
+                 "installation":{"id":7},
+                 "sender":{"login":"ska"}}"#,
+        )
+        .expect("the pull request normalises");
+        let NormalisedEvent::ChangeRequestClosed {
+            repository_path,
+            installation_id,
+            ..
+        } = &event
+        else {
+            panic!("a closed CR: {event:?}");
+        };
+        assert_eq!(repository_path, "my-org/my-service");
+        assert_eq!(*installation_id, Some(7));
+    }
+
+    #[test]
+    fn test_a_pathless_delivery_cannot_match_the_allowlist() {
+        // Fail-closed half: no repository path, no installation — the
+        // accessors answer None and the receiver's allowlist refuses.
+        let event = normalise(
+            "push",
+            br#"{"ref":"refs/tags/v2.0.0","after":"abc",
+                 "repository":{"id":42},"sender":{"login":"ska"}}"#,
+        )
+        .expect("the push normalises");
+        let NormalisedEvent::TagPush(push) = &event else {
+            panic!("a tag push: {event:?}");
+        };
+        assert_eq!(push.repository_path, "");
+        assert_eq!(push.installation_id, None);
+        assert_eq!(event.repository_path(), None);
+        assert_eq!(event.installation_id(), None);
     }
 
     #[test]

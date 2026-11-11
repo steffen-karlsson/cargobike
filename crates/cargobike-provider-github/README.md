@@ -32,10 +32,10 @@ Components:
 
 The Phase 4 REST/webhook surface is implemented, with the wiremock lifecycle
 suite green; the GHES `api_url` base rides the provider's build (the config's
-`api_url` reaches `Octocrab::builder().base_uri`). Still pending: 4.3's
+`api_url` reaches `Octocrab::builder().base_uri`), and F-122's per-repo
+installation mode is in (below). Still pending: 4.3's
 `graphql_client` typed queries. Known gaps tracked in
-[`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md) §6: per-repo
-installation lookup (the config pins one static installation id today).
+[`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md) §6.
 
 ### Minimal GitHub App permission set (F-66)
 
@@ -63,8 +63,10 @@ Notes:
   branch additionally needs **bypass** on that branch's protection rule (or
   the rule must exempt the App) — that is the registry's explicit opt-in,
   never a permission this provider grants itself.
-- The installation token should be scoped to the repositories the applications
-  actually release; per-repo installation lookup (F-122) is still pending.
+- The F-122 per-repo mode (below) mints each call's token scoped to the single
+  repository with exactly this permission subset — the mint request can only
+  NARROW the installation's grants, so the table doubles as the token's
+  `permissions` payload.
 
 ### `update_branch` (F-46): a documented v1 deviation
 
@@ -81,13 +83,32 @@ closed on non-fast-forward) when the v1.1 step type arrives.
 Construction happens at the server's boot (single place), behind the provider
 registry:
 
+### Per-repo installation lookup (F-122)
+
+`GithubAuth::App` carries `installation_id: Option<u64>`:
+
+- **`Some(id)`** — the pinned shape: one installation, octocrab caches its
+  token (today's behaviour; the small-scale deployment where the App is
+  installed once). The pinned id doubles as the webhook receiver's
+  installation allowlist (F-51): deliveries from another installation are
+  acknowledged-and-ignored.
+- **`None`** — the per-repo shape: every repository call resolves its own
+  installation (`GET /repositories/{id}/installation`) and mints an
+  installation token scoped to that single repository
+  (`repository_ids: [id]` + the permission table above as the `permissions`
+  subset). The minted clients cache per repo id until a minute before the
+  token's expiry; the minted clients inherit the provider's `api_url` base
+  (GHES included). The config's `auth.installation_id` OMITTED selects this
+  mode.
+
 ```rust
 use cargobike_provider_github::{GithubAuth, GithubProvider};
 use cargobike_core::registry::ProviderRegistry;
 
 let auth = GithubAuth::App {
     app_id: 123,
-    installation_id: 456,
+    // The pinned shape; `None` selects the per-repo resolution above.
+    installation_id: Some(456),
     private_key_pem: key, // loaded from the config's secret shape
 };
 // `api_url: None` is github.com; a value points at GitHub Enterprise

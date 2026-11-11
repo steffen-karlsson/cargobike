@@ -239,9 +239,26 @@
 - [x] **GHES `api_url`** (F-44): the config's `api_url`/`web_url` feed
   `GithubProvider::new_with_api_url` at the server's provider build
   (engine.rs); GHES builds verified by the provider's unit tests.
-- [ ] **Per-repo installation lookup (F-122, 4.1)**: `GithubAuth::App` takes one
-  static `installation_id`; no repo→installation resolution, no per-repo scoped
-  token minting.
+- [x] **Per-repo installation lookup (F-122, 4.1)**: `GithubAuth::App`'s
+  `installation_id` is now `Option` — present = the pinned static
+  client (today's behaviour, AND the webhook receiver's installation
+  allowlist, F-51); ABSENT = per-repo resolution: every call resolves
+  `GET /repositories/{id}/installation` on the app-level client and
+  mints a token scoped to that single repository
+  (`create_installation_access_token` with `repository_ids: [id]` +
+  the README's permission table as the `permissions` subset — a mint
+  can only NARROW the installation's grants). The minted clients
+  cache per repo id until a minute before expiry and INHERIT the
+  provider's `api_url` base (a fresh builder would default to
+  github.com — found the hard way in the wiremock test, which was
+  calling the real GitHub). The provider's `from_octocrab` Deref
+  shortcut is gone (no single client exists in per-repo mode); every
+  trait method resolves its client through `client_for` first (the
+  static shapes return the one client, zero overhead). Wiremock E2E:
+  `test_per_repo_calls_mint_a_repository_scoped_token` — the mint
+  body asserts `repository_ids` + the permission subset, the op rides
+  the minted token (`Authorization: Bearer ghs_minted_for_42`), and
+  the second call re-mints nothing (the cache holds).
 - [x] Minimal GitHub App permission set (4.1/F-66): documented in the
   provider's README — the permission table (metadata/contents/
   pull requests/issues/commit statuses/administration/rulesets), the
@@ -263,11 +280,27 @@
   correlation's full key and the actor both survive; the normalise lives
   in `cargobike_core::webhook::normalise_github` (the provider + the
   mock share it).
-- [ ] Installation + repository allowlist check during webhook
-  normalisation (4.4 / 8.1) — the receiver now exists and the tag-push
-  creator's app-source scan is the first cut (only apps whose
-  `source.id` match react); the `providers[].repositories` globs and the
-  installation lookup are still unwired.
+- [x] Installation + repository allowlist check during webhook
+  normalisation (4.4 / 8.1): the normalised event now carries the
+  delivery's repository path (the tag push's `repository.full_name`;
+  the CR close's `base.repo.full_name` with the delivery repository's
+  as fallback) and its `installation.id` — both `#[serde(default)]`,
+  so old persisted events stay readable — and the receiver enforces
+  F-49/F-51/F-92 on them: a pinned `auth.installation_id` refuses
+  foreign installations; `repositories.deny` globs win;
+  `repositories.allow` is deny-by-default (a path-less delivery can
+  never match — fail-closed); no pin and no `repositories` block =
+  the unscoped v1 default. Out-of-list deliveries are acknowledged
+  202-and-ignored (the signature already proved the sender — a
+  violation is a mis-scoped App, not a probe to give feedback to)
+  with the reason logged. globset with `literal_separator` (F-92's
+  anchoring). Unit: `http::tests` covers unscoped/pin/deny-wins/
+  pathless; E2E: the receiver suite's allowlist boot (allow +
+  deny-list injected) drives four deliveries — accepted, not-allowed,
+  deny-wins, path-less — and only the allowed one creates a release
+  (run-unique versions: the shared fixture DB's non-terminal dedupe
+  would otherwise turn the accepted create into a duplicate); the
+  accepted release drains (CR-recorded, cancel, delete).
 
 ## 7. F-32a provision-time checks (registry ↔ template)
 

@@ -54,6 +54,15 @@ const API_KEY: &str = "cb_webhook_test_key";
 /// fixture database never collide on the correlation's key rows.
 #[allow(clippy::expect_used, clippy::print_stderr)]
 async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvider>, String)> {
+    test_server_with(None).await
+}
+
+/// The same boot with the provider's repository allowlist injected
+/// (F-49/F-51: the `repositories` block the receiver enforces).
+#[allow(clippy::expect_used, clippy::print_stderr)]
+async fn test_server_with(
+    repositories: Option<&str>,
+) -> Option<(String, Arc<cargobike_engine::mock::MockProvider>, String)> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -97,6 +106,10 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
         .replace("{hash}", &hash)
         .replace("{url}", &url)
         .replace("{templates}", &templates_display);
+    let fixture = match repositories {
+        Some(block) => fixture.replace("    repositories_block\n", block),
+        None => fixture.replace("    repositories_block\n", ""),
+    };
     std::fs::write(&config_path, fixture).expect("write the test config");
 
     // The webhook secret the receiver materialises from. The var stays
@@ -139,6 +152,7 @@ providers:
     type: github
     webhook_secrets:
       - { env: CB_WEBHOOK_SECRET_TEST }
+    repositories_block
 
 auth:
   api_keys:
@@ -509,4 +523,184 @@ async fn test_the_closed_pull_request_correlates_and_wakes_the_wait() {
         Some(&serde_json::json!("Completed")),
         "the merged-and-verified release completed: {settled}"
     );
+}
+
+/// F-49/F-51/F-92: the delivery's installation and repository are
+/// checked against the provider's allowlist — deny-by-default, deny
+/// wins over allow, a path-less delivery cannot match. Out-of-list
+/// deliveries are acknowledged 202-and-ignored (the signature already
+/// proved the sender; a violation is a mis-scoped App, not a probe to
+/// give feedback to) and never create releases.
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::expect_used, clippy::print_stderr)]
+async fn test_out_of_allowlist_deliveries_are_acknowledged_and_ignored() {
+    let repositories = "    repositories:\n      allow: [\"allowed-org/*\"]\n      deny: [\"allowed-org/secret-*\"]\n";
+    let Some((base, mock, _scratch)) = test_server_with(Some(repositories)).await else {
+        return;
+    };
+    let tag_run = run_tag(&base);
+    // Run-unique versions: the fixture database is shared, and a stale
+    // non-terminal row would turn the ALLOWED create into a duplicate
+    // (the (application, version) dedupe) — the test wants a fresh
+    // create each run.
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_micros();
+    // LOW versions: the suite's own tests release `3.0.0` for the same
+    // (application, environment) — the supersede ordering guard lets a
+    // HIGHER version take the lease from a lower holder, and a higher
+    // holder makes their create REJECT. A 1.x holder always loses to
+    // them, so parallel runs interfere in the safe direction.
+    let versions = [
+        (format!("v1.1.{micros}"), "sha-1", "allowed-org/repo"),
+        (format!("v1.2.{micros}"), "sha-2", "other-org/repo"),
+        (format!("v1.3.{micros}"), "sha-3", "allowed-org/secret-repo"),
+        (format!("v1.4.{micros}"), "sha-4", ""),
+    ];
+    // The F-95 half: the mock's tag object is the truth, so every tag
+    // the deliveries push is seeded (only the ALLOWED one is ever read).
+    for (tag, sha, _) in &versions {
+        mock.seed_tag(tag, sha);
+    }
+    let expected = ["accepted", "ignored", "ignored", "ignored"];
+    for (index, ((tag, sha, full_name), expected)) in versions.iter().zip(expected).enumerate() {
+        let repository = if full_name.is_empty() {
+            format!(r#"{{"id":"wh-{tag_run}"}}"#)
+        } else {
+            format!(r#"{{"id":"wh-{tag_run}","full_name":"{full_name}"}}"#)
+        };
+        let body = format!(
+            r#"{{"ref":"refs/tags/{tag}","after":"{sha}","repository":{repository},"sender":{{"login":"ska"}}}}"#
+        );
+        let (status, json) = deliver(
+            &base,
+            "github",
+            &signed_delivery(
+                "push",
+                &format!("allowlist-{tag_run}-{index}"),
+                body.as_bytes(),
+            ),
+            body.as_bytes(),
+        )
+        .await;
+        assert_eq!(status, 202, "every delivery acknowledges: {json}");
+        assert_eq!(json["action"], *expected, "the allowlist decided: {json}");
+    }
+
+    // Only the allowed delivery created its release; the ignored tags
+    // never reached the create (the poll loop asserts their absence
+    // and the accepted one's presence at the same time).
+    let client = reqwest::Client::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    // The query carries the EXTRACTED version (the tag_format's `v`
+    // prefix never reaches the spec).
+    let mut found = std::collections::BTreeSet::new();
+    loop {
+        for (tag, _, _) in &versions {
+            let version = tag.strip_prefix('v').expect("the version");
+            let page = client
+                .get(format!(
+                    "{base}/api/v1/releases?application=tag-service&version={version}"
+                ))
+                .header("authorization", format!("Bearer {API_KEY}"))
+                .send()
+                .await
+                .expect("the list sends");
+            let page_json: serde_json::Value = page.json().await.expect("the page");
+            if page_json["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+            {
+                found.insert(tag.to_owned());
+            }
+        }
+        if found.contains(&versions[0].0) || tokio::time::Instant::now() >= deadline {
+            assert_eq!(
+                found,
+                std::collections::BTreeSet::from([versions[0].0.to_owned()]),
+                "only the allowed repository's delivery created a release"
+            );
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // The drain (the suite's convention): the accepted release holds
+    // the (tag-service, preview) lease at its merge wait — cancel
+    // AFTER the CR is recorded (a cancel-before-CR strands the change
+    // request open), then delete the row like the authed suite does.
+    // A crashed run leaving a Running holder is the suite's existing
+    // self-healing story (the next create supersedes it).
+    let created = found.iter().next().expect("the accepted tag");
+    let version = created.strip_prefix('v').expect("the version");
+    let release_id;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let page = client
+            .get(format!(
+                "{base}/api/v1/releases?application=tag-service&version={version}"
+            ))
+            .header("authorization", format!("Bearer {API_KEY}"))
+            .send()
+            .await
+            .expect("the list sends");
+        let page_json: serde_json::Value = page.json().await.expect("the page");
+        if let Some(id) = page_json
+            .pointer("/items/0/metadata/id")
+            .and_then(serde_json::Value::as_str)
+        {
+            release_id = id.to_owned();
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the accepted release never listed: {page_json}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let document = client
+            .get(format!("{base}/api/v1/releases/{release_id}"))
+            .header("authorization", format!("Bearer {API_KEY}"))
+            .send()
+            .await
+            .expect("the release reads")
+            .json::<serde_json::Value>()
+            .await
+            .expect("the release's document");
+        if document
+            .pointer("/status/environments/0/change_request/number")
+            .is_some_and(|number| !number.is_null())
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the release never recorded its change request: {document}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The cancel may already be moot — a parallel suite test's higher
+    // version can have superseded this holder mid-test (the guard
+    // above), and a terminal row refuses the cancel. The delete is
+    // what matters for the fixture database's hygiene.
+    let cancel = client
+        .post(format!("{base}/api/v1/releases/{release_id}/cancel"))
+        .header("authorization", format!("Bearer {API_KEY}"))
+        .send()
+        .await
+        .expect("the cancel sends");
+    assert!(
+        cancel.status().is_success() || cancel.status() == reqwest::StatusCode::CONFLICT,
+        "the cancel: {cancel:?}"
+    );
+    let deleted = client
+        .delete(format!("{base}/api/v1/releases/{release_id}"))
+        .header("authorization", format!("Bearer {API_KEY}"))
+        .send()
+        .await
+        .expect("the delete sends");
+    assert!(deleted.status().is_success(), "the delete: {deleted:?}");
 }

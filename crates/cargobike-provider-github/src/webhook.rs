@@ -89,6 +89,8 @@ mod tests {
                 merged: true,
                 repository_id: "7777".to_owned(),
                 sender: "ska".to_owned(),
+                repository_path: String::new(),
+                installation_id: None,
             }
         );
 
@@ -105,6 +107,8 @@ mod tests {
                 // no repo in the payload: correlation errs on the empty side.
                 repository_id: String::new(),
                 sender: String::new(),
+                repository_path: String::new(),
+                installation_id: None,
             }
         );
 

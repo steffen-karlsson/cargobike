@@ -24,14 +24,17 @@ mod webhook;
 
 pub use webhook::verify_and_normalise;
 
-/// Either a GitHub App (theirs default; app-level JWT resolved to an
-/// installation token at construction) or a personal token.
+/// Either a GitHub App (the installation may be pinned statically or
+/// resolved per repository, F-122) or a personal token.
 pub enum GithubAuth {
-    /// A GitHub App identity; the installation is required (the one
-    /// installation of the App owns the repositories Cargobike drives).
+    /// A GitHub App identity. `installation_id: Some` pins the one
+    /// installation (the small-scale shape: one App installed once,
+    /// octocrab caches its token). `installation_id: None` is the
+    /// F-122 shape: each repository call resolves its own installation
+    /// and mints a token scoped to that single repository.
     App {
         app_id: u64,
-        installation_id: u64,
+        installation_id: Option<u64>,
         private_key_pem: SecretString,
     },
     /// A fine-grained or classic PAT.
@@ -46,18 +49,66 @@ impl std::fmt::Debug for GithubAuth {
                 installation_id,
                 ..
             } => formatter.write_fmt(format_args!(
-                "App(app_id: {app_id}, installation_id: {installation_id})"
+                "App(app_id: {app_id}, installation_id: {installation_id:?})"
             )),
             Self::Token(_) => formatter.write_str("Token(<redacted>)"),
         }
     }
 }
 
+/// How the provider authenticates its API calls.
+#[derive(Clone)]
+enum ClientMode {
+    /// One prebuilt client: the PAT and the pinned-installation App
+    /// shapes (today's behaviour — octocrab caches the installation
+    /// token internally).
+    Static(octocrab::Octocrab),
+    /// F-122: an App-level client that resolves each repository's
+    /// installation and mints a token scoped to that single
+    /// repository; the minted clients cache per repo id until their
+    /// token's expiry (minus a refresh buffer).
+    PerRepo {
+        app: octocrab::Octocrab,
+        /// The api base the minted clients must inherit (GHES's
+        /// `api_url`; a fresh builder would default to github.com and
+        /// the scoped client would call the wrong host).
+        base_url: Option<String>,
+        cache: std::sync::Arc<tokio::sync::Mutex<std::collections::BTreeMap<u64, CachedScoped>>>,
+    },
+}
+
+/// One minted repository-scoped client.
+#[derive(Clone)]
+struct CachedScoped {
+    client: octocrab::Octocrab,
+    /// The token's expiry; the cache refreshes a minute early.
+    expires_at: time::OffsetDateTime,
+}
+
+/// The token's permission subset (F-122 "minimal permissions"): the
+/// README's documented permission table — a token mint request can
+/// only NARROW the installation's grants, so this pins what the
+/// provider actually uses and nothing else.
+fn minimal_permissions() -> std::collections::HashMap<String, String> {
+    [
+        ("metadata", "read"),
+        ("contents", "write"),
+        ("pull requests", "write"),
+        ("issues", "write"),
+        ("commit statuses", "write"),
+        ("administration", "read"),
+        ("rulesets", "read"),
+    ]
+    .into_iter()
+    .map(|(permission, level)| (permission.to_owned(), level.to_owned()))
+    .collect()
+}
+
 /// The octocrab-backed provider; the client is built once per instance
 /// (theirs isolation: clients live inside the step context's lifetime).
 #[derive(Clone)]
 pub struct GithubProvider {
-    github: octocrab::Octocrab,
+    mode: ClientMode,
 }
 
 impl GithubProvider {
@@ -100,41 +151,162 @@ impl GithubProvider {
         let client = builder.build().map_err(|failure| {
             ProviderError::Request(format!("the GitHub client refused to build: {failure}"))
         })?;
-        let github = match auth {
+        let mode = match auth {
             GithubAuth::App {
-                installation_id, ..
-            } => client
-                .installation(octocrab::models::InstallationId::from(*installation_id))
-                .map_err(|failure| {
-                    ProviderError::Request(format!(
-                        "the installation refused to resolve: {failure}"
-                    ))
-                })?,
-            _ => client,
+                installation_id: Some(installation_id),
+                ..
+            } => ClientMode::Static(
+                client
+                    .installation(octocrab::models::InstallationId::from(*installation_id))
+                    .map_err(|failure| {
+                        ProviderError::Request(format!(
+                            "the installation refused to resolve: {failure}"
+                        ))
+                    })?,
+            ),
+            // The F-122 shape: no pinned installation — each repository
+            // resolves its own and the token is scoped per call.
+            GithubAuth::App {
+                installation_id: None,
+                ..
+            } => ClientMode::PerRepo {
+                app: client,
+                base_url: api_url.map(str::to_owned),
+                cache: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                )),
+            },
+            GithubAuth::Token(_) => ClientMode::Static(client),
         };
-        Ok(Self { github })
+        Ok(Self { mode })
     }
 
     /// A provider over a prebuilt octocrab client (the tests point one
     /// at a mocked server; production builds with [`Self::new`]).
     pub fn from_octocrab(github: octocrab::Octocrab) -> Self {
-        Self { github }
+        Self {
+            mode: ClientMode::Static(github),
+        }
+    }
+
+    /// A per-repo provider (F-122) over a prebuilt APP-level client —
+    /// the tests point one at a mocked GitHub; production builds with
+    /// [`Self::new`] (`GithubAuth::App { installation_id: None }`),
+    /// which needs the real private key the app client's JWT signs
+    /// with. The minting flow itself needs only the client.
+    #[doc(hidden)]
+    pub fn from_app_client(app: octocrab::Octocrab, base_url: Option<&str>) -> Self {
+        Self {
+            mode: ClientMode::PerRepo {
+                app,
+                base_url: base_url.map(str::to_owned),
+                cache: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                )),
+            },
+        }
+    }
+
+    /// The client a repository's calls ride (F-122): the static shapes
+    /// share one client; the per-repo shape resolves the repository's
+    /// installation (`GET /repositories/{id}/installation`) and mints
+    /// an installation token scoped to the single repository
+    /// (`repository_ids`), cached until a minute before expiry.
+    async fn client_for(&self, repo: &CoreRepoRef) -> Result<octocrab::Octocrab, ProviderError> {
+        match &self.mode {
+            ClientMode::Static(client) => Ok(client.clone()),
+            ClientMode::PerRepo {
+                app,
+                base_url,
+                cache,
+            } => {
+                let id_u64 = *reference_id(repo)?;
+                let mut cache = cache.lock().await;
+                if let Some(hit) = cache.get(&id_u64) {
+                    if hit.expires_at > time::OffsetDateTime::now_utc() {
+                        return Ok(hit.client.clone());
+                    }
+                }
+                let id = octocrab::models::RepositoryId::from(id_u64);
+                let installation = app
+                    .repos_by_id(id)
+                    .installation()
+                    .await
+                    .map_err(|failure| {
+                        ProviderError::Request(format!(
+                            "the repository's installation refused to resolve: {failure}"
+                        ))
+                    })?;
+                let token = app
+                    .apps()
+                    .create_installation_access_token(
+                        installation.id,
+                        &octocrab::models::apps::CreateInstallationAccessToken {
+                            repository_ids: Some(vec![id]),
+                            repositories: None,
+                            permissions: Some(minimal_permissions()),
+                        },
+                    )
+                    .await
+                    .map_err(|failure| {
+                        ProviderError::Request(format!(
+                            "the repository-scoped token refused to mint: {failure}"
+                        ))
+                    })?;
+                // The expiry is RFC 3339 in the payload; a missing one
+                // caches conservatively (5 minutes) — an over-long
+                // cache would mint 401s an hour later.
+                let expires_at = token
+                    .expires_at
+                    .as_deref()
+                    .and_then(|text| {
+                        time::OffsetDateTime::parse(
+                            text,
+                            &time::format_description::well_known::Rfc3339,
+                        )
+                        .ok()
+                    })
+                    .unwrap_or_else(|| {
+                        time::OffsetDateTime::now_utc() + time::Duration::minutes(5)
+                    })
+                    - time::Duration::minutes(1);
+                let mut minted_builder = octocrab::Octocrab::builder().personal_token(token.token);
+                if let Some(base_url) = base_url {
+                    minted_builder = minted_builder.base_uri(base_url).map_err(|failure| {
+                        ProviderError::Request(format!("the api_url refused to parse: {failure}"))
+                    })?;
+                }
+                let minted = minted_builder.build().map_err(|failure| {
+                    ProviderError::Request(format!(
+                        "the repository-scoped client refused to build: {failure}"
+                    ))
+                })?;
+                cache.insert(
+                    id_u64,
+                    CachedScoped {
+                        client: minted.clone(),
+                        expires_at,
+                    },
+                );
+                Ok(minted)
+            }
+        }
     }
 
     /// The immutable-ID repo reference for octocrab's handlers.
-    fn repo_by_id(
-        &self,
+    fn repo_by_id<'a>(
+        client: &'a octocrab::Octocrab,
         repo: &CoreRepoRef,
-    ) -> Result<octocrab::repos::RepoHandler<'_>, ProviderError> {
-        Ok(self.github.repos_by_id(reference_id(repo)?))
+    ) -> Result<octocrab::repos::RepoHandler<'a>, ProviderError> {
+        Ok(client.repos_by_id(reference_id(repo)?))
     }
 
     /// The git handler by the immutable ID.
-    fn git_by_id(
-        &self,
+    fn git_by_id<'a>(
+        client: &'a octocrab::Octocrab,
         repo: &CoreRepoRef,
-    ) -> Result<octocrab::git::GitHandler<'_>, ProviderError> {
-        Ok(self.github.git_by_id(reference_id(repo)?))
+    ) -> Result<octocrab::git::GitHandler<'a>, ProviderError> {
+        Ok(client.git_by_id(reference_id(repo)?))
     }
 }
 
@@ -161,14 +333,6 @@ fn reference_sha(found: octocrab::models::repos::Ref) -> String {
     }
 }
 
-impl std::ops::Deref for GithubProvider {
-    type Target = octocrab::Octocrab;
-
-    fn deref(&self) -> &Self::Target {
-        &self.github
-    }
-}
-
 #[async_trait]
 impl Provider for GithubProvider {
     fn capabilities(&self) -> ProviderCaps {
@@ -189,8 +353,8 @@ impl Provider for GithubProvider {
         if let Some(path) = &repo.path {
             return Ok(path.clone());
         }
-        let repository = self
-            .repo_by_id(repo)?
+        let github = self.client_for(repo).await?;
+        let repository = Self::repo_by_id(&github, repo)?
             .get()
             .await
             .map_err(request_failure)?;
@@ -200,7 +364,8 @@ impl Provider for GithubProvider {
     }
 
     async fn branch_sha(&self, repo: &CoreRepoRef, branch: &str) -> ProviderResult<String> {
-        let handler = self.git_by_id(repo)?;
+        let github = self.client_for(repo).await?;
+        let handler = Self::git_by_id(&github, repo)?;
 
         let found = handler
             .get_ref(&Reference::Branch(branch.to_owned()))
@@ -214,7 +379,8 @@ impl Provider for GithubProvider {
     /// annotated tag's ref points at the tag object, so it
     /// dereferences one more hop to the commit.
     async fn tag_sha(&self, repo: &CoreRepoRef, tag: &str) -> ProviderResult<String> {
-        let handler = self.git_by_id(repo)?;
+        let github = self.client_for(repo).await?;
+        let handler = Self::git_by_id(&github, repo)?;
         let found = handler
             .get_ref(&Reference::Tag(tag.to_owned()))
             .await
@@ -242,7 +408,8 @@ impl Provider for GithubProvider {
         branch: &str,
         from_sha: &str,
     ) -> ProviderResult<()> {
-        let handler = self.git_by_id(repo)?;
+        let github = self.client_for(repo).await?;
+        let handler = Self::git_by_id(&github, repo)?;
         handler
             .create_ref(&Reference::Branch(branch.to_owned()), from_sha)
             .await
@@ -261,7 +428,8 @@ impl Provider for GithubProvider {
         if edits.is_empty() {
             return Err(ProviderError::NotFound("edits"));
         }
-        let handler = self.git_by_id(repo)?;
+        let github = self.client_for(repo).await?;
+        let handler = Self::git_by_id(&github, repo)?;
         // The branch must exist and carry our parent (the fused branch+
         // commit: the provider creates it when absent — the caller's
         // `branch_sha` find-then-create already covers the general case;
@@ -269,7 +437,8 @@ impl Provider for GithubProvider {
         let base_sha = match handler.get_ref(&Reference::Branch(branch.to_owned())).await {
             Ok(found) => reference_sha(found),
             Err(_) => {
-                let handler = self.git_by_id(repo)?;
+                let github = self.client_for(repo).await?;
+                let handler = Self::git_by_id(&github, repo)?;
                 let base = reference_sha(
                     handler
                         .get_ref(&Reference::Branch("main".to_owned()))
@@ -370,8 +539,8 @@ impl Provider for GithubProvider {
         number: u64,
     ) -> ProviderResult<ChangeRequest> {
         let (owner, name) = owner_name(self, repo).await?;
-        let pull = self
-            .github
+        let github = self.client_for(repo).await?;
+        let pull = github
             .pulls(owner.clone(), name)
             .get(number)
             .await
@@ -390,7 +559,8 @@ impl Provider for GithubProvider {
         draft: bool,
     ) -> ProviderResult<ChangeRequest> {
         let (owner, name) = owner_name(self, repo).await?;
-        let pulls = self.github.pulls(owner.clone(), name.clone());
+        let github = self.client_for(repo).await?;
+        let pulls = github.pulls(owner.clone(), name.clone());
         let mut builder = pulls.create(title, head, base).body(body);
         if draft {
             builder = builder.draft(true);
@@ -398,7 +568,7 @@ impl Provider for GithubProvider {
         let pull = builder.send().await.map_err(request_failure)?;
         // labels apply separately (the create's belt-and-bed check).
         if !labels.is_empty() {
-            self.github
+            github
                 .issues(owner, name)
                 .add_labels(pull.number, labels)
                 .await
@@ -414,8 +584,8 @@ impl Provider for GithubProvider {
     ) -> ProviderResult<Option<ChangeRequest>> {
         let (owner, name) = owner_name(self, repo).await?;
         let head_reference = format!("{owner}:{head}");
-        let page = self
-            .github
+        let github = self.client_for(repo).await?;
+        let page = github
             .pulls(owner, name)
             .list()
             .state(octocrab::params::State::Open)
@@ -431,8 +601,8 @@ impl Provider for GithubProvider {
     }
 
     async fn default_branch(&self, repo: &CoreRepoRef) -> ProviderResult<String> {
-        let repository = self
-            .repo_by_id(repo)?
+        let github = self.client_for(repo).await?;
+        let repository = Self::repo_by_id(&github, repo)?
             .get()
             .await
             .map_err(request_failure)?;
@@ -447,8 +617,8 @@ impl Provider for GithubProvider {
         file: &str,
         git_ref: &str,
     ) -> ProviderResult<Vec<u8>> {
-        let mut content = self
-            .repo_by_id(repo)?
+        let github = self.client_for(repo).await?;
+        let mut content = Self::repo_by_id(&github, repo)?
             .get_content()
             .path(file)
             .r#ref(git_ref)
@@ -468,7 +638,8 @@ impl Provider for GithubProvider {
 
     async fn comment(&self, repo: &CoreRepoRef, cr_number: u64, body: &str) -> ProviderResult<()> {
         let (owner, name) = owner_name(self, repo).await?;
-        self.github
+        let github = self.client_for(repo).await?;
+        github
             .issues(owner, name)
             .create_comment(cr_number, body)
             .await
@@ -483,7 +654,8 @@ impl Provider for GithubProvider {
         labels: &[String],
     ) -> ProviderResult<()> {
         let (owner, name) = owner_name(self, repo).await?;
-        self.github
+        let github = self.client_for(repo).await?;
+        github
             .issues(owner, name)
             .add_labels(cr_number, labels)
             .await
@@ -509,7 +681,8 @@ impl Provider for GithubProvider {
             CommitStatus::Success => octocrab::models::StatusState::Success,
             CommitStatus::Failure => octocrab::models::StatusState::Failure,
         };
-        self.repo_by_id(repo)?
+        let github = self.client_for(repo).await?;
+        Self::repo_by_id(&github, repo)?
             .create_status(sha.to_owned(), state)
             .send()
             .await
@@ -524,7 +697,8 @@ impl Provider for GithubProvider {
         comment: &str,
     ) -> ProviderResult<()> {
         let (owner, name) = owner_name(self, repo).await?;
-        self.github
+        let github = self.client_for(repo).await?;
+        github
             .pulls(owner, name)
             .update(number)
             .state(octocrab::params::pulls::State::Closed)
@@ -539,8 +713,8 @@ impl Provider for GithubProvider {
         repo: &CoreRepoRef,
     ) -> ProviderResult<Vec<ChangeRequest>> {
         let (owner, name) = owner_name(self, repo).await?;
-        let mut page = self
-            .github
+        let github = self.client_for(repo).await?;
+        let mut page = github
             .pulls(owner.clone(), name.clone())
             .list()
             .state(octocrab::params::State::Open)
@@ -565,8 +739,7 @@ impl Provider for GithubProvider {
                         .and_then(|parameter| parameter[5..].parse::<u32>().ok())
                 })
         {
-            page = self
-                .github
+            page = github
                 .pulls(owner.clone(), name.clone())
                 .list()
                 .state(octocrab::params::State::Open)
@@ -584,7 +757,8 @@ impl Provider for GithubProvider {
     }
 
     async fn delete_branch(&self, repo: &CoreRepoRef, branch: &str) -> ProviderResult<()> {
-        let handler = self.git_by_id(repo)?;
+        let github = self.client_for(repo).await?;
+        let handler = Self::git_by_id(&github, repo)?;
         handler
             .delete_ref(&Reference::Branch(branch.to_owned()))
             .await
@@ -598,8 +772,8 @@ impl Provider for GithubProvider {
         branch: &str,
     ) -> ProviderResult<cargobike_core::provider::BranchProtection> {
         let (owner, name) = owner_name(self, repo).await?;
-        let protection = self
-            .github
+        let github = self.client_for(repo).await?;
+        let protection = github
             .repos(owner, name)
             .branches()
             .protection(branch)
@@ -621,8 +795,8 @@ impl Provider for GithubProvider {
         tag_pattern: &str,
     ) -> ProviderResult<bool> {
         let (owner, name) = owner_name(self, repo).await?;
-        let rulesets = self
-            .github
+        let github = self.client_for(repo).await?;
+        let rulesets = github
             .repos(owner.clone(), name.clone())
             .rulesets()
             .list()
@@ -642,8 +816,8 @@ impl Provider for GithubProvider {
         // The mutation keys on the CR's GLOBAL node id; fetch it once
         // (the REST shape) before the GraphQL exchange.
         let (owner, name) = owner_name(self, repo).await?;
-        let pull = self
-            .github
+        let github = self.client_for(repo).await?;
+        let pull = github
             .pulls(owner.clone(), name.clone())
             .get(number)
             .await
@@ -657,11 +831,9 @@ impl Provider for GithubProvider {
             "query": "mutation($gh_pr: ID!) { enablePullRequestAutoMerge(pullRequestId: $gh_pr, mergeMethod: MERGE) { pullRequest { number } } }",
             "variables": { "gh_pr": node_id }
         });
-        let response: serde_json::Value = self
-            .github
-            .graphql(&payload)
-            .await
-            .map_err(request_failure)?;
+        let github = self.client_for(repo).await?;
+        let response: serde_json::Value =
+            github.graphql(&payload).await.map_err(request_failure)?;
         // octocrab unwraps the response's data member; a GraphQL errors
         // member is the mutation's refusal.
         if response.get("errors").is_some() {
@@ -682,7 +854,8 @@ impl Provider for GithubProvider {
     }
 
     async fn create_tag(&self, repo: &CoreRepoRef, tag: &str, sha: &str) -> ProviderResult<()> {
-        let handler = self.git_by_id(repo)?;
+        let github = self.client_for(repo).await?;
+        let handler = Self::git_by_id(&github, repo)?;
         handler
             .create_tag(tag, format!("release {tag}"), sha, "commit")
             .send()
@@ -699,7 +872,8 @@ impl Provider for GithubProvider {
         body: &str,
     ) -> ProviderResult<()> {
         let (owner, repo_name) = owner_name(self, repo).await?;
-        self.github
+        let github = self.client_for(repo).await?;
+        github
             .repos(owner, repo_name)
             .releases()
             .create(tag)

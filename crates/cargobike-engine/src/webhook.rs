@@ -188,6 +188,8 @@ async fn deliver(
             merged,
             repository_id,
             sender: _,
+            repository_path: _,
+            installation_id: _,
         } => {
             let Some(row) = services
                 .correlations

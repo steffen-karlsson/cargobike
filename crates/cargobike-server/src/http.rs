@@ -977,6 +977,26 @@ async fn receive_webhook(
         )
             .into_response());
     }
+    // F-49/F-51: the delivery's installation and repository are
+    // checked against the provider's allowlist. The signature already
+    // proved the sender — a violation here is a mis-scoped App, so the
+    // delivery is acknowledged 202 and ignored (no action, no probe
+    // feedback), with the reason logged.
+    if let Some(reason) = allowlist_reason(&state, &provider_name, &event) {
+        tracing::warn!(
+            provider = %provider_name,
+            %reason,
+            "the webhook delivery is outside the provider's allowlist: ignored"
+        );
+        return Ok((
+            StatusCode::ACCEPTED,
+            axum::Json(serde_json::json!({
+                "received": true,
+                "action": "ignored",
+            })),
+        )
+            .into_response());
+    }
     let args = cargobike_engine::WebhookArgs {
         provider: provider_name.clone(),
         delivery_id: delivery,
@@ -1013,6 +1033,107 @@ async fn receive_webhook(
         .into_response())
 }
 
+/// The provider allowlist verdict (F-49/F-51/F-92): `Some(reason)` =
+/// the delivery is outside the provider's allowlist and must be
+/// ignored. The checks, deny-by-default per F-92:
+///
+/// - `repositories.deny` globs match the delivery's repository path →
+///   denied (deny wins over allow).
+/// - `repositories.allow` non-empty: the path must match at least one
+///   allow glob. A delivery WITHOUT a path cannot match — denied
+///   fail-closed.
+/// - A pinned `auth.installation_id`: the delivery's installation
+///   must equal it (a delivery from another installation is another
+///   App scope entirely). The per-repo shape (F-122, no pin) has the
+///   repository allowlist as its boundary instead.
+///
+/// No `repositories` block and no installation pin = the provider is
+/// unscoped (v1's default; the audit's defence-in-depth note) — allowed.
+fn allowlist_reason(
+    state: &Arc<AppState>,
+    provider_name: &str,
+    event: &cargobike_core::webhook::NormalisedEvent,
+) -> Option<String> {
+    let config = state.config.borrow().clone();
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.name == provider_name)?;
+    allowlist_verdict(provider, event)
+}
+
+/// The pure verdict (F-49/F-51/F-92): `Some(reason)` = the delivery is
+/// outside the provider's allowlist and must be ignored. The checks,
+/// deny-by-default per F-92:
+///
+/// - A pinned `auth.installation_id`: the delivery's installation
+///   must equal it (a delivery from another installation is another
+///   App scope entirely). The per-repo shape (F-122, no pin) has the
+///   repository allowlist as its boundary instead.
+/// - `repositories.deny` globs match the delivery's repository path →
+///   denied (deny wins over allow).
+/// - `repositories.allow` non-empty: the path must match at least one
+///   allow glob. A delivery WITHOUT a path cannot match — denied
+///   fail-closed.
+///
+/// No installation pin and no `repositories` block = the provider is
+/// unscoped (v1's default; the audit's defence-in-depth note) —
+/// allowed.
+fn allowlist_verdict(
+    provider: &crate::config::ProviderConfig,
+    event: &cargobike_core::webhook::NormalisedEvent,
+) -> Option<String> {
+    if let Some(pinned) = provider
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.installation_id.as_deref())
+    {
+        if event
+            .installation_id()
+            .is_some_and(|delivery| pinned.parse::<u64>().is_ok_and(|pinned| pinned != delivery))
+        {
+            return Some(format!(
+                "the delivery's installation does not match the provider's pinned installation `{pinned}`"
+            ));
+        }
+    }
+    let set = provider.repositories.as_ref()?;
+    let matcher = |globs: &[String]| {
+        globs
+            .iter()
+            .filter_map(|pattern| {
+                globset::GlobBuilder::new(pattern)
+                    .literal_separator(true)
+                    .build()
+                    .ok()
+                    .map(|glob| glob.compile_matcher())
+            })
+            .collect::<Vec<_>>()
+    };
+    let deny = matcher(&set.deny);
+    let allow = matcher(&set.allow);
+    let path = event.repository_path();
+    if let Some(path) = path {
+        if deny.iter().any(|glob| glob.is_match(path)) {
+            return Some(format!("the repository `{path}` matches the deny list"));
+        }
+    }
+    if !set.allow.is_empty() {
+        let matched = path.is_some_and(|path| allow.iter().any(|glob| glob.is_match(path)));
+        if !matched {
+            return Some(match path {
+                Some(path) => {
+                    format!("the repository `{path}` is not on the allow list")
+                }
+                None => {
+                    "the delivery carries no repository path to match the allow list".to_owned()
+                }
+            });
+        }
+    }
+    None
+}
+
 /// Maps an auth failure to the problem response when it surfaces in a
 /// handler (the rather than the middleware).
 fn auth_to_api(error: &crate::auth::AuthError) -> ApiError {
@@ -1024,4 +1145,100 @@ fn auth_to_api(error: &crate::auth::AuthError) -> ApiError {
         AuthError::ForbiddenResource => (StatusCode::FORBIDDEN, "forbidden-resource"),
     };
     ApiError::new(status, error.code(), slug, format!("{error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ProviderAuth, ProviderConfig, RepositorySet, SecretValue};
+
+    fn provider_with(
+        repositories: Option<RepositorySet>,
+        installation: Option<&str>,
+    ) -> ProviderConfig {
+        ProviderConfig {
+            name: "github".to_owned(),
+            r#type: "github".to_owned(),
+            api_url: None,
+            web_url: None,
+            auth: installation.map(|pinned| ProviderAuth {
+                app_id: "123".to_owned(),
+                installation_id: Some(pinned.to_owned()),
+                private_key: SecretValue::Env {
+                    env: "never_read".to_owned(),
+                },
+            }),
+            webhook_secrets: None,
+            repositories,
+            extension: None,
+        }
+    }
+
+    fn tag_push(
+        path: Option<&str>,
+        installation: Option<u64>,
+    ) -> cargobike_core::webhook::NormalisedEvent {
+        cargobike_core::webhook::NormalisedEvent::TagPush(cargobike_core::webhook::TagPush {
+            tag: "v1.0.0".to_owned(),
+            sha: "abc".to_owned(),
+            repository_id: "42".to_owned(),
+            sender: "ska".to_owned(),
+            repository_path: path.unwrap_or_default().to_owned(),
+            installation_id: installation,
+        })
+    }
+
+    fn set(allow: &[&str], deny: &[&str]) -> RepositorySet {
+        RepositorySet {
+            allow: allow.iter().map(|glob| glob.to_string()).collect(),
+            deny: deny.iter().map(|glob| glob.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_an_unscoped_provider_allows_everything() {
+        let provider = provider_with(None, None);
+        assert!(allowlist_verdict(&provider, &tag_push(None, None)).is_none());
+    }
+
+    #[test]
+    fn test_the_installation_pin_refuses_foreign_installations() {
+        let provider = provider_with(None, Some("7"));
+        assert!(
+            allowlist_verdict(&provider, &tag_push(Some("org/repo"), Some(8)))
+                .expect("a foreign installation is out of the allowlist")
+                .contains("pinned installation")
+        );
+        // The pinned installation itself, and a delivery carrying no
+        // installation at all (a PAT-shaped webhook), pass the pin.
+        assert!(allowlist_verdict(&provider, &tag_push(Some("org/repo"), Some(7))).is_none());
+        assert!(allowlist_verdict(&provider, &tag_push(Some("org/repo"), None)).is_none());
+    }
+
+    #[test]
+    fn test_deny_wins_and_allow_requires_a_match() {
+        let provider = provider_with(
+            Some(set(&["allowed-org/*"], &["allowed-org/secret-*"])),
+            None,
+        );
+        assert!(allowlist_verdict(&provider, &tag_push(Some("allowed-org/repo"), None)).is_none());
+        assert!(
+            allowlist_verdict(&provider, &tag_push(Some("allowed-org/secret-repo"), None))
+                .expect("the deny list wins")
+                .contains("deny list")
+        );
+        assert!(
+            allowlist_verdict(&provider, &tag_push(Some("other-org/repo"), None))
+                .expect("a non-allowed repository is out")
+                .contains("not on the allow list")
+        );
+    }
+
+    #[test]
+    fn test_a_pathless_delivery_is_fail_closed() {
+        let provider = provider_with(Some(set(&["allowed-org/*"], &[])), None);
+        let reason = allowlist_verdict(&provider, &tag_push(None, None))
+            .expect("no path can never match the allow list");
+        assert!(reason.contains("no repository path"));
+    }
 }

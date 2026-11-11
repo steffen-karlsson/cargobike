@@ -659,16 +659,19 @@ fn build_github_provider(
         )));
     };
     let private_key_material = materialise(&auth.private_key, &config.secrets)?;
-    let installation = auth
-        .installation_id
-        .clone()
-        .and_then(|text| text.parse::<u64>().ok())
-        .ok_or_else(|| {
+    // F-122: a pinned `installation_id` binds the provider to that
+    // installation; ABSENT means per-repo resolution — each repository
+    // call resolves its own installation and mints a repository-scoped
+    // token (the provider's client cache).
+    let installation = match auth.installation_id.as_deref() {
+        Some(text) => Some(text.parse::<u64>().map_err(|failure| {
             crate::config::ConfigError::Parse(format!(
-                "the github provider `{}` needs an installation_id (the per-repo installation lookup is the next phase's work)",
+                "the github provider `{}`'s installation_id does not parse: {failure}",
                 provider.name
             ))
-        })?;
+        })?),
+        None => None,
+    };
     let app_id = auth.app_id.parse::<u64>().map_err(|failure| {
         crate::config::ConfigError::Parse(format!(
             "the github provider `{}`'s app_id refused to parse: {failure}",

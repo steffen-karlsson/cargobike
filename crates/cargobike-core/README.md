@@ -21,7 +21,7 @@ What lives here:
 | `edits` | Structural edit application over JSON/YAML/TOML with dot-notation paths — never text substitution |
 | `step` | `StepType` trait, `StepContext`, `StepOutput`, `EnvRef` (carries the registry's per-environment facts: repo, edits, commit message, the `require_branch_protection` flag — default `true`, so a missing stamp fails closed — and the R11 `change_request` overrides, `ChangeRequestEnv`), the `HttpService` seam for SSRF-guarded HTTP (the server and sidecar clients implement it)  |
 | `registry` | `ProviderRegistry` (resolve by name) and `CredentialStore` (resolve `{ secret: <name> }`)  |
-| `webhook` | Provider-neutral `NormalisedEvent` shapes: `TagPush`, `ChangeRequestClosed` (carries the repo id + the sender for the correlation), `Unrecognised`; plus `normalise_github` — the shared HMAC-SHA256 delivery verification (constant-time, two-secret rotation) both the GitHub provider and the engine's harness mock run, so their behaviour cannot drift |
+| `webhook` | Provider-neutral `NormalisedEvent` shapes: `TagPush`, `ChangeRequestClosed` (carry the repo id + the sender for the correlation, plus the repository path and the installation id the receiver's F-49/F-51 allowlist matches), `Unrecognised`; plus `normalise_github` — the shared HMAC-SHA256 delivery verification (constant-time, two-secret rotation) both the GitHub provider and the engine's harness mock run, so their behaviour cannot drift |
 
 ## Status
 
