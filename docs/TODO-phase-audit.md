@@ -475,5 +475,12 @@
 - [x] Per-crate `AGENTS.md` ×7 (develop/test/document/contribute + evaluation criteria).
 - [x] Global `README.md` rewrite (was a 2-line stub) referencing the crate docs.
 - [x] Global `AGENTS.md` (repo-level) referencing the per-crate files.
-- [ ] Keep both up-to-date per commit going forward (standing rule, now also
-      encoded in the root `AGENTS.md` §"Standing documentation rule").
+- [x] Keep both up-to-date per commit going forward (standing rule, now also
+      encoded in the root `AGENTS.md` §"Standing documentation rule") —
+      the rule is mechanically enforced (`make docs-check` refuses a
+      changeset that touches `crates/<crate>/` without the crate's
+      README/AGENTS pair; the pre-commit hook runs the check on the
+      staged diff), and every commit this audit has produced updated
+      the touched crates' pairs in the same commit. The item is a
+      process invariant, and the invariant is now carried by the
+      tooling, not by memory.
