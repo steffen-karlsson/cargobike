@@ -487,13 +487,46 @@
 - [ ] Approval auth matrix (F-96): self-approval, distinct count, reject,
   409-while-not-PendingApproval, attempt+head-SHA binding — approvals endpoint
   doesn't exist yet (Phase 5.5, but keep the CLI-side covered by 4.6/4.9 too).
-- [ ] Watch exit-code matrix (US-4) incl. Skipped-success and reconnects —
-  blocked by the watch command.
-- [ ] Fork reproducer (`ForkFrom::LastFailure`, retry) is untested (US-7
-  dependent). A stalled wait's wake/verify/complete half is covered in-process
-  by the reconciler suite (`tests/engine_integration/`); a cross-process kill
-  during a wait remains unprobed (the milestone hook fires at action steps
-  only).
+- [x] Watch exit-code matrix (US-4) incl. Skipped-success and reconnects —
+  landed with `release watch` (§5's tick above): the wiremock suite
+  drives the binary through 0-completed/0-skipped/1-failed/2-canceled/
+  3-timeout, 10/11/12-client, and the lifecycle E2E asserts the
+  `Last-Event-ID` resume.
+- [x] Fork reproducer (US-7's durable substrate), the cross-process kill
+  during a wait: `crash_while_parked_in_the_merge_wait_converges` —
+  the harness boots the waits template with NO milestone, the driver
+  SIGKILLs once the CR is open and the workflow has settled into the
+  parked `dbos::recv` (the raw kill, not the milestone hook — the
+  hook fires at action steps only, and a parked wait is the state the
+  hook cannot reach), the CR merges in the meantime (the mock's file
+  state is the provider's truth), and the recovering process's
+  launch-time sweep re-enqueues BOTH the interpreter (recorded steps
+  replay, the recv re-parks) and the harness's own reconciler loop
+  (registered every boot, started only by `start`; its killed PENDING
+  row is the recovery's) — the sweep sends the merged signal into the
+  durable topic, the re-parked recv consumes it, and the release
+  completes with exactly one commit/CR/branch. The in-process
+  `ForkFrom::LastFailure` half stays covered by
+  `test_fork_retry_reruns_only_the_failed_step`.
+  The work also root-caused the long-standing crash-harness load
+  flake ("the kill milestone did not fire" under full-suite runs),
+  which the reproducer's failures finally made reproducible: (a) the
+  harness's app names repeat across suite runs while a lease OUTLIVES
+  its release in the shared fixture DB — a stale holder from a
+  previous run made `enter` refuse before any action step (the
+  environment terminal-writes, the milestone never fires); the driver
+  now wipes its app's lease/release rows before each case (the same
+  `clear_application_rows` convention the in-process tests use).
+  (b) a panicked test leaked its hold process, and with the shared
+  default DBOS schema + executor id the orphan ADOPTED other boots'
+  pending workflows and executed them against its own scratch — the
+  harness now derives a per-boot schema from the release id, and the
+  driver's `KillOnDrop` guard kills children on unwind. (c) the
+  harness never seeded the release row (only the mock's side effects
+  were asserted); it now seeds it with a boot-unique version (the
+  non-terminal `(application, version)` key refuses re-runs whose
+  previous row never terminalized). Three consecutive full `make
+  test` runs green after the fix.
 - [x] The webhook receiver's E2E (5.1/5.2):
   `crates/cargobike-server/tests/webhook_receiver.rs` — the signed
   tag-push, the closed-PR correlation driving the wait to `Completed`,

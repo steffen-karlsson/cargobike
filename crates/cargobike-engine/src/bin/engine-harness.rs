@@ -146,10 +146,19 @@ environments:
         template_kind: Option<&str>,
         database_url: String,
     ) -> anyhow::Result<()> {
+        // The schema is unique PER BOOT (derived from the release id):
+        // the old shared default let a leaked hold process — a test
+        // that panicked past its holder.kill() — ADOPT another test's
+        // pending workflow rows (same schema, same default executor
+        // id) and execute them against its own scratch, so the other
+        // test's milestone never fired and its mock never converged.
+        // With per-boot schemas a leak can at worst idle.
+        let schema = format!("cbh_{}", release_id.replace('-', "_"));
         let config = dbos::Config {
             // The executor id stays shared ('local', the default): the
             // recovery's re-enqueue adopts PENDING rows by executor id,
             // so the recovering process must own the killed one's rows.
+            schema,
             app_version: Some(format!("{app}-1")),
             ..dbos::Config::new(app.clone(), database_url.clone())
         };
@@ -160,6 +169,74 @@ environments:
             .map_err(|error| anyhow::anyhow!("pool: {error}"))?;
 
         eprintln!("boot: pool connected");
+        // The release row (the interpreter's status writes need it; the
+        // old driver only read the mock's side effects, so its absence
+        // went unnoticed — the parked-wait reproducer asserts the
+        // phase, and the row is the truth it reads). Idempotent: both
+        // the killed and the recovering boot run it. The version is
+        // unique per boot (derived from the release id): the
+        // non-terminal `(application, version)` unique key would
+        // otherwise refuse a re-run of the same app whose previous
+        // row never terminalized.
+        let version = {
+            let tail = release_id
+                .chars()
+                .rev()
+                .take(8)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            let suffix = u32::from_str_radix(tail.as_str(), 16)
+                .map_err(|error| anyhow::anyhow!("the release id tail: {error}"))?;
+            format!("9.9.{suffix}")
+        };
+        {
+            let release_uuid: uuid::Uuid = release_id
+                .parse()
+                .map_err(|error| anyhow::anyhow!("the release id: {error}"))?;
+            let now = sqlx::types::time::OffsetDateTime::now_utc();
+            let document = serde_json::json!({
+                "metadata": {
+                    "id": release_id,
+                    "created_at": now.format(
+                        &time::format_description::well_known::Rfc3339
+                    ).unwrap_or_default(),
+                    "updated_at": now.format(
+                        &time::format_description::well_known::Rfc3339
+                    ).unwrap_or_default(),
+                    "resource_version": 1,
+                    "retried_from": serde_json::Value::Null,
+                    "labels": {},
+                    "annotations": {},
+                },
+                "spec": {
+                    "application": app,
+                    "version": version,
+                    "source": { "provider": "github", "id": "42", "path": null },
+                    "template": "harness@1",
+                },
+                "status": {
+                    "phase": "Pending",
+                    "error": serde_json::Value::Null,
+                    "environments": [],
+                },
+            });
+            sqlx::query(
+                "INSERT INTO releases (id, application, version, phase, \
+                 terminal, created_at, updated_at, document) \
+                 VALUES ($1, $2, $5, 'Pending', FALSE, $3, $3, $4) \
+                 ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(release_uuid)
+            .bind(&app)
+            .bind(now)
+            .bind(&document)
+            .bind(&version)
+            .execute(&pool)
+            .await
+            .map_err(|error| anyhow::anyhow!("the release row: {error}"))?;
+        }
         // The engine's lease repository needs the server schema; the
         // driver harness owns the fixture, so it migrates idempotently.
         sqlx::migrate!("../cargobike-server/migrations")
@@ -176,11 +253,30 @@ environments:
             "github",
             mock.clone() as Arc<dyn cargobike_core::provider::Provider>,
         );
+        let providers = Arc::new(providers);
 
         let instance = dbos::DBOS::new(config);
+        // The reconciler (the parked merge-wait's waker): registered on
+        // every boot — the killed run's PENDING loop row is re-enqueued
+        // by the recovering process's launch-time sweep (the shared
+        // executor id), and its in-memory source seeds this release.
+        let pending_release =
+            cargobike_engine::reconciler::InMemoryPendingReleaseSource::fixture(&[release_id
+                .parse()
+                .map_err(|error| anyhow::anyhow!("the release id: {error}"))?]);
+        let reconciler = cargobike_engine::reconciler::register_reconciler(
+            &instance,
+            Arc::new(cargobike_engine::reconciler::ReconcilerServices {
+                providers: Arc::clone(&providers),
+                correlations: Arc::new(cargobike_engine::correlation::CorrelationRepository::new(
+                    pool.clone(),
+                )),
+                releases: pending_release,
+            }),
+        )?;
         let services = Arc::new(cargobike_engine::InterpreterServices {
             steps: Arc::new(steps),
-            providers: Arc::new(providers),
+            providers: Arc::clone(&providers),
             credentials: Arc::new(cargobike_engine::mock::StubCredentials),
             http: Arc::new(cargobike_engine::mock::StubHttpService),
             leases: Arc::new(cargobike_engine::LeaseRepository::new(pool.clone())),
@@ -203,6 +299,24 @@ environments:
             .await
             .map_err(|failure| anyhow::anyhow!("launch: {failure:?}"))?;
         eprintln!("boot: launched");
+        if mode == "start" {
+            // The sweep loop starts once, after the launch (DBOS
+            // refuses pre-launch starts): a killed loop row is the
+            // recovery's to re-enqueue (the hold never starts a second).
+            reconciler
+                .start_with(
+                    cargobike_engine::reconciler::ReconcileArgs {
+                        interval: std::time::Duration::from_millis(250),
+                        batch_size: 10,
+                    },
+                    dbos::StartOptions {
+                        workflow_id: Some("reconcile-loop-1"),
+                        ..dbos::StartOptions::default()
+                    },
+                )
+                .await
+                .map_err(|failure| anyhow::anyhow!("reconciler start: {failure:?}"))?;
+        }
 
         // The snapshot: the compiled template with the mock repo + edits
         // stamped into its one environment (the provision).
@@ -231,7 +345,7 @@ environments:
             release: cargobike_engine::ReleaseIdentity {
                 id: release_id.clone(),
                 application: app.clone(),
-                version: "1.0.0".to_owned(),
+                version: version.clone(),
                 version_scheme: VersionScheme::Semver,
             },
             inputs: std::collections::BTreeMap::new(),
