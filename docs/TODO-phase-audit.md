@@ -113,9 +113,13 @@
   reconciler at boot.
 - [ ] Reconciler efficiency: ETag conditional requests and batched GraphQL
   lookups (F-69, 4.3) — current sweep does per-row REST `get_change_request`.
-- [ ] Cleanup workflow body: provider calls run directly in the workflow body,
-  not inside `dbos::step` (no checkpoint/backoff bounds; deviations from §6.7).
-  Make each compensation durable/retryable.
+- [x] Cleanup workflow body: each compensation (CR close, branch
+  delete, lease settle) now runs inside its own `dbos::step` with a
+  bounded retry policy (transient provider wobble retries 3×; a
+  permanent failure is recorded and the cleanup moves on; an
+  already-gone CR/branch is converged, not an error). A crash
+  mid-cleanup resumes at the same compensation instead of re-running
+  provider work.
 - [x] F-34 reservation: `StepRegistry::register` refuses `wait`-shaped
   control names and `builtin/`-prefixed types (`StepRegistryError::
   Reserved`); the engine's own install goes through

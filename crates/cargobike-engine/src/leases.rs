@@ -32,7 +32,7 @@ pub enum LeaseAttempt {
 }
 
 /// What a transfer attempt found (the atomic supersede).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LeaseTransfer {
     /// The lease moved: the old holder lost it in the same statement.
     Transferred,
