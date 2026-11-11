@@ -189,6 +189,40 @@ async fn supersede_chain(
             .await
         {
             tracing::warn!(%failure, release = %old_release_id, "the supersede's status write refused");
+        } else {
+            // F-111: the superseded release's own log records its end —
+            // the id is deterministic (the old release is terminal, so
+            // this fires once) and the actor is the superseding
+            // attempt's (the document's stamp covers the cause).
+            let event_id = format!(
+                "{}/{}/supersede/{}",
+                old_release_id, old_workflow, environment.name
+            );
+            if let Err(failure) = services
+                .events
+                .append(
+                    old_release_id,
+                    &event_id,
+                    "environment-superseded",
+                    &format!(
+                        "the environment {} superseded by the release {}",
+                        environment.name, snapshot.release.id
+                    ),
+                    serde_json::json!({
+                        "environment": environment.name,
+                        "phase": "Superseded",
+                        "by": snapshot.release.id,
+                    }),
+                    None,
+                )
+                .await
+            {
+                tracing::warn!(
+                    %failure,
+                    release = %old_release_id,
+                    "the supersede's event append failed"
+                );
+            }
         }
         // The cleanup child: the deterministic id converges a replayed
         // start (the same child joins rather than double-runs).

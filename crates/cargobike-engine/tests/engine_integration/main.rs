@@ -497,6 +497,40 @@ async fn test_supersede_cancels_the_old_attempt_and_cleans_up() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
+    // F-111/F-113: the event log — A's arc ends `environment-superseded`
+    // (the supersede's own append), B's holds its own running arc, and
+    // both chains re-verify from the listed rows (the tamper evidence:
+    // any edit or deletion breaks the hashes).
+    let log = cargobike_engine::SqlEventLog::new(pool.clone());
+    let events_a = log.list(id_a, None, 100).await.expect("A's events list");
+    let events_b = log.list(id_b, None, 100).await.expect("B's events list");
+    verify_event_chain(id_a, &events_a);
+    verify_event_chain(id_b, &events_b);
+    let kinds_a = events_a
+        .iter()
+        .map(|record| record.kind.as_str())
+        .collect::<Vec<_>>();
+    let kinds_b = events_b
+        .iter()
+        .map(|record| record.kind.as_str())
+        .collect::<Vec<_>>();
+    pretty_assertions::assert_eq!(
+        kinds_a.last().copied(),
+        Some("environment-superseded"),
+        "A's log ends with the supersede: {kinds_a:?}"
+    );
+    assert!(
+        kinds_a.contains(&"attempt-started")
+            && kinds_a.contains(&"environments-seeded")
+            && kinds_a.contains(&"environment-running")
+            && kinds_a.contains(&"environment-change-request"),
+        "A's arc is complete: {kinds_a:?}"
+    );
+    assert!(
+        kinds_b.contains(&"attempt-started") && kinds_b.contains(&"environment-running"),
+        "B's arc is complete: {kinds_b:?}"
+    );
+
     // A clean finish: B's attempt is cancelled (the lease and the CR
     // are settled by the engine's own bookkeeping or a later test); A's
     // handle is dropped (a cancelled attempt's result never resolves
@@ -504,6 +538,41 @@ async fn test_supersede_cancels_the_old_attempt_and_cleans_up() {
     drop(handle_a);
     let _ = instance.cancel(&workflow_b).await;
     instance.shutdown().await;
+}
+
+/// Re-derives the F-113 hash chain from the listed rows: the sequence
+/// is contiguous, `prev` links, and each `hash` recomputes — any edit
+/// or deletion breaks it.
+fn verify_event_chain(release: uuid::Uuid, records: &[cargobike_engine::EventRecord]) {
+    use sha2::Digest;
+    let mut prev = String::new();
+    for (index, record) in records.iter().enumerate() {
+        assert_eq!(
+            record.sequence,
+            index as i64 + 1,
+            "the per-release sequence is contiguous"
+        );
+        pretty_assertions::assert_eq!(record.prev, prev, "the chain links: {record:?}");
+        let hashed = serde_json::json!({
+            "release": release.to_string(),
+            "sequence": record.sequence,
+            "at": record.at,
+            "actor": record.actor,
+            "kind": record.kind,
+            "reason": record.reason,
+            "data": record.data,
+        });
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(prev.as_bytes());
+        hasher.update(
+            serde_json::to_string(&hashed)
+                .expect("the canonical json serialises")
+                .as_bytes(),
+        );
+        let hash = hex::encode(hasher.finalize());
+        pretty_assertions::assert_eq!(record.hash, hash, "the hash verifies: {record:?}");
+        prev = record.hash.clone();
+    }
 }
 
 /// The `concurrency: reject` policy's refusal lands in the release
@@ -935,6 +1004,7 @@ async fn test_fork_retry_reruns_only_the_failed_step() {
         &instance,
         Arc::new(cargobike_engine::RetryServices {
             statuses: Arc::new(cargobike_engine::SqlReleaseStatusStore::new(pool.clone())),
+            events: Arc::new(cargobike_engine::SqlEventLog::new(pool.clone())),
             instance: instance.clone(),
         }),
     )

@@ -65,6 +65,8 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
             get(get_release).delete(delete_release),
         )
         .route("/api/v1/releases/{id}/cancel", post(cancel_release))
+        .route("/api/v1/releases/{id}/events", get(list_events))
+        .route("/api/v1/releases/{id}/watch", get(watch_release))
         .route("/api/v1/releases/{id}/retry", post(retry_release))
         .route("/api/v1/whoami", get(whoami))
         .route("/api/v1/applications", get(list_applications))
@@ -394,6 +396,34 @@ async fn cancel_release(
         .await
     {
         Ok(()) => {
+            // F-111: the cancel's event — the deterministic id is the
+            // release (a terminal row refuses a second cancel, so this
+            // fires once) and the actor is the CALLER, not the release's
+            // stamped creator.
+            let caller_actor = crate::release::ReleaseActor {
+                actor: cargobike_core::model::Actor {
+                    issuer: caller.issuer.clone(),
+                    subject: caller.subject.clone(),
+                    display_name: caller.display_name.clone(),
+                },
+                ci: caller.ci.clone(),
+            };
+            let event_id = format!("{id}/canceled");
+            if let Err(failure) = cargobike_engine::EventSink::append(
+                state.engine.events.as_ref(),
+                id,
+                &event_id,
+                "canceled",
+                &format!("the release canceled by {}", caller.display_name),
+                serde_json::Value::Null,
+                Some(crate::release::actor_json(Some(&caller_actor))),
+            )
+            .await
+            {
+                // The cancel landed; the audit row did not. Liveness
+                // wins (the status seam's trade-off).
+                tracing::warn!(%failure, release = %id, "the canceled event append failed");
+            }
             // The cancelled workflow (stops at its next operation); the
             // cleanup workflow closes the CRs, deletes the branches and
             // settles the leases.
@@ -1180,6 +1210,183 @@ fn auth_to_api(error: &crate::auth::AuthError) -> ApiError {
         AuthError::ForbiddenResource => (StatusCode::FORBIDDEN, "forbidden-resource"),
     };
     ApiError::new(status, error.code(), slug, format!("{error}"))
+}
+
+/// The release's event log (F-105/F-116): the immutable, hash-chained
+/// transitions oldest-first, cursor-paged by the per-release sequence
+/// (the SSE id). The `hash`/`prev` pair rides every item so a reader
+/// can verify the chain (F-113).
+async fn list_events(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    Path(id): Path<Uuid>,
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    if !caller.has_grant("release:read") {
+        return Err(ApiError::forbidden("The `release:read` grant is required."));
+    }
+    if !state
+        .engine
+        .events
+        .release_exists(id)
+        .await
+        .map_err(|failure| crate::http::errors::internal(failure.to_string()))?
+    {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            crate::http::errors::RELEASE_NOT_FOUND,
+            "release-not-found",
+            format!("The release `{id}` was not found."),
+        ));
+    }
+    // The cursor is the last sequence the caller holds (the paging
+    // form the releases list uses); the limit caps the page.
+    let query = query.unwrap_or_default();
+    let after = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("after="))
+        .and_then(|text| text.parse::<i64>().ok());
+    let limit = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("limit="))
+        .and_then(|text| text.parse::<i64>().ok())
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let records = state
+        .engine
+        .events
+        .list(id, after, limit)
+        .await
+        .map_err(|failure| crate::http::errors::internal(failure.to_string()))?;
+    let cursor = records.last().map(|record| record.sequence);
+    Ok(axum::Json(serde_json::json!({
+        "items": records,
+        "cursor": cursor,
+        "has_more": cursor.is_some() && records.len() as i64 == limit,
+    })))
+}
+
+/// The release's SSE watch (F-102): the event log streamed live — each
+/// event's `id:` is the per-release sequence, so a reconnect's
+/// `Last-Event-ID` resumes exactly where the stream broke. The stream
+/// closes when the release is terminal (the CLI's watch then decides
+/// its exit code from the document, US-4).
+async fn watch_release(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<
+    axum::response::sse::Sse<
+        axum::response::sse::KeepAliveStream<
+            tokio_stream::wrappers::ReceiverStream<
+                Result<axum::response::sse::Event, std::convert::Infallible>,
+            >,
+        >,
+    >,
+    ApiError,
+> {
+    if !caller.has_grant("release:read") {
+        return Err(ApiError::forbidden("The `release:read` grant is required."));
+    }
+    if !state
+        .engine
+        .events
+        .release_exists(id)
+        .await
+        .map_err(|failure| crate::http::errors::internal(failure.to_string()))?
+    {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            crate::http::errors::RELEASE_NOT_FOUND,
+            "release-not-found",
+            format!("The release `{id}` was not found."),
+        ));
+    }
+    // The reconnect point (the browser sends the last `id:` it saw).
+    let last = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<i64>().ok());
+    let events = state.engine.events.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel::<
+        Result<axum::response::sse::Event, std::convert::Infallible>,
+    >(16);
+    // The poller: the log is a table, not a broadcast — a short poll
+    // keeps the stream live without a notifier dependency; the
+    // terminal check AFTER the drain guarantees the final events are
+    // emitted before the close.
+    tokio::spawn(async move {
+        let mut last = last.unwrap_or(0);
+        loop {
+            match events.list(id, Some(last), 100).await {
+                Ok(records) => {
+                    for record in &records {
+                        let frame = axum::response::sse::Event::default()
+                            .id(record.sequence.to_string())
+                            .event(record.kind.as_str())
+                            .json_data(record)
+                            .map_err(|failure| {
+                                tracing::warn!(%failure, "the watch frame refused to serialise")
+                            })
+                            .ok();
+                        if let Some(frame) = frame {
+                            if tx.send(Ok(frame)).await.is_err() {
+                                // The watcher went away.
+                                return;
+                            }
+                        }
+                        last = record.sequence;
+                    }
+                    match events.release_terminal(id).await {
+                        Ok(true) => {
+                            // The terminal flag flips BEFORE the
+                            // cancel's own event appends (microseconds
+                            // later, same request — the only post-
+                            // terminal writer): one settle drain
+                            // catches it before the close.
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                            if let Ok(tail) = events.list(id, Some(last), 100).await {
+                                for record in &tail {
+                                    let frame = axum::response::sse::Event::default()
+                                        .id(record.sequence.to_string())
+                                        .event(record.kind.as_str())
+                                        .json_data(record)
+                                        .ok();
+                                    if let Some(frame) = frame {
+                                        if tx.send(Ok(frame)).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                    // The settle is the last drain; the
+                                    // stream closes right after, so
+                                    // `last` needs no update here.
+                                    let _ = record.sequence;
+                                }
+                            }
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(failure) => {
+                            tracing::warn!(%failure, release = %id, "the watch's terminal check failed");
+                            return;
+                        }
+                    }
+                    if records.is_empty() {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                }
+                Err(failure) => {
+                    tracing::warn!(%failure, release = %id, "the watch's poll failed");
+                    return;
+                }
+            }
+        }
+    });
+    Ok(
+        axum::response::sse::Sse::new(tokio_stream::wrappers::ReceiverStream::new(rx))
+            .keep_alive(axum::response::sse::KeepAlive::default()),
+    )
 }
 
 #[cfg(test)]

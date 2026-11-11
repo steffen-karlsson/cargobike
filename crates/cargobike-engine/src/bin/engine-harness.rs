@@ -185,6 +185,7 @@ environments:
             http: Arc::new(cargobike_engine::mock::StubHttpService),
             leases: Arc::new(cargobike_engine::LeaseRepository::new(pool.clone())),
             statuses: Arc::new(cargobike_engine::SqlReleaseStatusStore::new(pool.clone())),
+            events: Arc::new(cargobike_engine::SqlEventLog::new(pool.clone())),
             correlations: Arc::new(cargobike_engine::correlation::CorrelationRepository::new(
                 pool,
             )),

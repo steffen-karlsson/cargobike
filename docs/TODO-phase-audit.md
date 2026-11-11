@@ -57,9 +57,37 @@
 - [x] The snapshot content hash is real: sha256 over the canonical
   JSON of the template + the release identity + the inputs + the
   pinned step-type versions (`snapshot_content_hash`).
-- [ ] The remaining status surface: the SSE `watch` (Phase 5), the
-  event-log writes (Phase 5), and the attempts' `fork_from` values (the
-  retry work).
+- [x] The remaining status surface: the event-log writes and the SSE
+  `watch` landed (Phase 5.4's server half); the CLI's `release watch`
+  consumer is the open §5 item below.
+  - F-111/F-113: `cargobike-engine/src/eventlog.rs` — every transition
+    appends (the interpreter's `status_write` seam, one event per
+    durable step with a DETERMINISTIC id `{release}/{attempt}/{label}`
+    and `ON CONFLICT (id) DO NOTHING`, so a re-executed step converges
+    on the first append; the API's create/cancel seams and the
+    supersede/reopen paths append directly). Appends serialise per
+    release on the release row lock (`FOR UPDATE`), assign the
+    per-release sequence under the lock, and chain
+    `hash = sha256(prev || canonical-json)` (second-precision `at` —
+    Postgres keeps microseconds, so a nanosecond would hash
+    differently than the row stores; both read the same
+    `OffsetDateTime`). Migration `0006` adds the `prev`/`hash`
+    columns. The known trade-off, documented in code: a FAILED append
+    warns and does not fail the write (the status fact is primary;
+    the release's liveness wins).
+  - F-105/F-116: `GET /api/v1/releases/{id}/events` — cursor-paged by
+    the per-release sequence (`after`/`limit`), every item carrying
+    `hash`/`prev` so a reader re-verifies the chain (both E2Es do:
+    the engine supersede test and the authed lifecycle recompute the
+    hashes).
+  - F-102: `GET /api/v1/releases/{id}/watch` — SSE over the same
+    table (a 250ms poll; `Last-Event-ID` resumes at the break, each
+    frame's `id:` is the sequence, `event:` the kind), closing once
+    the release is terminal, with a settle drain first (the terminal
+    flag flips microseconds before the cancel's own event appends —
+    the only post-terminal writer). The authed lifecycle's E2E
+    streams a live release, cancels it mid-stream, and asserts the
+    events and the close.
 - [x] The status's actor/CiContext half (F-83/F-84): the create stamps
   `status.actor` (the verified `(issuer, subject)` + display name)
   and `status.ci` (claims-built; the Actions provider label keys on
@@ -197,7 +225,8 @@
   exit codes 0/1/2/3/10/11/12 (10/11/12 exist in `client::exit_code` but the
   RequestBodyLimit/409 nuance is untested), `Last-Event-ID` reconnect,
   `indicatif` progress (non-TTY disabled). `create --wait` polls 1s instead
-  (stopgap; watch must replace it, incl. server `/watch` SSE endpoint from 5.4).
+  (stopgap; watch must replace it — the server's `/watch` SSE endpoint
+  landed in Phase 5.4, see §1's tick; only the CLI consumer remains).
 - [ ] **`cargobike validate` (4.8, US-13) missing** — offline config/template
   validation reusing server `validation.rs` + engine `compile_with`, with
   `miette` diagnostics; no `--resolve` mode yet.

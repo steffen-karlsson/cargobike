@@ -30,6 +30,9 @@ const DBOS_SCHEMA: &str = "dbos";
 pub struct EngineHosting {
     /// The DBOS instance (cancel/fork/management needs it).
     pub instance: Arc<dbos::DBOS>,
+    /// The immutable event log (F-111): the API's create/cancel seams
+    /// append through it; the events list and the SSE watch read it.
+    pub events: Arc<cargobike_engine::SqlEventLog>,
     /// The interpreter's services (the step registry's installed
     /// versions feed the snapshot).
     pub services: Arc<InterpreterServices>,
@@ -311,6 +314,10 @@ pub async fn host(
     dbos_config.app_version = Some(env!("CARGO_PKG_VERSION").to_owned());
     let instance = dbos::DBOS::new(dbos_config);
 
+    // F-111/F-113: the immutable event log — one sink shared by the
+    // interpreter's status steps, the API's create/cancel seams, and
+    // the watch/list readers.
+    let events = Arc::new(cargobike_engine::SqlEventLog::new(pool.clone()));
     let services = Arc::new(InterpreterServices {
         steps,
         providers: Arc::new(providers),
@@ -319,6 +326,7 @@ pub async fn host(
         leases: Arc::new(LeaseRepository::new(pool.clone())),
         statuses: Arc::new(SqlReleaseStatusStore::new(pool.clone())),
         correlations: Arc::new(CorrelationRepository::new(pool.clone())),
+        events: events.clone(),
         instance: instance.clone(),
         cleanup_ref: Arc::new(std::sync::OnceLock::new()),
         max_step_output: crate::config::parse_size(&config.engine.max_step_output)
@@ -368,6 +376,7 @@ pub async fn host(
                 providers: services.providers.clone(),
                 steps: services.steps.clone(),
                 availability,
+                events: events.clone(),
             }),
         }),
     )
@@ -381,6 +390,7 @@ pub async fn host(
         &instance,
         Arc::new(cargobike_engine::RetryServices {
             statuses: services.statuses.clone(),
+            events: events.clone(),
             instance: instance.clone(),
         }),
     )
@@ -426,6 +436,7 @@ pub async fn host(
 
     Ok(EngineHosting {
         instance: Arc::new(instance),
+        events,
         services: services.clone(),
         interpreter,
         cleanup,
@@ -489,6 +500,9 @@ struct ServerTagPushCreator {
     /// matched app's verified-path label does not check out).
     availability: Arc<crate::availability::Availability>,
     steps: Arc<cargobike_engine::StepRegistry>,
+    /// F-111: the created-release event rides the log the API seam
+    /// shares.
+    events: Arc<cargobike_engine::SqlEventLog>,
 }
 
 /// The version inside a tag: the format's `{version}` placeholder
@@ -593,6 +607,7 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                 step_types: self.steps.installed().into_iter().collect(),
                 providers: &self.providers,
                 availability: &self.availability,
+                events: &self.events,
             };
             // The row half only: the interpreter's start is refused
             // from inside a step, so the creator plans and the webhook

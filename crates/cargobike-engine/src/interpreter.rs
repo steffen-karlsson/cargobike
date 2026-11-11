@@ -84,6 +84,9 @@ pub struct InterpreterServices {
     /// The CR-correlation rows the change-request step stamps (the
     /// webhook receiver and the reconciler sweep read them).
     pub correlations: Arc<crate::correlation::CorrelationRepository>,
+    /// The immutable event log's write seam (F-111): every status
+    /// transition appends one event.
+    pub events: Arc<dyn crate::eventlog::EventSink>,
     /// The DBOS instance (the supersede path's cancel reads it; the
     /// cloned handle is the same connection surface).
     pub instance: dbos::DBOS,
@@ -190,6 +193,12 @@ async fn run(
         "status/attempt".to_owned(),
         release_id,
         &services.statuses,
+        &services.events,
+        crate::eventlog::EventNote::new(
+            "attempt-started",
+            format!("the attempt {attempt} started"),
+        )
+        .with_data(serde_json::json!({ "workflow_id": attempt })),
         move |store, release_id| {
             let attempt = attempt.clone();
             async move {
@@ -214,6 +223,12 @@ async fn run(
         "status/envs-seeded".to_owned(),
         release_id,
         &services.statuses,
+        &services.events,
+        crate::eventlog::EventNote::new(
+            "environments-seeded",
+            "every provisioned environment's record seeded",
+        )
+        .with_data(serde_json::json!({ "environments": provisioned_names })),
         move |store, release_id| {
             let provisioned_names = provisioned_names.clone();
             async move {
@@ -285,7 +300,9 @@ pub(crate) fn interpreter_error_of(failure: dbos::Error<InterpreterError>) -> In
 pub(crate) async fn status_write<W, Fut>(
     label: String,
     release_id: UuidAlias,
-    store: &Arc<dyn ReleaseStatusStore>,
+    statuses: &Arc<dyn ReleaseStatusStore>,
+    events: &Arc<dyn crate::eventlog::EventSink>,
+    note: crate::eventlog::EventNote,
     write: W,
 ) -> dbos::Result<(), InterpreterError>
 where
@@ -293,15 +310,53 @@ where
     Fut: std::future::Future<Output = Result<(), StatusError>> + Send,
 {
     let write = Arc::new(write);
+    // F-111/F-113: the event id is DETERMINISTIC — the release, the
+    // attempt (this workflow), and the step's label; a re-executed
+    // step's append conflicts on it and converges on the first.
+    let event_id = format!(
+        "{}/{}/{}",
+        release_id,
+        dbos::workflow_id().unwrap_or_else(|| "unknown".to_owned()),
+        label
+    );
     let outcome = dbos::step_with::<Result<bool, ()>, InterpreterError, _, _>(
         label.as_str(),
         dbos::StepOptions::default(),
         move || {
-            let store = Arc::clone(store);
+            let store = Arc::clone(statuses);
+            let events = Arc::clone(events);
+            let note = note.clone();
+            let event_id = event_id.clone();
             let write = Arc::clone(&write);
             async move {
                 match write(store, release_id).await {
-                    Ok(()) => dbos::Result::Ok(Ok(true)),
+                    Ok(()) => {
+                        // The audit half rides the same durable step:
+                        // both re-run together after a mid-body crash,
+                        // and the deterministic id keeps the pair one.
+                        if let Err(failure) = events
+                            .append(
+                                release_id,
+                                &event_id,
+                                &note.kind,
+                                &note.reason,
+                                note.data.clone(),
+                                None,
+                            )
+                            .await
+                        {
+                            // The status fact landed; the audit row did
+                            // not. The release's liveness wins (v1
+                            // trade-off, documented in the audit item).
+                            tracing::warn!(
+                                %failure,
+                                release = %release_id,
+                                kind = %note.kind,
+                                "the status event append failed"
+                            );
+                        }
+                        dbos::Result::Ok(Ok(true))
+                    }
                     // Terminal refusals and not-found rows are recorded
                     // as no-ops (a replay must not re-decide against a
                     // stale release).
@@ -343,6 +398,12 @@ async fn run_environment(
                     format!("status/{}/skipped", environment.name),
                     release_id,
                     &services.statuses,
+                    &services.events,
+                    crate::eventlog::EventNote::terminal(
+                        &environment.name,
+                        &EnvironmentPhase::Skipped,
+                        None,
+                    ),
                     |store, release_id| {
                         let environment = environment.name.clone();
                         async move {
@@ -375,6 +436,15 @@ async fn run_environment(
                 format!("status/{}/waiting", environment.name),
                 release_id,
                 &services.statuses,
+                &services.events,
+                crate::eventlog::EventNote::new(
+                    "environment-waiting",
+                    format!(
+                        "the lease queue holds the environment {} until the holder releases",
+                        environment.name
+                    ),
+                )
+                .with_data(serde_json::json!({ "environment": environment.name })),
                 |store, release_id| {
                     let environment = environment.name.clone();
                     async move { store.environment_waiting(release_id, &environment).await }
@@ -402,6 +472,12 @@ async fn run_environment(
                             format!("status/{}/terminal", environment.name),
                             release_id,
                             &services.statuses,
+                            &services.events,
+                            crate::eventlog::EventNote::terminal(
+                                &environment.name,
+                                &EnvironmentPhase::Failed,
+                                Some(&release_error),
+                            ),
                             |store, release_id| {
                                 let environment = environment.name.clone();
                                 let release_error = release_error.clone();
@@ -435,6 +511,12 @@ async fn run_environment(
                 format!("status/{}/terminal", environment.name),
                 release_id,
                 &services.statuses,
+                &services.events,
+                crate::eventlog::EventNote::terminal(
+                    &environment.name,
+                    &EnvironmentPhase::Failed,
+                    Some(&release_error),
+                ),
                 |store, release_id| {
                     let environment = environment.name.clone();
                     let release_error = release_error.clone();
@@ -459,6 +541,12 @@ async fn run_environment(
         format!("status/{}/running", environment.name),
         release_id,
         &services.statuses,
+        &services.events,
+        crate::eventlog::EventNote::new(
+            "environment-running",
+            format!("the environment {} entered execution", environment.name),
+        )
+        .with_data(serde_json::json!({ "environment": environment.name })),
         |store, release_id| {
             let environment = environment.name.clone();
             async move {
@@ -488,6 +576,12 @@ async fn run_environment(
                     format!("status/{}/skipped", environment.name),
                     release_id,
                     &services.statuses,
+                    &services.events,
+                    crate::eventlog::EventNote::terminal(
+                        &environment.name,
+                        &EnvironmentPhase::Skipped,
+                        None,
+                    ),
                     |store, release_id| {
                         let environment = environment.name.clone();
                         async move {
@@ -515,6 +609,12 @@ async fn run_environment(
                     format!("status/{}/terminal", environment.name),
                     release_id,
                     &services.statuses,
+                    &services.events,
+                    crate::eventlog::EventNote::terminal(
+                        &environment.name,
+                        &terminal_phase,
+                        Some(&release_error),
+                    ),
                     |store, release_id| {
                         let environment = environment.name.clone();
                         let release_error = release_error.clone();
@@ -551,6 +651,8 @@ async fn run_environment(
         format!("status/{}/completed", environment.name),
         release_id,
         &services.statuses,
+        &services.events,
+        crate::eventlog::EventNote::terminal(&environment.name, &EnvironmentPhase::Completed, None),
         |store, release_id| {
             let environment = environment.name.clone();
             async move {
@@ -661,6 +763,12 @@ async fn run_step(
                     format!("status/{}/pending-approval", environment.name),
                     release_id,
                     &services.statuses,
+                    &services.events,
+                    crate::eventlog::EventNote::new(
+                        "environment-pending-approval",
+                        format!("the environment {} waits for an approval", environment.name),
+                    )
+                    .with_data(serde_json::json!({ "environment": environment.name })),
                     |store, release_id| {
                         let environment = environment.name.clone();
                         async move {
@@ -982,6 +1090,17 @@ async fn after_change_request_continue(
         format!("status/{}/change-request", environment_name),
         release_id,
         &services.statuses,
+        &services.events,
+        crate::eventlog::EventNote::new(
+            "environment-change-request",
+            format!("change request {number} opened for the environment {environment_name}"),
+        )
+        .with_data(serde_json::json!({
+            "environment": environment_name,
+            "number": number,
+            "url": url,
+            "target_repo": repo_of_env,
+        })),
         |store, release_id| {
             let environment = environment_name.clone();
             let reference = ChangeRequestRef {

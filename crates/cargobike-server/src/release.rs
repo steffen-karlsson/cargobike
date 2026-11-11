@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use cargobike_engine::EventSink as _;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -559,7 +560,7 @@ pub(crate) struct ReleaseActor {
 }
 
 /// The actor as the document's status object carries it.
-fn actor_json(actor: Option<&ReleaseActor>) -> serde_json::Value {
+pub(crate) fn actor_json(actor: Option<&ReleaseActor>) -> serde_json::Value {
     let Some(stamp) = actor else {
         return serde_json::Value::Null;
     };
@@ -587,6 +588,7 @@ pub(crate) async fn create_release_core(
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
     let parts = CoreParts {
         releases: &state.releases,
+        events: &state.engine.events,
         config: state.config.borrow().clone(),
         providers: &state.engine.services.providers,
         availability: &state.availability,
@@ -613,6 +615,8 @@ pub(crate) async fn create_release_core(
 /// creator assembles without an AppState).
 pub(crate) struct CoreParts<'a> {
     pub releases: &'a crate::release::ReleaseRepository,
+    /// F-111: the immutable event log (the `created` event).
+    pub events: &'a cargobike_engine::SqlEventLog,
     pub config: Arc<crate::config::Config>,
     pub step_types: BTreeMap<String, String>,
     /// The provider registry (F-95's tag verification reads the
@@ -933,6 +937,29 @@ pub(crate) async fn create_release_row(
             release_id: existing_id,
             snapshot: None,
         });
+    }
+    // F-111: the release's first event — the deterministic id is the
+    // row itself (a replayed create converged on the dedupe above).
+    let event_id = format!("{id}/created");
+    if let Err(failure) = parts
+        .events
+        .append(
+            id,
+            &event_id,
+            "created",
+            &format!("the release {version} of {application} created"),
+            serde_json::json!({
+                "application": application,
+                "version": version,
+                "retried_from": origin.retried_from,
+            }),
+            Some(actor_json(origin.actor)),
+        )
+        .await
+    {
+        // The row landed; the audit row did not. Liveness wins (the
+        // same trade-off the status seam documents).
+        tracing::warn!(%failure, release = %id, "the created event append failed");
     }
     Ok(CreateRow {
         outcome: CreateOutcome {

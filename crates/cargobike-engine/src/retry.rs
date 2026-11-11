@@ -35,6 +35,9 @@ pub struct RetryArgs {
 pub struct RetryServices {
     /// The release's status store (the doc read + the attempt append).
     pub statuses: Arc<dyn ReleaseStatusStore>,
+    /// The immutable event log's write seam (F-111): the reopen and
+    /// the fork's attempt record each append one event.
+    pub events: Arc<dyn crate::eventlog::EventSink>,
     /// The DBOS instance: the fork rides it (the call is a checkpointed
     /// step inside this workflow, so a replay never writes a second
     /// fork).
@@ -108,11 +111,40 @@ async fn fork_failure(
         dbos::StepOptions::default(),
         {
             let store = Arc::clone(&services.statuses);
+            let events = Arc::clone(&services.events);
+            // F-111/F-113: deterministic — the retry workflow's id names
+            // this reopen; a re-executed step converges on the first.
+            let event_id = format!(
+                "{}/{}/status/reopen",
+                release_id,
+                dbos::workflow_id().unwrap_or_else(|| "unknown".to_owned())
+            );
             move || {
                 let store = Arc::clone(&store);
+                let events = Arc::clone(&events);
+                let event_id = event_id.clone();
                 async move {
                     match store.release_reopened(release_id).await {
-                        Ok(()) => dbos::Result::Ok(Ok(true)),
+                        Ok(()) => {
+                            if let Err(failure) = events
+                                .append(
+                                    release_id,
+                                    &event_id,
+                                    "reopened",
+                                    "the failed release re-opened for the retry's fork",
+                                    serde_json::Value::Null,
+                                    None,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    %failure,
+                                    release = %release_id,
+                                    "the reopen's event append failed"
+                                );
+                            }
+                            dbos::Result::Ok(Ok(true))
+                        }
                         Err(failure) => {
                             // A refused reopen (a gone row): the
                             // re-delivery's problem later; no fork
@@ -165,6 +197,15 @@ async fn fork_failure(
         "status/attempt-forked".to_owned(),
         release_id,
         &services.statuses,
+        &services.events,
+        crate::eventlog::EventNote::new(
+            "attempt-started",
+            format!("the retry's fork {fork_id_for_record} started (forked from {fork_from})"),
+        )
+        .with_data(serde_json::json!({
+            "workflow_id": fork_id_for_record,
+            "fork_from": fork_from,
+        })),
         move |store, release_id| {
             let fork_id = fork_id_for_record.clone();
             let fork_from = fork_from.clone();

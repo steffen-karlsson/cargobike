@@ -464,6 +464,51 @@ async fn test_authed_release_lifecycle() {
         keyed_cancel.text().await
     );
 
+    // F-105/F-113: the events list — the whole arc oldest-first, the
+    // `created` first and the API-cancelled `canceled` last, the hash
+    // chain re-verifying from the listed rows (any edit or deletion
+    // breaks it).
+    let events_response = client
+        .get(format!("{base}/api/v1/releases/{id}/events"))
+        .header(auth_header.0, auth_header.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(events_response.status(), reqwest::StatusCode::OK);
+    let events: serde_json::Value = events_response.json().await.expect("events json");
+    let items = events["items"].as_array().expect("the items");
+    assert!(!items.is_empty(), "the release recorded events: {events}");
+    assert_eq!(items[0]["kind"], "created", "the arc opens with the create");
+    assert_eq!(
+        items[0]["actor"]["subject"], "test-key",
+        "the created event carries the verified caller: {}",
+        items[0]["actor"]
+    );
+    assert_eq!(
+        items.last().unwrap()["kind"],
+        "canceled",
+        "the arc closes with the API's cancel: {events}"
+    );
+    verify_event_chain(&id, items);
+    // The cursor pages: `after` the first sequence hands the rest.
+    let first_sequence = items[0]["sequence"].as_i64().expect("the sequence");
+    let page = client
+        .get(format!(
+            "{base}/api/v1/releases/{id}/events?after={first_sequence}"
+        ))
+        .header(auth_header.0, auth_header.1.clone())
+        .send()
+        .await
+        .expect("http")
+        .json::<serde_json::Value>()
+        .await
+        .expect("events json");
+    pretty_assertions::assert_eq!(
+        page["items"].as_array().expect("the page").len(),
+        items.len() - 1,
+        "the cursor skips exactly the first: {page}"
+    );
+
     // The cleanup's effect on the provider: the CR closed.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
@@ -536,6 +581,17 @@ async fn test_authed_release_lifecycle() {
     // non-terminal row behind against the shared fixture DB.
     let fresh_id = fresh_document["metadata"]["id"].as_str().expect("id");
     wait_for_cr_recorded(&client, &base, &auth_header, fresh_id).await;
+    // F-102 first: the SSE watch streams the event log live — opened
+    // while the release still waits at its merge, the cancel's events
+    // flow through, and the stream CLOSES on the terminal phase (the
+    // `text()` only resolves when the server ends the response).
+    let watch = client
+        .get(format!("{base}/api/v1/releases/{fresh_id}/watch"))
+        .header(auth_header.0, auth_header.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(watch.status(), reqwest::StatusCode::OK);
     let cancel = client
         .post(format!("{base}/api/v1/releases/{fresh_id}/cancel"))
         .header(auth_header.0, auth_header.1.clone())
@@ -548,6 +604,23 @@ async fn test_authed_release_lifecycle() {
         "the fresh release's drain: {:?}",
         cancel.text().await
     );
+    let watched = watch.text().await.expect("the watch stream ends");
+    assert!(
+        watched.contains("event: created"),
+        "the watch streamed the backlog: {watched}"
+    );
+    assert!(
+        watched.contains("event: canceled")
+            && watched.contains(&format!(
+                "id: {}",
+                watched_sequence_of(&watched, "canceled")
+            )),
+        "the watch streamed the cancel and its SSE id: {watched}"
+    );
+    assert!(
+        watched.contains("event: environment-change-request"),
+        "the interpreter's transitions streamed: {watched}"
+    );
     assert_eq!(
         client
             .delete(format!("{base}/api/v1/releases/{fresh_id}"))
@@ -558,4 +631,60 @@ async fn test_authed_release_lifecycle() {
             .status(),
         reqwest::StatusCode::NO_CONTENT
     );
+}
+
+/// The SSE id of the named event in the stream (the `id:` line that
+/// precedes `event: {kind}`).
+#[allow(clippy::expect_used)]
+fn watched_sequence_of(stream: &str, kind: &str) -> String {
+    let mut id = String::new();
+    for line in stream.lines() {
+        if let Some(sequence) = line.strip_prefix("id: ") {
+            id = sequence.to_owned();
+        }
+        if line == format!("event: {kind}") {
+            return id;
+        }
+    }
+    panic!("the stream never carried `{kind}`: {stream}");
+}
+
+/// Re-derives the F-113 hash chain from the listed items: the
+/// sequence is contiguous, `prev` links, and each `hash` recomputes —
+/// any edit or deletion breaks it.
+#[allow(clippy::expect_used)]
+fn verify_event_chain(release: &str, items: &[serde_json::Value]) {
+    use sha2::Digest;
+    let mut prev = String::new();
+    for (index, item) in items.iter().enumerate() {
+        assert_eq!(
+            item["sequence"].as_i64(),
+            Some(index as i64 + 1),
+            "the per-release sequence is contiguous"
+        );
+        pretty_assertions::assert_eq!(item["prev"], serde_json::Value::String(prev.clone()));
+        let hashed = serde_json::json!({
+            "release": release,
+            "sequence": item["sequence"],
+            "at": item["at"],
+            "actor": item["actor"],
+            "kind": item["kind"],
+            "reason": item["reason"],
+            "data": item["data"],
+        });
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(prev.as_bytes());
+        hasher.update(
+            serde_json::to_string(&hashed)
+                .expect("canonical")
+                .as_bytes(),
+        );
+        let hash = hex::encode(hasher.finalize());
+        pretty_assertions::assert_eq!(
+            item["hash"],
+            serde_json::Value::String(hash),
+            "the hash verifies at {item}"
+        );
+        prev = item["hash"].as_str().expect("the hash").to_owned();
+    }
 }

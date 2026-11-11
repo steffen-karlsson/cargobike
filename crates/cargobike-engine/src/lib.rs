@@ -9,6 +9,7 @@ pub mod cleanup;
 pub mod concurrency;
 pub mod correlation;
 pub mod crash;
+pub mod eventlog;
 pub mod expr;
 pub mod interpreter;
 pub mod leases;
@@ -27,6 +28,7 @@ pub mod webhook;
 pub use cleanup::{
     CLEANUP_WORKFLOW, CleanupArgs, CleanupServices, CleanupTarget, CrSummary, register_cleanup,
 };
+pub use eventlog::{EventRecord, EventSink, NoopEventSink, SqlEventLog};
 pub use expr::{ExprContext, ExprError, eval_gate, eval_param, interpolate_params};
 pub use interpreter::{
     INTERPRETER_WORKFLOW, InterpretArgs, InterpretResult, InterpreterServices,

@@ -319,6 +319,7 @@ pub fn mock_services_with_http(
         http,
         leases: Arc::new(cargobike_engine::LeaseRepository::new(pool.clone())),
         statuses: Arc::new(cargobike_engine::SqlReleaseStatusStore::new(pool.clone())),
+        events: Arc::new(cargobike_engine::SqlEventLog::new(pool.clone())),
         correlations: Arc::new(cargobike_engine::correlation::CorrelationRepository::new(
             pool,
         )),
