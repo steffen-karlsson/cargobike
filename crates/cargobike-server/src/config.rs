@@ -773,7 +773,7 @@ fn default_true() -> bool {
 
 /// Application-level pause .
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(untagged, rename_all = "kebab-case")]
 pub enum PausedEntry {
     /// Boolean pause, no reason.
     Bool(bool),

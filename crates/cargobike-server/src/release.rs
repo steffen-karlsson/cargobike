@@ -556,12 +556,33 @@ pub(crate) async fn create_release_row(
         }
     }
 
+    // F-142: a paused application refuses the create with a clear 409 —
+    // the release could make no progress, and a zombie `Running` row
+    // helps nobody.
+    if let Some(reason) = paused_reason(app.paused.as_ref()) {
+        return Err(paused_refusal("application", application, reason));
+    }
+
     // The provision first: the compiled template's environment list is
     // the doc's initial shape (every environment opens `Pending`, so a
     // partial start can never roll the release-phase `Completed` while
     // a later environment never ran — the rollup otherwise only sees
     // the environments a write touched).
     let snapshot = provision_snapshot_parts(parts, app, version, id).await?;
+    // F-142, per-environment half: a paused environment refuses the
+    // create the same way. v1 documents this as a deviation from the
+    // PRD's in-flight wording (snapshot pinning means a mid-flight
+    // pause needs a live pause/wake control plane, not a registry
+    // flag); refusing the create is the fail-safe stopgap.
+    for environment in snapshot.template.environments.iter() {
+        if let Some(reason) = app
+            .environments
+            .get(&environment.name)
+            .and_then(|entry| paused_reason(entry.paused.as_ref()))
+        {
+            return Err(paused_refusal("environment", &environment.name, reason));
+        }
+    }
     let provisions = snapshot
         .template
         .environments
@@ -634,6 +655,33 @@ pub(crate) async fn create_release_row(
         release_id: id,
         snapshot: Some(snapshot),
     })
+}
+
+/// The pause decision of a registry entry (F-142): `Some(reason)` means
+/// paused (the reason is optional — an empty text is a bare `paused:
+/// true`), `None` means running.
+fn paused_reason(paused: Option<&crate::config::PausedEntry>) -> Option<&str> {
+    match paused {
+        Some(crate::config::PausedEntry::Reason { reason }) => Some(reason.as_str()),
+        Some(crate::config::PausedEntry::Bool(true)) => Some(""),
+        _ => None,
+    }
+}
+
+/// The paused refusal (F-142): a `StateConflict` naming what is frozen
+/// and why — the caller's problem document must be actionable.
+fn paused_refusal(kind: &str, name: &str, reason: &str) -> crate::http::errors::ApiError {
+    let detail = if reason.is_empty() {
+        format!("The {kind} `{name}` is paused; new releases are refused while it is.")
+    } else {
+        format!("The {kind} `{name}` is paused ({reason}); new releases are refused while it is.")
+    };
+    crate::http::errors::ApiError::new(
+        axum::http::StatusCode::CONFLICT,
+        crate::http::errors::STATE_CONFLICT,
+        "state-conflict",
+        detail,
+    )
 }
 
 /// The key half of a fresh create (F-109): first writer wins; the

@@ -57,7 +57,12 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
             .connect(&url)
             .await
             .expect("the fixture database connects");
-        for application in ["my-service", "keyed-service"] {
+        for application in [
+            "my-service",
+            "keyed-service",
+            "paused-service",
+            "env-paused-service",
+        ] {
             sqlx::query("DELETE FROM leases WHERE application = $1")
                 .bind(application)
                 .execute(&pool)
@@ -112,7 +117,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
              database:\n  url: \"{url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_display}\n\n\
              auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\
-             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/keyed/manifest.yaml\n            field: image.tag\n"
+             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/keyed/manifest.yaml\n            field: image.tag\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/paused/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/envpaused/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("write the test config");
@@ -233,6 +238,43 @@ async fn test_authed_release_lifecycle() {
         retried_document["metadata"]["id"].as_str().expect("id"),
         keyed_id,
         "the key's retry converges on the first attempt's release"
+    );
+
+    // F-142: a paused application refuses the create with 409 and a
+    // problem document carrying the reason (the registry's `paused`
+    // shape); a paused environment refuses the same way, naming the
+    // environment.
+    let paused_create = client
+        .post(format!("{base}/api/v1/releases"))
+        .header(auth_header.0, auth_header.1.clone())
+        .json(&serde_json::json!({ "application": "paused-service", "version": format!("5.0.{run_tag}") }))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(paused_create.status(), reqwest::StatusCode::CONFLICT);
+    let paused_body: serde_json::Value = paused_create.json().await.expect("problem body");
+    assert_eq!(paused_body["code"], "StateConflict");
+    assert!(
+        paused_body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("freezing deploys for the audit")),
+        "the refusal carries the pause reason: {paused_body}"
+    );
+    let env_paused_create = client
+        .post(format!("{base}/api/v1/releases"))
+        .header(auth_header.0, auth_header.1.clone())
+        .json(&serde_json::json!({ "application": "env-paused-service", "version": format!("5.0.{run_tag}") }))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(env_paused_create.status(), reqwest::StatusCode::CONFLICT);
+    let env_paused_body: serde_json::Value = env_paused_create.json().await.expect("problem body");
+    assert_eq!(env_paused_body["code"], "StateConflict");
+    assert!(
+        env_paused_body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("preview") && detail.contains("the canary burn")),
+        "the refusal names the environment and its reason: {env_paused_body}"
     );
 
     // whoami .

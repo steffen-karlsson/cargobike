@@ -256,8 +256,17 @@
   (first writer wins, `ON DELETE CASCADE` follows the release out so a
   deleted release's key provisions fresh). The lifecycle E2E covers
   202 → same-key 200 → delete → same-key 202.
-- [ ] Create response should also surface `paused`-application rejection
-  (F-142) — `paused` shapes parse but enforce nowhere (per-app and per-env).
+- [x] `paused`-application rejection (F-142) enforced at the create: a
+  paused application (or a release whose template contains a paused
+  environment) is refused with 409 `StateConflict`, the detail naming
+  what is frozen and the registry's reason. En route the audit's own
+  claim was corrected: the `paused` shapes did NOT parse (an
+  externally-tagged enum); they are untagged now (`paused: true` /
+  `paused: { reason: ... }`, per-app and per-env). Deviation, called
+  out: v1 refuses the create rather than freezing an in-flight
+  release at the paused environment — snapshot pinning means a
+  mid-flight pause needs a live pause/wake control plane, which is
+  post-v1 work.
 - [ ] Curated env overrides list (F-125) covers 6 scalars; PRD's curated list +
   documented surfaces (flags) not published — docs task.
 
