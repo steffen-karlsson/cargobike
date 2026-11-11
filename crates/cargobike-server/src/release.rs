@@ -477,6 +477,11 @@ pub(crate) struct CreateOrigin<'a> {
     pub retried_from: Option<&'a str>,
     /// The Idempotency-Key deduplicating create retries .
     pub idempotency_key: Option<&'a str>,
+    /// The provenance SHA (F-95): the OIDC token's verified `sha`
+    /// claim, the webhook payload's pushed SHA, or an API-key
+    /// request's supplied SHA — the version policy verifies the tag
+    /// against the provider's object with it.
+    pub sha: Option<&'a str>,
 }
 
 /// The caller's identity as the release document records it (F-83):
@@ -521,6 +526,7 @@ pub(crate) async fn create_release_core(
     let parts = CoreParts {
         releases: &state.releases,
         config: state.config.borrow().clone(),
+        providers: &state.engine.services.providers,
         step_types: state
             .engine
             .services
@@ -546,6 +552,9 @@ pub(crate) struct CoreParts<'a> {
     pub releases: &'a crate::release::ReleaseRepository,
     pub config: Arc<crate::config::Config>,
     pub step_types: BTreeMap<String, String>,
+    /// The provider registry (F-95's tag verification reads the
+    /// provider's tag object).
+    pub providers: &'a cargobike_core::registry::ProviderRegistry,
 }
 
 /// The row half of a create: validation + provision + the
@@ -560,6 +569,86 @@ pub(crate) struct CreateRow {
     /// the duplicate carries no snapshot so nothing starts).
     pub release_id: Uuid,
     pub snapshot: Option<cargobike_engine::ReleaseSnapshot>,
+}
+
+/// The tag name a version maps to under the app's `tag_format`.
+pub(crate) fn tag_of_format(tag_format: &str, version: &str) -> String {
+    tag_format.replace("{version}", version)
+}
+
+/// F-95's per-shape version verification: `require_tag` demands the
+/// provider's own tag object. The tag named by `tag_format` + version
+/// must EXIST, and when the caller carries a provenance SHA (the
+/// OIDC token's verified `sha` claim, the webhook payload's pushed
+/// SHA, or an API-key request's supplied SHA), the tag must point at
+/// exactly it. The provider is the truth — payloads and claims alone
+/// never pass. Providers without the `tag_lookup` capability fail
+/// CLOSED (the policy demands a check the provider cannot make).
+/// Apps without a `tag_format` cannot name their tag, so the policy
+/// degrades to the scheme check alone (the webhook's tag trigger
+/// refuses them instead, F-82).
+async fn verify_version_provenance(
+    parts: &CoreParts<'_>,
+    app: &crate::config::ApplicationEntry,
+    version: &str,
+    origin: &CreateOrigin<'_>,
+) -> Result<(), crate::http::errors::ApiError> {
+    use crate::http::errors::{self as errors, ApiError};
+    if !app.versioning.require_tag {
+        return Ok(());
+    }
+    let Some(tag_format) = app.versioning.tag_format.as_deref() else {
+        return Ok(());
+    };
+    let tag = tag_of_format(tag_format, version);
+    let repo = cargobike_core::model::RepoRef::new(&app.source.provider, &app.source.id);
+    let provider = parts.providers.resolve(&repo).map_err(|failure| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            errors::PROVIDER_NOT_FOUND,
+            "provider-not-found",
+            format!(
+                "The application's source provider `{}` is not registered: {failure}.",
+                app.source.provider
+            ),
+        )
+    })?;
+    let refusal = |detail: String| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            errors::VERSION_NOT_VERIFIED,
+            "version-not-verified",
+            format!("the version `{version}` does not verify against the provider: {detail}"),
+        )
+    };
+    if !provider.capabilities().tag_lookup {
+        return Err(refusal(format!(
+            "the provider `{}` cannot read tag objects (the `tag_lookup` capability is off)",
+            app.source.provider
+        )));
+    }
+    let actual = provider
+        .tag_sha(&repo, &tag)
+        .await
+        .map_err(|failure| match failure {
+            cargobike_core::provider::ProviderError::NotFound(_) => {
+                refusal(format!("the tag `{tag}` does not exist"))
+            }
+            other => ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                errors::INTERNAL_ERROR,
+                "internal-error",
+                format!("the provider's tag lookup failed: {other}"),
+            ),
+        })?;
+    if let Some(claimed) = origin.sha {
+        if !claimed.eq_ignore_ascii_case(&actual) {
+            return Err(refusal(format!(
+                "the tag `{tag}` points at `{actual}`, not the caller's `{claimed}`"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn create_release_row(
@@ -626,6 +715,10 @@ pub(crate) async fn create_release_row(
             return Err(paused_refusal("environment", &environment.name, reason));
         }
     }
+    // F-95: the version verifies against the provider's tag object
+    // before the row lands — a forged payload or a stale claim must
+    // never open a release.
+    verify_version_provenance(parts, app, version, &origin).await?;
     let provisions = snapshot
         .template
         .environments

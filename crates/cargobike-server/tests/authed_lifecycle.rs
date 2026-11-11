@@ -117,7 +117,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
              database:\n  url: \"{url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_display}\n\n\
              auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\
-             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/keyed/manifest.yaml\n            field: image.tag\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/paused/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/envpaused/manifest.yaml\n            field: image.tag\n"
+             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("write the test config");
@@ -297,6 +297,42 @@ async fn test_authed_release_lifecycle() {
         ])
     );
 
+    /// Waits until the release's first environment has recorded its
+    /// change request: the cancel's cleanup targets read the release's
+    /// books, so cancelling before the interpreter checkpoints its CR
+    /// strands the CR open on the provider (the cleanup would have no
+    /// reference to close).
+    async fn wait_for_cr_recorded(
+        client: &reqwest::Client,
+        base: &str,
+        auth_header: &(&'static str, String),
+        id: &str,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let document = client
+                .get(format!("{base}/api/v1/releases/{id}"))
+                .header(auth_header.0, auth_header.1.clone())
+                .send()
+                .await
+                .expect("http")
+                .json::<serde_json::Value>()
+                .await
+                .expect("the release's document");
+            if document
+                .pointer("/status/environments/0/change_request/number")
+                .is_some_and(|number| !number.is_null())
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the release {id} never recorded its change request: {document}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     // List with filters .
     let response = client
         .get(format!("{base}/api/v1/releases?application=my-service"))
@@ -320,9 +356,11 @@ async fn test_authed_release_lifecycle() {
         "this run's my-service release must be listed (the keyed create is keyed-service)"
     );
 
-    // Cancel is in-flight only. The release blocks at its merge wait,
+    // Cancel is in-flight only. The release blocks at its merge wait
+    // (the CR is recorded first — the cleanup needs the reference),
     // so the cancel lands and the cleanup workflow closes the CR and
     // settles the branches.
+    wait_for_cr_recorded(&client, &base, &auth_header, &id).await;
     assert_eq!(
         client
             .post(format!("{base}/api/v1/releases/{id}/cancel"))
@@ -332,6 +370,24 @@ async fn test_authed_release_lifecycle() {
             .expect("http")
             .status(),
         reqwest::StatusCode::NO_CONTENT
+    );
+
+    // The keyed release drains FIRST: its interpreter blocks at its
+    // own merge wait (a real open CR on the mock's seeded path), so
+    // the cancel is deterministic — and draining it now means the
+    // cleanup wait below sees BOTH releases' change requests close.
+    wait_for_cr_recorded(&client, &base, &auth_header, &keyed_id).await;
+    let keyed_cancel = client
+        .post(format!("{base}/api/v1/releases/{keyed_id}/cancel"))
+        .header(auth_header.0, auth_header.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(
+        keyed_cancel.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the keyed release's drain: {:?}",
+        keyed_cancel.text().await
     );
 
     // The cleanup's effect on the provider: the CR closed.
@@ -373,22 +429,10 @@ async fn test_authed_release_lifecycle() {
     let body: serde_json::Value = response.json().await.expect("problem body");
     assert_eq!(body["code"], "ReleaseNotFound");
 
-    // The keyed create's release drains too (a non-terminal row would
-    // poison the next boot's recovery against the shared fixture DB).
-    let keyed_cancel = client
-        .post(format!("{base}/api/v1/releases/{keyed_id}/cancel"))
-        .header(auth_header.0, auth_header.1.clone())
-        .send()
-        .await
-        .expect("http");
-    assert_eq!(
-        keyed_cancel.status(),
-        reqwest::StatusCode::NO_CONTENT,
-        "the keyed release's drain: {:?}",
-        keyed_cancel.text().await
-    );
     // The keyed release's row goes too — then the same key provisions
     // fresh (the key's mapping followed the row out via the cascade).
+    // The row stays until the cleanup converged above: a mid-cleanup
+    // delete would strand the change request open on the provider.
     assert_eq!(
         client
             .delete(format!("{base}/api/v1/releases/{keyed_id}"))
@@ -417,6 +461,7 @@ async fn test_authed_release_lifecycle() {
     // The fresh release drains too (cancel + delete), leaving no
     // non-terminal row behind against the shared fixture DB.
     let fresh_id = fresh_document["metadata"]["id"].as_str().expect("id");
+    wait_for_cr_recorded(&client, &base, &auth_header, fresh_id).await;
     let cancel = client
         .post(format!("{base}/api/v1/releases/{fresh_id}/cancel"))
         .header(auth_header.0, auth_header.1.clone())

@@ -61,6 +61,10 @@ pub struct ProviderCaps {
     pub branch_protection: bool,
     /// Tag-protection checks for `require_tag_protection` .
     pub tag_protection: bool,
+    /// Tag-object reads (the F-95 version policy's tag/SHA
+    /// verification reads the provider's tag object, never a
+    /// payload alone).
+    pub tag_lookup: bool,
     /// Branch delete (the cleanup path).
     pub branch_delete: bool,
     /// Signature verification of webhook deliveries .
@@ -257,6 +261,16 @@ pub trait Provider: Send + Sync {
 
     /// The SHA of a branch tip ( "already exists at expected SHA").
     async fn branch_sha(&self, repo: &RepoRef, branch: &str) -> ProviderResult<String>;
+
+    /// The commit SHA a tag points at (F-95: the version policy
+    /// verifies the tag against the provider's tag object — the
+    /// webhook's push payload and the token's `sha` claim are claims,
+    /// the provider is the truth). `NotFound` = the tag does not
+    /// exist. Annotated tags dereference to their commit.
+    async fn tag_sha(&self, repo: &RepoRef, tag: &str) -> ProviderResult<String> {
+        let _ = (repo, tag);
+        Err(ProviderError::Unsupported)
+    }
 
     /// Sets a commit status (`builtin/wait-for-check` draft surface).
     async fn set_commit_status(

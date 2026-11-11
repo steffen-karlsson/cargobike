@@ -480,6 +480,7 @@ mod tests {
             cargobike_core::provider::ProviderCaps {
                 branch_protection: self.capable,
                 tag_protection: false,
+                tag_lookup: false,
                 auto_merge: false,
                 releases: false,
                 tags: false,

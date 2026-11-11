@@ -7,6 +7,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use std::net::SocketAddr;
 use std::process::Command;
+use std::sync::Arc;
+
+/// The seeded tag's commit SHA (F-95: the good token's `sha` claim
+/// points at it; the mismatch case claims another).
+const SEEDED_SHA: &str = "c0ffee0000000000000000000000000000000000";
 
 /// b64url for token parts and JWK moduli.
 fn b64url(bytes: &[u8]) -> String {
@@ -164,7 +169,22 @@ environments:
     )
     .expect("config");
 
-    let boot = cargobike_server::boot(Some(&config_path), None).await;
+    // F-95: the app demands `require_tag` (its tag_format names the
+    // tag), so the fixture installs the mock provider with the tag the
+    // good token's SHA claim points at.
+    let mock = Arc::new(cargobike_engine::mock::MockProvider::at(
+        &std::env::temp_dir()
+            .join(format!("cb-oidc-mock-{port}"))
+            .to_string_lossy(),
+    ));
+    let version = format!("1.0.{port}");
+    mock.seed_tag(&format!("v{version}"), SEEDED_SHA);
+    let mut providers = cargobike_core::registry::ProviderRegistry::new();
+    providers.insert(
+        "github",
+        mock.clone() as Arc<dyn cargobike_core::provider::Provider>,
+    );
+    let boot = cargobike_server::boot(Some(&config_path), Some(providers)).await;
     let (router, _state) = match boot {
         Ok(pair) => pair,
         Err(error) => {
@@ -271,6 +291,32 @@ environments:
             .and_then(serde_json::Value::as_str),
         Some("https://github.com/my-org/my-service/actions/runs/424242")
     );
+    // F-95: a token whose SHA claim does not match the provider's tag
+    // object refuses the create — the claim is an assertion, the
+    // provider's tag is the truth.
+    let mut mismatched = claims_base.clone();
+    if let serde_json::Value::Object(map) = &mut mismatched {
+        map.insert(
+            "sha".to_owned(),
+            serde_json::Value::String("0000000000000000000000000000000000000000".to_owned()),
+        );
+    }
+    let mismatched_sha = craft_jwt(&keypair.key_path, mismatched, "test-kid");
+    let response = client
+        .post(format!("{issuer}/api/v1/releases"))
+        .header("Authorization", format!("Bearer {mismatched_sha}"))
+        .json(&serde_json::json!({ "application": "my-service", "version": version }))
+        .send()
+        .await
+        .expect("http");
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.expect("body");
+    assert_eq!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST,
+        "the mismatched SHA claim must refuse: {body}"
+    );
+    assert_eq!(body["code"], "VersionNotVerified");
     // (created_location feeds the drain at the test's end; its
     // interpreter must reach terminal before this binary exits, or its
     // orphaned PENDING row poisons later boots' recovery.)

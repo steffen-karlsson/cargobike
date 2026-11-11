@@ -68,6 +68,10 @@ pub struct AuthedCaller {
     pub grants: Vec<String>,
     /// `repository_id` claim when the token carried one .
     pub repository_id: Option<String>,
+    /// The token's `sha` claim — the commit the OIDC token was minted
+    /// for (F-95: the version policy verifies the tag against the
+    /// provider's object; the claim is the asserted target).
+    pub sha_claim: Option<String>,
     /// The CI context built from VERIFIED token claims (F-83/F-84):
     /// body-supplied values never reach here.
     pub ci: Option<cargobike_core::model::CiContext>,
@@ -474,6 +478,7 @@ impl AuthState {
                 display_name: key.description.clone().unwrap_or_else(|| key.name.clone()),
                 grants: key.grants.clone(),
                 repository_id: None,
+                sha_claim: None,
                 ci: None,
                 bootstrap: false,
             });
@@ -490,6 +495,7 @@ impl AuthState {
                     display_name: "bootstrap".to_owned(),
                     grants: vec!["*".to_owned()],
                     repository_id: None,
+                    sha_claim: None,
                     ci: None,
                     bootstrap: true,
                 });
@@ -583,6 +589,10 @@ impl AuthState {
                 grants: entry.grants.clone(),
                 repository_id: claims
                     .get("repository_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                sha_claim: claims
+                    .get("sha")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
                 ci: ci_of(&entry.issuer, &claims),

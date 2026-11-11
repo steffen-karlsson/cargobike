@@ -303,10 +303,14 @@ fn mock_state(scratch: &str) -> serde_json::Value {
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::expect_used, clippy::print_stderr)]
 async fn test_a_signed_tag_push_creates_the_release() {
-    let Some((base, _mock, _scratch)) = test_server().await else {
+    let Some((base, mock, _scratch)) = test_server().await else {
         return;
     };
     let tag_run = run_tag(&base);
+    // F-95: the payload's SHA is a claim — the mock's tag object is
+    // the truth, so the pushed tag is seeded pointing at the pushed
+    // SHA (a mismatch test in the oidc suite covers the refusal).
+    mock.seed_tag("v1.5.0", "abc123");
     // The tag push: v1.5.0 → the tag-service (the event: tag trigger;
     // require_tag_protection=false because the mock has no rulesets).
     let body = format!(
@@ -407,10 +411,11 @@ async fn test_unrecognized_events_acknowledge_ignored() {
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::expect_used, clippy::print_stderr)]
 async fn test_duplicate_deliveries_deduplicate() {
-    let Some((base, _mock, _scratch)) = test_server().await else {
+    let Some((base, mock, _scratch)) = test_server().await else {
         return;
     };
     let tag_run = run_tag(&base);
+    mock.seed_tag("v2.0.0", "abc123");
     let body = format!(
         r#"{{"ref":"refs/tags/v2.0.0","after":"abc123","repository":{{"id":"wh-{tag_run}"}},"sender":{{"login":"ska"}}}}"#
     );
@@ -461,6 +466,9 @@ async fn test_the_closed_pull_request_correlates_and_wakes_the_wait() {
         return;
     };
     let tag_run = run_tag(&base);
+    // F-95: the API-key create's version policy is "tag exists"
+    // (no SHA rides the token, none supplied here).
+    mock.seed_tag("v3.0.0", "def456");
     // The create stalls at the merge wait with one open CR (number 1).
     let document = create_release(&base, "tag-service", "3.0.0").await;
     let id = document["metadata"]["id"].as_str().expect("id").to_owned();

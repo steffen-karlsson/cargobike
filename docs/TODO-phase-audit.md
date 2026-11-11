@@ -87,12 +87,22 @@
   id; the environment's status carries the CR reference at the same
   boundary. The integration stamp the test used to simulate is gone —
   the engine's write is the path now.
-- [ ] **F-95/F-4 version verification, remainder**: the scheme check at
+- [x] **F-95/F-4 version verification, remainder**: the scheme check at
   create is live (`VersionNotVerified` on a bad version; 6104d43) and the
-  webhook's tag-push path extracts the version from `tag_format`. Still
-  missing: per-shape verification — OIDC creates verify the SHA claim,
-  API-key creates verify the tag exists, webhook creates verify the tag
-  object's SHA (§3 US-1, §9.3).
+  webhook's tag-push path extracts the version from `tag_format`. The
+  per-shape verification is wired at the create's choke point: the
+  provider trait grows `tag_sha` (the GitHub impl dereferences annotated
+  tags to their commit; the mock serves seeded state, `seed_tag`),
+  `ProviderCaps.tag_lookup` gates it and the create FAILS CLOSED when a
+  `require_tag` app meets an incapable provider. OIDC creates verify the
+  token's `sha` claim against the tag's commit, API-key creates demand
+  "tag exists" (or verify a body-supplied SHA), webhook creates verify
+  the payload's SHA against the provider's tag object (§3 US-1, §9.3).
+  Roundtrip coverage: the oidc suite seeds the mock's tag and asserts a
+  matching claim creates while a mismatching claim refuses with 400
+  `VersionNotVerified`; the webhook suite's pushes seed their tags; the
+  sighup fixture (a spawned process, no provider) runs with
+  `require_tag: false`.
 - [x] **F-82 tag protection enforced at the trigger**: only one trigger
   exists today (the webhook's tag push); its creator runs
   `check_tag_protection` and skips fail-closed on the default-true rule

@@ -62,6 +62,10 @@ pub struct MockState {
     /// abandoning interpreters — from eating the flag).
     #[serde(default)]
     pub fail_next_commit_for: Option<String>,
+    /// Tags: name → commit SHA (F-95's version policy reads the
+    /// provider's tag objects; the mock's truth lives here).
+    #[serde(default)]
+    pub tags: std::collections::BTreeMap<String, String>,
 }
 
 /// A change request compact enough for the state file.
@@ -169,6 +173,16 @@ impl MockProvider {
         MockState::state_path(self.scratch.to_string_lossy().as_ref())
     }
 
+    /// Seeds a tag (name → commit SHA) — F-95's version-policy
+    /// verification reads the provider's tag objects, so tests stage
+    /// the tags their releases are cut from.
+    pub fn seed_tag(&self, tag: &str, sha: &str) {
+        let path = self.state_file();
+        let mut state = MockState::load(&path);
+        state.tags.insert(tag.to_owned(), sha.to_owned());
+        state.save(&path);
+    }
+
     /// Marks a change request merged: the head branch's files land on
     /// the base branch — what the engine's merge verification reads.
     pub fn mark_merged(&self, number: u64) -> Result<(), ProviderError> {
@@ -223,6 +237,7 @@ impl Provider for MockProvider {
             // runs the F-65 fail-closed gate like production does.
             branch_protection: true,
             tag_protection: false,
+            tag_lookup: true,
             auto_merge: false,
             releases: false,
             tags: false,
@@ -295,6 +310,18 @@ impl Provider for MockProvider {
             .get(branch)
             .cloned()
             .ok_or(ProviderError::NotFound("branch"))
+    }
+
+    /// F-95: the tag's commit SHA out of the mock's state (the
+    /// version-policy verification's truth).
+    async fn tag_sha(&self, _repo: &RepoRef, tag: &str) -> ProviderResult<String> {
+        let path = self.state_file();
+        let state = MockState::load(&path);
+        state
+            .tags
+            .get(tag)
+            .cloned()
+            .ok_or(ProviderError::NotFound("tag"))
     }
 
     async fn commit_files(

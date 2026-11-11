@@ -505,7 +505,7 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
         provider: &str,
         repository_id: &str,
         tag: &str,
-        _sha: &str,
+        sha: &str,
         sender: &str,
     ) -> Result<cargobike_engine::TagPushOutcome, String> {
         let config = self.config.borrow().clone();
@@ -586,10 +586,13 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                 releases: &crate::release::ReleaseRepository::new(self.pool.clone()),
                 config: config.clone(),
                 step_types: self.steps.installed().into_iter().collect(),
+                providers: &self.providers,
             };
             // The row half only: the interpreter's start is refused
             // from inside a step, so the creator plans and the webhook
-            // workflow's body addresses the interpreters.
+            // workflow's body addresses the interpreters. F-95: the
+            // payload's SHA is a claim — the create verifies the tag
+            // against the provider's own tag object.
             match crate::release::create_release_row(
                 &parts,
                 app,
@@ -599,6 +602,7 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                     actor: Some(&sender_actor),
                     retried_from: None,
                     idempotency_key: None,
+                    sha: Some(sha),
                 },
             )
             .await

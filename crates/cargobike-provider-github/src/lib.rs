@@ -175,6 +175,7 @@ impl Provider for GithubProvider {
         ProviderCaps {
             branch_protection: true,
             tag_protection: true,
+            tag_lookup: true,
             webhook_parsing: true,
             webhook_verification: true,
             auto_merge: true,
@@ -206,6 +207,33 @@ impl Provider for GithubProvider {
             .await
             .map_err(request_failure)?;
         Ok(reference_sha(found))
+    }
+
+    /// F-95: the tag's COMMIT SHA — the version policy verifies
+    /// against the provider's tag object, not any payload alone. An
+    /// annotated tag's ref points at the tag object, so it
+    /// dereferences one more hop to the commit.
+    async fn tag_sha(&self, repo: &CoreRepoRef, tag: &str) -> ProviderResult<String> {
+        let handler = self.git_by_id(repo)?;
+        let found = handler
+            .get_ref(&Reference::Tag(tag.to_owned()))
+            .await
+            .map_err(request_failure)?;
+        let (sha, kind) = match found.object {
+            octocrab::models::repos::Object::Commit { sha, .. } => (sha, "commit"),
+            octocrab::models::repos::Object::Tag { sha, .. } => (sha, "tag"),
+            _ => return Err(ProviderError::NotFound("tag ref")),
+        };
+        if kind != "tag" {
+            return Ok(sha);
+        }
+        // An annotated tag: the ref's object is the tag object; its
+        // `object` field carries the commit.
+        let annotated = handler.get_tag(sha).await.map_err(request_failure)?;
+        annotated
+            .object
+            .map(|object| object.sha)
+            .ok_or(ProviderError::NotFound("tag object"))
     }
 
     async fn create_branch(

@@ -17,7 +17,7 @@ What lives here:
 | `error` | Release error codes (`StepFailed`, `MergeTimeout`, `ApprovalTimeout`, `ApprovalRejected`, `VersionNotVerified`, `ConcurrencyRejected`, `ChangeRequestModified`) and the typed `LibraryError` (§10.1) |
 | `version` | Version schemes `semver` / `calver` / `opaque`: validation plus the ordering supersession uses  |
 | `template` | `PipelineTemplate`: inputs, environment inputs, `step_groups`, steps, gates; source strings kept verbatim so snapshots stay faithful to the source  |
-| `provider` | The async `Provider` trait (branches, commits, CRs, files, labels, statuses, protection checks, optional auto-merge/tag/release/webhooks), `ProviderCaps`, edit types |
+| `provider` | The async `Provider` trait (branches, commits, CRs, files, labels, statuses, protection checks, tag-object reads for the F-95 version policy, optional auto-merge/tag/release/webhooks), `ProviderCaps` (incl. `tag_lookup` — the tag verification fails CLOSED when off), edit types |
 | `edits` | Structural edit application over JSON/YAML/TOML with dot-notation paths — never text substitution |
 | `step` | `StepType` trait, `StepContext`, `StepOutput`, `EnvRef` (carries the registry's per-environment facts: repo, edits, commit message, and the `require_branch_protection` flag — default `true`, so a missing stamp fails closed), the `HttpService` seam for SSRF-guarded HTTP (the server and sidecar clients implement it)  |
 | `registry` | `ProviderRegistry` (resolve by name) and `CredentialStore` (resolve `{ secret: <name> }`)  |

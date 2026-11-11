@@ -16,7 +16,9 @@ Components:
  (`commit_files` with expected-parent guard and re-commit no-op), change
  requests (create, get, find-by-head-branch, close+comment, list with paging),
  files, comments, labels, commit statuses, default-branch and branch-SHA
- readers, branch-protection and tag-protection (rulesets) checks, auto-merge
+ readers, tag-object reads (`tag_sha` dereferences annotated tags to their
+ commit — F-95's version policy verifies against the provider's own
+ object), branch-protection and tag-protection (rulesets) checks, auto-merge
  (GraphQL), tag and release creation (`ProviderCaps`-gated), webhook
  verification delegating to `webhook.rs`.
 - **`webhook.rs` — `verify_and_normalise`**: constant-time HMAC-SHA256

@@ -242,6 +242,13 @@ async fn create_release(
         })?
         .to_owned();
 
+    // An API-key create may supply the SHA the release is cut from
+    // (F-95: no SHA rides the token, so the body's is verified
+    // against the provider's tag object; the token's own claim — a
+    // VERIFIED value — always wins over the body's).
+    let body_sha = body.get("sha").and_then(serde_json::Value::as_str);
+    let provenance_sha = caller.sha_claim.as_deref().or(body_sha);
+
     let config = state.config.borrow().clone();
     let app = match crate::auth::authorize_create(&config, &caller, &application) {
         Ok(app) => app,
@@ -281,6 +288,7 @@ async fn create_release(
             actor: Some(&caller_actor),
             retried_from: None,
             idempotency_key: idempotency_key.as_deref(),
+            sha: provenance_sha,
         },
     )
     .await?;
@@ -635,6 +643,7 @@ async fn retry_release(
             actor: Some(&caller_actor),
             retried_from: Some(retried_from.as_str()),
             idempotency_key: None,
+            sha: caller.sha_claim.as_deref(),
         },
     )
     .await?;
