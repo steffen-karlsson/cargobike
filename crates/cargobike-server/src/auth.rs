@@ -162,7 +162,7 @@ fn entry_is_active(entry: &crate::config::ApiKeyEntry, now: &time::OffsetDateTim
 }
 
 /// The auth context the middleware consults ( JWKS cached, refetch
-/// on unknown `kid` is rate-limited by the moka TTL window). Trust
+/// on unknown `kid` is rate-limited ). Trust
 /// entries come from the shared watch, so SIGHUP reloads reach auth too.
 pub struct AuthState {
     /// The shared config source (the hot reload swaps this).
@@ -172,9 +172,27 @@ pub struct AuthState {
     bootstrap: Option<String>,
     /// Cached JWKS documents keyed by URL .
     jwks: moka::sync::Cache<String, Arc<jsonwebtoken::jwk::JwkSet>>,
-    /// The outbound client used for JWKS fetches only.
+    /// Discovered `jwks_uri`s keyed by issuer .
+    discovery: moka::sync::Cache<String, Arc<String>>,
+    /// The forced-refetch windows, keyed by JWKS URL: one unknown-`kid`
+    /// refetch per window per URL, so a rotation storm cannot
+    /// hammer the issuer.
+    refetch_windows: moka::sync::Cache<String, ()>,
+    /// The outbound client used for discovery and JWKS fetches only.
     client: reqwest::Client,
 }
+
+/// The discovery document's path off an issuer ( ).
+const DISCOVERY_PATH: &str = "/.well-known/openid-configuration";
+/// The legacy direct JWKS path, the fallback when the issuer serves no
+/// discovery document (pre-discovery behaviour, kept for exotic issuers).
+const LEGACY_JWKS_PATH: &str = "/.well-known/jwks.json";
+/// How long a discovered `jwks_uri` stands before re-discovery.
+const DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+/// How long a cached JWKS stands before a plain refresh.
+const JWKS_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+/// The unknown-`kid` forced-refetch window (the rate limit).
+const JWKS_REFETCH_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The salt's randomness: 16 bytes from the OS (Argon2's PHC b64).
 fn rand_materials() -> [u8; 16] {
@@ -245,8 +263,12 @@ impl AuthState {
                     .map(|hashed| hashed.to_string())
                     .unwrap_or_default()
             }),
-            jwks: moka::sync::Cache::builder()
-                .time_to_live(std::time::Duration::from_secs(300))
+            jwks: moka::sync::Cache::builder().time_to_live(JWKS_TTL).build(),
+            discovery: moka::sync::Cache::builder()
+                .time_to_live(DISCOVERY_TTL)
+                .build(),
+            refetch_windows: moka::sync::Cache::builder()
+                .time_to_live(JWKS_REFETCH_WINDOW)
                 .build(),
             client: reqwest::Client::builder()
                 .user_agent("cargobike")
@@ -262,12 +284,62 @@ impl AuthState {
         self.config.borrow().clone()
     }
 
-    /// The JWKS document for an entry, cached by URL ( `jwks_url`
-    /// override when the issuer lacks usable discovery).
-    async fn jwks_for(&self, url: &str) -> Result<Arc<jsonwebtoken::jwk::JwkSet>, AuthError> {
+    /// The JWKS URL an entry validates against (F-77): the explicit
+    /// `jwks_url` override wins, then the issuer's discovery document's
+    /// `jwks_uri` (the GitHub Actions issuer's real path,
+    /// `/.well-known/jwks`, only appears there), then the legacy direct
+    /// `{issuer}/.well-known/jwks.json` guess. The discovered URI is
+    /// cached per issuer; a discovery failure falls back and is logged
+    /// once per TTL window.
+    async fn jwks_url_for(&self, entry: &crate::config::OidcEntry) -> String {
+        if let Some(explicit) = &entry.jwks_url {
+            return explicit.clone();
+        }
+        if let Some(discovered) = self.discovery.get(&entry.issuer) {
+            return discovered.to_string();
+        }
+        let issuer = entry.issuer.trim_end_matches('/');
+        let document_url = format!("{issuer}{DISCOVERY_PATH}");
+        let discovered = async {
+            let response = self.client.get(&document_url).send().await.ok()?;
+            let response = response.error_for_status().ok()?;
+            let document: serde_json::Value = response.json().await.ok()?;
+            let uri = document.get("jwks_uri")?.as_str()?;
+            Some(uri.to_owned()).filter(|uri| !uri.is_empty())
+        }
+        .await;
+        match discovered {
+            Some(uri) => {
+                self.discovery
+                    .insert(entry.issuer.clone(), Arc::new(uri.clone()));
+                uri
+            }
+            None => {
+                tracing::warn!(
+                    issuer = %entry.issuer,
+                    "no OIDC discovery document; falling back to {LEGACY_JWKS_PATH}"
+                );
+                let fallback = format!("{issuer}{LEGACY_JWKS_PATH}");
+                // The fallback also fills the discovery slot: within the
+                // TTL window the issuer is not re-asked.
+                self.discovery
+                    .insert(entry.issuer.clone(), Arc::new(fallback.clone()));
+                fallback
+            }
+        }
+    }
+
+    /// The JWKS document for a URL, from the TTL cache when fresh.
+    async fn jwks_cached(&self, url: &str) -> Result<Arc<jsonwebtoken::jwk::JwkSet>, AuthError> {
         if let Some(cached) = self.jwks.get(url) {
             return Ok(cached);
         }
+        self.jwks_fetch(url).await
+    }
+
+    /// Fetches a JWKS document and admits it to the cache (a fresh fetch
+    /// also refreshes the document for every other caller of the URL).
+    async fn jwks_fetch(&self, url: &str) -> Result<Arc<jsonwebtoken::jwk::JwkSet>, AuthError> {
         let response = self
             .client
             .get(url)
@@ -284,6 +356,38 @@ impl AuthState {
         let fresh = Arc::new(fresh);
         self.jwks.insert(url.to_owned(), Arc::clone(&fresh));
         Ok(fresh)
+    }
+
+    /// The unknown-`kid` forced refetch (F-77): at most one per URL per
+    /// [`JWKS_REFETCH_WINDOW`], so a rotation (or an attacker spraying
+    /// random kids) cannot turn validation into a fetch storm. `None`
+    /// means the window refused; the cached document stands.
+    async fn jwks_refetch(&self, url: &str) -> Option<Arc<jsonwebtoken::jwk::JwkSet>> {
+        // The window marker: `or_insert_with` computes only when the
+        // marker is absent, and the returned entry reports whether THIS
+        // call was the fresh one — so the first unknown kid in a window
+        // takes the fetch and every later one finds the marker standing.
+        let marker = self
+            .refetch_windows
+            .entry(url.to_owned())
+            .or_insert_with(|| ());
+        if marker.is_fresh() {
+            self.jwks_fetch(url).await.ok()
+        } else {
+            None
+        }
+    }
+
+    /// The key for a token header out of a JWKS: the `kid` match first,
+    /// a single-key document second (kid-less issuers).
+    fn select_key<'a>(
+        jwks: &'a jsonwebtoken::jwk::JwkSet,
+        kid: &Option<String>,
+    ) -> Option<&'a jsonwebtoken::jwk::Jwk> {
+        jwks.keys
+            .iter()
+            .find(|jwk| jwk.common.key_id.as_deref() == kid.as_deref())
+            .or_else(|| (jwks.keys.len() == 1).then(|| &jwks.keys[0]))
     }
 
     /// Resolves a Bearer-credential caller: API keys first , then
@@ -348,19 +452,19 @@ impl AuthState {
             if !matches_algorithm {
                 continue;
             }
-            let jwks_url = entry.jwks_url.clone().unwrap_or_else(|| {
-                format!(
-                    "{}/.well-known/jwks.json",
-                    entry.issuer.trim_end_matches('/')
-                )
-            });
-            let jwks = self.jwks_for(&jwks_url).await?;
+            let jwks_url = self.jwks_url_for(entry).await;
+            let mut jwks = self.jwks_cached(&jwks_url).await?;
             // Key selection by `kid`; a single-key document needs none.
-            let jwk = jwks
-                .keys
-                .iter()
-                .find(|jwk| jwk.common.key_id.as_deref() == header.kid.as_deref())
-                .or_else(|| (jwks.keys.len() == 1).then(|| &jwks.keys[0]));
+            let mut jwk = Self::select_key(&jwks, &header.kid);
+            if jwk.is_none() {
+                // F-77: an unknown `kid` may be a rotation the cached
+                // document predates — one rate-limited refetch, then the
+                // selection runs again.
+                if let Some(fresh) = self.jwks_refetch(&jwks_url).await {
+                    jwks = fresh;
+                    jwk = Self::select_key(&jwks, &header.kid);
+                }
+            }
             let Some(jwk) = jwk else { continue };
             let Ok(key) = jsonwebtoken::DecodingKey::from_jwk(jwk) else {
                 continue;

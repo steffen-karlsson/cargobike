@@ -227,12 +227,20 @@
 
 ## 8. Auth / API polish (Phase 2 leftovers + §9)
 
-- [ ] OIDC discovery (F-77, 2.5): server fetches `{issuer}/.well-known/jwks.json`
-  directly and never reads the discovery document (`loose` jwks_uri); GitHub
-  Actions' real JWKS path is `/.well-known/jwks` — default issuer breaks unless
-  every entry sets `jwks_url`.
-- [ ] JWKS refetch-on-unknown-`kid` with rate limiting: cache is TTL-only;
-  unknown kid falls back to "single-key doc" heuristic.
+- [x] OIDC discovery (F-77, 2.5): the JWKS URL resolves through the
+  issuer's discovery document (`{issuer}/.well-known/openid-configuration`
+  → `jwks_uri`, cached 1h per issuer) — the GitHub Actions issuer's real
+  `/.well-known/jwks` path works without a `jwks_url` override now; the
+  `jwks_url` entry override still wins, and the legacy
+  `{issuer}/.well-known/jwks.json` guess is the logged fallback for
+  issuers without discovery.
+- [x] JWKS refetch-on-unknown-`kid` with rate limiting: an unknown kid
+  forces one refetch per URL per 30s window (a `moka` entry marker),
+  then the selection (kid match, single-key fallback) runs again; a
+  rotation validates without waiting out the 5m cache TTL and a kid
+  storm cannot hammer the issuer (`tests/oidc_roundtrip.rs` counts
+  the JWKS hits: 1 cached, 2 after the rotation, still 2 after the
+  storm probe — also the §9 rate-limit test item).
 - [ ] `CiContext` extraction from token claims (F-83) and F-84
   "verified values from claims, not body".
 - [ ] Application groups (§4.13a, the planned 2.7a): discovery scan, virtual
@@ -288,7 +296,9 @@
   `tests/engine_integration/`: a real interpreter pass records the returned
   request to prove the secret's flow, then scans `operation_outputs` and
   `workflow_status` (inputs/output/error) for the material.
-- [ ] ETag/refetch-on-unknown-kid rate limiting unit tests.
+- [x] ETag/refetch-on-unknown-kid rate limiting unit tests — the kid half
+      is covered (`tests/oidc_roundtrip.rs`'s hit counter); the reconciler's
+      ETag half is with the F-69 efficiency item below.
 - [x] `${VAR:-default}` interpolation test (F-89): shellexpand 3.1.2 covers
   the default syntax; the server config test suite asserts it.
 

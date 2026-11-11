@@ -21,11 +21,14 @@ struct RsaKeypair {
 }
 
 /// Generates an RSA-2048 keypair via the CLI openssl (the macOS and CI
-/// runners ship it) and extracts the modulus for the JWKS.
+/// runners ship it) and extracts the modulus for the JWKS. The key file
+/// is unique per call: tests in this binary run concurrently and would
+/// otherwise overwrite each other's key material mid-sign.
 #[allow(clippy::expect_used, clippy::print_stderr)]
 fn generate_rsa() -> RsaKeypair {
     let dir = std::env::temp_dir();
-    let key_path = dir.join("cb-oidc-roundtrip-key.pem");
+    let unique = uuid::Uuid::now_v7().simple();
+    let key_path = dir.join(format!("cb-oidc-key-{unique}.pem"));
     let generated = Command::new("openssl")
         .arg("genpkey")
         .arg("-algorithm")
@@ -71,7 +74,8 @@ fn craft_jwt(key_path: &std::path::Path, claims: serde_json::Value, kid: &str) -
     let header_b64 = b64url(header.to_string().as_bytes());
     let payload_b64 = b64url(claims.to_string().as_bytes());
     let message = format!("{header_b64}.{payload_b64}");
-    let message_path = std::env::temp_dir().join("cb-oidc-roundtrip-message");
+    let message_path =
+        std::env::temp_dir().join(format!("cb-oidc-message-{}", uuid::Uuid::now_v7().simple()));
     std::fs::write(&message_path, message.as_bytes()).expect("message file");
     let signature = Command::new("openssl")
         .arg("dgst")
@@ -300,8 +304,8 @@ environments:
     );
 
     // A differently-signed token: ⇒ 401 InvalidToken (the signature
-    // check). Runs last: the second keypair overwrites the same pem path,
-    // so anything signed after this line uses the foreign key.
+    // check). The JWKS serves only the first keypair, so this token's
+    // signature never validates regardless of caching order.
     let other = generate_rsa();
     let forged = craft_jwt(&other.key_path, claims_base, "test-kid");
     let response = client
@@ -330,5 +334,192 @@ environments:
         reqwest::StatusCode::NO_CONTENT,
         "the drain's cancel: {:?}",
         cancel.text().await
+    );
+}
+
+/// The F-77 discovery + rotation pair: an entry WITHOUT `jwks_url`
+/// resolves its JWKS through the issuer's discovery document (the
+/// GitHub Actions shape — its JWKS lives at `/.well-known/jwks`, which
+/// the legacy `jwks.json` guess never finds), and an unknown `kid`
+/// forces exactly one rate-limited refetch per window (a key rotation
+/// validates without waiting out the cache TTL; a kid storm cannot
+/// hammer the issuer).
+#[allow(clippy::expect_used, clippy::print_stderr)]
+#[tokio::test(flavor = "current_thread")]
+async fn test_oidc_discovery_resolves_jwks_and_unknown_kid_refetches_once() {
+    let Some(_fix_url) = std::env::var("CARGOBIKE_TEST_DATABASE_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!("skipping: CARGOBIKE_TEST_DATABASE_URL is unset");
+        return;
+    };
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("port").port();
+    let issuer = format!("http://127.0.0.1:{port}");
+
+    let old_key = generate_rsa();
+    let new_key = generate_rsa();
+    let old_jwk = |key: &RsaKeypair| {
+        serde_json::json!({
+            "kty": "RSA", "kid": "old-kid", "n": key.modulus_b64,
+            "e": "AQAB", "alg": "RS256", "use": "sig"
+        })
+    };
+    let new_jwk = |key: &RsaKeypair| {
+        serde_json::json!({
+            "kty": "RSA", "kid": "new-kid", "n": key.modulus_b64,
+            "e": "AQAB", "alg": "RS256", "use": "sig"
+        })
+    };
+
+    // The JWKS server's state: hit count + the rotation flag.
+    let jwks_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rotated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let templates_dir = std::env::temp_dir().join(format!("cb-oidc-disc-templates-{port}"));
+    let _ = std::fs::create_dir_all(&templates_dir);
+    std::fs::write(
+        templates_dir.join("service.yaml"),
+        "name: service\nversion: \"1\"\n",
+    )
+    .expect("template");
+    let config_path = std::env::temp_dir().join(format!("cb-oidc-disc-config-{port}.yaml"));
+    std::fs::write(
+        &config_path,
+        format!(
+            "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
+             database:\n  url: \"{_fix_url}\"\n  dbos_schema: \"cbtest-oidc-disc-{port}\"\n\n\
+             templates:\n  directory: {}\n\n\
+             auth:\n  oidc:\n    - name: gha-shape\n      issuer: \"{issuer}\"\n      audience: cargobike\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:read]\n",
+            templates_dir.display(),
+        ),
+    )
+    .expect("config");
+
+    // NOTE: no `jwks_url` — the discovery document is the only path to
+    // the JWKS, and it names the GHA-style `/.well-known/jwks`.
+    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), None).await else {
+        eprintln!("skipping: boot failed");
+        return;
+    };
+    let discovery_body = serde_json::json!({
+        "issuer": issuer,
+        "jwks_uri": format!("{issuer}/.well-known/jwks"),
+    });
+    let hits_for_jwks = std::sync::Arc::clone(&jwks_hits);
+    let rotation_flag = std::sync::Arc::clone(&rotated);
+    let old_pair = std::sync::Arc::new(old_key);
+    let new_pair = std::sync::Arc::new(new_key);
+    // The token-crafting half keeps its own handles: the route's `move`
+    // closures take the Arcs.
+    let old_key_path = old_pair.key_path.clone();
+    let new_key_path = new_pair.key_path.clone();
+    let router = router
+        .route(
+            "/.well-known/openid-configuration",
+            axum::routing::get(move || {
+                let discovery_body = discovery_body.clone();
+                async move { axum::Json(discovery_body) }
+            }),
+        )
+        .route(
+            "/.well-known/jwks",
+            axum::routing::get(move || {
+                let hits = std::sync::Arc::clone(&hits_for_jwks);
+                let rotated = std::sync::Arc::clone(&rotation_flag);
+                let old = old_pair.clone();
+                let fresh = new_pair.clone();
+                async move {
+                    use std::sync::atomic::Ordering;
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let keys = if rotated.load(Ordering::SeqCst) {
+                        vec![old_jwk(&old), new_jwk(&fresh)]
+                    } else {
+                        vec![old_jwk(&old)]
+                    };
+                    axum::Json(serde_json::json!({ "keys": keys }))
+                }
+            }),
+        );
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+
+    let client = reqwest::Client::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let claims = serde_json::json!({
+        "iss": issuer, "aud": "cargobike", "sub": "ci-runner",
+        "repository_owner_id": "123456",
+        "iat": now, "nbf": now.saturating_sub(5), "exp": now + 600,
+    });
+
+    // The old key validates through the DISCOVERY-resolved JWKS (the
+    // GHA path, not the legacy jwks.json guess).
+    let old_token = craft_jwt(&old_key_path, claims.clone(), "old-kid");
+    let response = client
+        .get(format!("{issuer}/api/v1/whoami"))
+        .header("Authorization", format!("Bearer {old_token}"))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the discovery-resolved JWKS validates: {:?}",
+        response.text().await
+    );
+    assert_eq!(
+        jwks_hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one JWKS fetch so far (the cached document)"
+    );
+
+    // A rotation lands: the new kid is unknown to the cached document,
+    // the one refetch picks it up, and the token validates.
+    rotated.store(true, std::sync::atomic::Ordering::SeqCst);
+    let new_token = craft_jwt(&new_key_path, claims.clone(), "new-kid");
+    let response = client
+        .get(format!("{issuer}/api/v1/whoami"))
+        .header("Authorization", format!("Bearer {new_token}"))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the unknown kid's forced refetch finds the rotated key: {:?}",
+        response.text().await
+    );
+    assert_eq!(
+        jwks_hits.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "exactly one forced refetch served the rotation"
+    );
+
+    // The storm probe: another unknown kid inside the SAME window is
+    // refused without a refetch (the rate limit holds the line).
+    let storm = craft_jwt(&old_key_path, claims, "storm-kid");
+    let response = client
+        .get(format!("{issuer}/api/v1/whoami"))
+        .header("Authorization", format!("Bearer {storm}"))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        jwks_hits.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the window's rate limit refused the second forced refetch"
     );
 }
