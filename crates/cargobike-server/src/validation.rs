@@ -42,7 +42,39 @@ pub fn validate(config: &crate::config::Config) -> Result<(), ValidationError> {
     check_releaser_references(config)?;
     check_apply_policy_invariants(config)?;
     check_versioning(config)?;
+    check_environment_placeholders(config)?;
     check_group_references(config)
+}
+
+/// F-147's validation half for the per-environment format strings:
+/// `commit_message` and `change_request.{title,body}` accept exactly
+/// the documented placeholders; unknown ones are boot errors, not
+/// values passed through for the provisioner to trip on later.
+fn check_environment_placeholders(config: &crate::config::Config) -> Result<(), ValidationError> {
+    const ALLOWED: [&str; 5] = [
+        "{application}",
+        "{environment}",
+        "{version}",
+        "{release_id}",
+        "{release_url}",
+    ];
+    for app in &config.applications {
+        for (name, entry) in &app.environments {
+            let context = format!("application `{}` environment `{name}`", app.name);
+            if let Some(message) = entry.commit_message.as_deref() {
+                check_placeholders(&context, "commit_message", message, &ALLOWED)?;
+            }
+            if let Some(overrides) = &entry.change_request {
+                if let Some(title) = overrides.title.as_deref() {
+                    check_placeholders(&context, "change_request.title", title, &ALLOWED)?;
+                }
+                if let Some(body) = overrides.body.as_deref() {
+                    check_placeholders(&context, "change_request.body", body, &ALLOWED)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// claim constraints are mandatory unless `allow_unconstrained`.

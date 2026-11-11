@@ -370,6 +370,21 @@ pub(crate) async fn provision_snapshot_parts(
             ));
         };
         let mut staged = environment.env_inputs.clone();
+        // F-147's provision half: the per-environment format strings
+        // resolve their placeholders here (the snapshot carries values,
+        // not templates).
+        let format_values = FormatValues {
+            application: &application,
+            environment: &environment.name,
+            version,
+            release_id: &id.to_string(),
+            release_url: parts
+                .config
+                .server
+                .public_url
+                .as_ref()
+                .map(|public| format!("{public}/api/v1/releases/{id}")),
+        };
         if let Some(repo) = &entry.repo {
             staged.insert(
                 "repo".to_owned(),
@@ -385,7 +400,7 @@ pub(crate) async fn provision_snapshot_parts(
         if let Some(commit_message) = &entry.commit_message {
             staged.insert(
                 "commit_message".to_owned(),
-                serde_json::json!(commit_message),
+                serde_json::json!(resolve_format_string(commit_message, &format_values)),
             );
         }
         // F-65: the registry-only branch-protection flag rides the
@@ -395,6 +410,22 @@ pub(crate) async fn provision_snapshot_parts(
             "require_branch_protection".to_owned(),
             serde_json::json!(entry.require_branch_protection),
         );
+        // R11's change-request half (F-144): the registry's per-env
+        // `change_request` block rides the snapshot the same way; the
+        // step merges it over the template's own `with` params.
+        if let Some(overrides) = &entry.change_request {
+            let mut resolved = overrides.clone();
+            if let Some(title) = resolved.title.take() {
+                resolved.title = Some(resolve_format_string(&title, &format_values));
+            }
+            if let Some(body) = resolved.body.take() {
+                resolved.body = Some(resolve_format_string(&body, &format_values));
+            }
+            staged.insert(
+                "change_request".to_owned(),
+                serde_json::to_value(&resolved).unwrap_or_default(),
+            );
+        }
         if let Some(inputs) = &entry.inputs {
             for (name, value) in inputs {
                 staged.insert(name.clone(), value.clone());
@@ -574,6 +605,68 @@ pub(crate) struct CreateRow {
 /// The tag name a version maps to under the app's `tag_format`.
 pub(crate) fn tag_of_format(tag_format: &str, version: &str) -> String {
     tag_format.replace("{version}", version)
+}
+
+/// The format-string values a provision knows .
+struct FormatValues<'a> {
+    application: &'a str,
+    environment: &'a str,
+    version: &'a str,
+    release_id: &'a str,
+    /// The release's address (`{public_url}/api/v1/releases/{id}`);
+    /// `None` when no `server.public_url` is set — `{release_url}`
+    /// then stays literal (the config opted out of the public surface).
+    release_url: Option<String>,
+}
+
+/// F-147's resolution half at provision time: the documented
+/// placeholders substitute, `{{`/`}}` become literal braces, and
+/// anything else passes through verbatim (validation already refused
+/// unknown placeholders at boot; a literal that reaches here is a
+/// missed validation, not a silent lie).
+fn resolve_format_string(text: &str, values: &FormatValues<'_>) -> String {
+    let mut resolved = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find(['{', '}']) {
+        resolved.push_str(&rest[..open]);
+        rest = &rest[open..];
+        // The escapes first: `{{`/`}}` are literal braces.
+        if let Some(escaped) = rest.strip_prefix("{{") {
+            resolved.push('{');
+            rest = escaped;
+            continue;
+        }
+        if let Some(escaped) = rest.strip_prefix("}}") {
+            resolved.push('}');
+            rest = escaped;
+            continue;
+        }
+        if rest.starts_with('}') {
+            resolved.push('}');
+            rest = &rest[1..];
+            continue;
+        }
+        let Some(close) = rest.find('}') else {
+            break;
+        };
+        let placeholder = &rest[..=close];
+        let after = &rest[close + 1..];
+        let value = match placeholder {
+            "{application}" => values.application.to_owned(),
+            "{environment}" => values.environment.to_owned(),
+            "{version}" => values.version.to_owned(),
+            "{release_id}" => values.release_id.to_owned(),
+            "{release_url}" => values
+                .release_url
+                .clone()
+                .unwrap_or_else(|| placeholder.to_owned()),
+            _ => placeholder.to_owned(),
+        };
+        resolved.push_str(&value);
+        rest = after;
+    }
+    resolved.push_str(rest);
+    resolved
 }
 
 /// F-95's per-shape version verification: `require_tag` demands the
@@ -910,5 +1003,53 @@ pub(crate) fn repository_to_api(error: RepositoryError) -> crate::http::errors::
                 "The release store failed; the server's log has the detail.",
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-147's resolution: documented placeholders substitute,
+    /// `{{`/`}}` become literal braces, unknown text passes through
+    /// verbatim (validation refused the unknowns at boot).
+    #[test]
+    fn test_resolve_format_string_substitutes_and_escapes() {
+        let values = FormatValues {
+            application: "my-service",
+            environment: "preview",
+            version: "1.2.3",
+            release_id: "018f-abc",
+            release_url: Some("http://localhost:8080/api/v1/releases/018f-abc".to_owned()),
+        };
+        assert_eq!(
+            resolve_format_string("Release {application} {version} to {environment}", &values),
+            "Release my-service 1.2.3 to preview"
+        );
+        assert_eq!(
+            resolve_format_string("See {release_url} ({release_id})", &values),
+            "See http://localhost:8080/api/v1/releases/018f-abc (018f-abc)"
+        );
+        assert_eq!(
+            resolve_format_string("Literal {{braces}} stay", &values),
+            "Literal {braces} stay"
+        );
+        assert_eq!(
+            resolve_format_string("The tag_format-like {version} and literal brace {", &values),
+            "The tag_format-like 1.2.3 and literal brace {"
+        );
+        // No public_url: the {release_url} placeholder stays literal
+        // (the config opted out of the public surface).
+        let no_url = FormatValues {
+            application: "my-service",
+            environment: "preview",
+            version: "1.2.3",
+            release_id: "018f-abc",
+            release_url: None,
+        };
+        assert_eq!(
+            resolve_format_string("At {release_url}", &no_url),
+            "At {release_url}"
+        );
     }
 }

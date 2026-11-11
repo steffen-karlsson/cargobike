@@ -629,6 +629,7 @@ async fn test_the_provider_lifecycle_against_mocked_github() {
             "Release my-service 1.2.3 to stage",
             "Automated release change request.",
             &["release".to_owned()],
+            false,
         )
         .await
         .expect("the pull creates");
@@ -642,6 +643,7 @@ async fn test_the_provider_lifecycle_against_mocked_github() {
             "Release my-service 1.2.3 to stage",
             "Automated release change request.",
             &[],
+            false,
         )
         .await
         .expect("the second pull pass");

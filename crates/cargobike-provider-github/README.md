@@ -14,7 +14,7 @@ Components:
 - **`lib.rs` — `GithubProvider`**: the full REST surface over `octocrab` 0.54:
  branches (by immutable repository ID), fused edit-find-then-commit
  (`commit_files` with expected-parent guard and re-commit no-op), change
- requests (create, get, find-by-head-branch, close+comment, list with paging),
+ requests (create with the draft flag, get, find-by-head-branch, close+comment, list with paging),
  files, comments, labels, commit statuses, default-branch and branch-SHA
  readers, tag-object reads (`tag_sha` dereferences annotated tags to their
  commit — F-95's version policy verifies against the provider's own

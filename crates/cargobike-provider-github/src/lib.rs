@@ -387,16 +387,15 @@ impl Provider for GithubProvider {
         title: &str,
         body: &str,
         labels: &[String],
+        draft: bool,
     ) -> ProviderResult<ChangeRequest> {
         let (owner, name) = owner_name(self, repo).await?;
-        let pull = self
-            .github
-            .pulls(owner.clone(), name.clone())
-            .create(title, head, base)
-            .body(body)
-            .send()
-            .await
-            .map_err(request_failure)?;
+        let pulls = self.github.pulls(owner.clone(), name.clone());
+        let mut builder = pulls.create(title, head, base).body(body);
+        if draft {
+            builder = builder.draft(true);
+        }
+        let pull = builder.send().await.map_err(request_failure)?;
         // labels apply separately (the create's belt-and-bed check).
         if !labels.is_empty() {
             self.github

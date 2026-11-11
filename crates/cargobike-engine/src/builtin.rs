@@ -116,13 +116,22 @@ impl StepType for ChangeRequest {
         let head = param_str(params, "branch").ok_or_else(|| param_missing("branch"))?;
         let defaults = provider.default_branch(&repo).await.map_err(step_failure)?;
         let base = param_str(params, "base").unwrap_or(&defaults).to_owned();
-        let title = param_str(params, "title")
-            .map(str::to_owned)
+        // R11: the template sets defaults, the registry overrides. The
+        // registry's change_request block (when the environment carries
+        // one) replaces the template's title/body, APPENDS its labels to
+        // the template's list, and forces the draft flag on.
+        let overrides = env.change_request.clone().unwrap_or_default();
+        let title = overrides
+            .title
+            .or_else(|| param_str(params, "title").map(str::to_owned))
             .unwrap_or_else(|| format!("{}: {}", env.name, release.spec.version));
-        let body_text = param_str(params, "body")
-            .unwrap_or("Automated release change request.")
-            .to_owned();
-        let labels = param_labels(params);
+        let body_text = overrides
+            .body
+            .or_else(|| param_str(params, "body").map(str::to_owned))
+            .unwrap_or_else(|| "Automated release change request.".to_owned());
+        let mut labels = param_labels(params);
+        labels.extend(overrides.labels.iter().cloned());
+        let draft = overrides.draft || param_bool(params, "draft");
         // find by head branch first.
         let found = provider
             .find_change_request_by_head(&repo, head)
@@ -184,7 +193,15 @@ impl StepType for ChangeRequest {
             }
         }
         let created = provider
-            .create_change_request(&repo, head, base.as_str(), &title, &body_text, &labels)
+            .create_change_request(
+                &repo,
+                head,
+                base.as_str(),
+                &title,
+                &body_text,
+                &labels,
+                draft,
+            )
             .await
             .map_err(step_failure)?;
         Ok(StepOutput::Continue(cr_output(&created)))
@@ -350,6 +367,16 @@ fn param_str<'a>(params: &'a JsonValue, name: &str) -> Option<&'a str> {
     params.get(name).and_then(JsonValue::as_str)
 }
 
+/// A boolean parameter accepting both YAML shapes (`true` as a bool
+/// or a string; the templates' `with` blocks are user YAML).
+fn param_bool(params: &JsonValue, name: &str) -> bool {
+    match params.get(name) {
+        Some(JsonValue::Bool(value)) => *value,
+        Some(JsonValue::String(text)) => text == "true",
+        _ => false,
+    }
+}
+
 fn param_u64(params: &JsonValue, name: &str) -> Option<u64> {
     params.get(name).and_then(JsonValue::as_u64)
 }
@@ -448,10 +475,15 @@ mod tests {
     /// A provider whose protection answers are fixed at construction:
     /// the F-65 gate's matrix needs capable/incapable and
     /// protected/unprotected shapes without a network.
+    /// The CR creation's arguments, as the step passed them (the R11
+    /// merge's assertions read them).
+    type RecordedCr = (String, String, Vec<String>, bool);
+    #[allow(clippy::type_complexity)]
     struct GateProvider {
         capable: bool,
         protection: GateProtection,
         existing: Option<CrShape>,
+        recorded: Arc<std::sync::Mutex<Option<RecordedCr>>>,
     }
 
     /// The protection endpoint's canned answer.
@@ -470,6 +502,7 @@ mod tests {
                     required_review_count: Some(1),
                 }),
                 existing: None,
+                recorded: Arc::new(std::sync::Mutex::new(None)),
             }
         }
     }
@@ -522,10 +555,13 @@ mod tests {
             _repo: &RepoRef,
             _head: &str,
             _base: &str,
-            _title: &str,
-            _body: &str,
-            _labels: &[String],
+            title: &str,
+            body: &str,
+            labels: &[String],
+            draft: bool,
         ) -> ProviderResult<CrShape> {
+            *self.recorded.lock().expect("the gate's recorder") =
+                Some((title.to_owned(), body.to_owned(), labels.to_vec(), draft));
             Ok(CrShape {
                 number: 7,
                 url: "https://cr/7".to_owned(),
@@ -690,7 +726,8 @@ mod tests {
         release
     }
 
-    /// The environment view with the registry's protection flag.
+    /// The environment view with the registry's protection flag (and
+    /// optionally the registry's change-request overrides).
     fn env_ref(require: bool) -> EnvRef {
         EnvRef {
             name: "production".to_owned(),
@@ -700,11 +737,81 @@ mod tests {
             branch_format: None,
             release_version: "1.2.3".to_owned(),
             require_branch_protection: require,
+            change_request: None,
         }
     }
 
     fn params() -> JsonValue {
         json!({ "branch": "cargobike/gate-app/production/r1" })
+    }
+
+    #[tokio::test]
+    async fn test_change_request_registry_overrides_replace_and_append_r11() {
+        // R11: the template sets defaults, the registry overrides. The
+        // registry's title/body REPLACE the template's `with` values,
+        // its labels APPEND to the template's list, and its draft flag
+        // opens the CR as a draft (F-144).
+        let provider = GateProvider::protected();
+        let recorded = Arc::clone(&provider.recorded);
+        let mut env = env_ref(true);
+        env.change_request = Some(cargobike_core::step::ChangeRequestEnv {
+            title: Some("Registry-shaped release".to_owned()),
+            body: Some("The registry's body text.".to_owned()),
+            labels: vec!["production".to_owned()],
+            draft: true,
+        });
+        let params = json!({
+            "branch": "cargobike/gate-app/production/r1",
+            "title": "The template's title",
+            "body": "The template's body",
+            "labels": ["release"],
+        });
+        ChangeRequest
+            .execute(&context(provider), &release(), &env, &params)
+            .await
+            .expect("the registry-shaped CR opens");
+        let recorded = recorded.lock().expect("the gate's recorder").clone();
+        assert_eq!(
+            recorded,
+            Some((
+                "Registry-shaped release".to_owned(),
+                "The registry's body text.".to_owned(),
+                vec!["release".to_owned(), "production".to_owned()],
+                true,
+            )),
+            "the registry's title/body replace, its labels append, its draft forces the flag"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_change_request_template_params_stand_alone_without_overrides() {
+        // A snapshot without the registry's change_request stamp leaves
+        // the template's own `with` params standing alone (the defaults
+        // where it sets none).
+        let provider = GateProvider::protected();
+        let recorded = Arc::clone(&provider.recorded);
+        let params = json!({
+            "branch": "cargobike/gate-app/production/r1",
+            "title": "The template's title",
+            "body": "The template's body",
+            "labels": ["release"],
+            "draft": "true",
+        });
+        ChangeRequest
+            .execute(&context(provider), &release(), &env_ref(true), &params)
+            .await
+            .expect("the template-shaped CR opens");
+        let recorded = recorded.lock().expect("the gate's recorder").clone();
+        assert_eq!(
+            recorded,
+            Some((
+                "The template's title".to_owned(),
+                "The template's body".to_owned(),
+                vec!["release".to_owned()],
+                true,
+            )),
+            "without the registry stamp the template's with params stand alone"
+        );
     }
 
     #[tokio::test]

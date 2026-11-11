@@ -131,7 +131,8 @@ pub enum StepError {
 
 /// The environment's provisioned view for a step run (
 /// well-known values as the snapshot supplies them).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvRef {
     /// Environment name.
     pub name: String,
@@ -152,6 +153,33 @@ pub struct EnvRef {
     /// R2): `change-request` fails closed when the base branch is not
     /// review-protected or the provider cannot check .
     pub require_branch_protection: bool,
+    /// The registry's per-environment change-request overrides
+    /// (R11: the template sets defaults, the registry overrides;
+    /// the registry's labels APPEND to the template's) — F-144's
+    /// registry half. `None` = no registry stamp (the template's
+    /// `with` stands alone).
+    #[serde(default)]
+    pub change_request: Option<ChangeRequestEnv>,
+}
+
+/// The registry's per-environment change-request overrides (R11):
+/// title/body replace the template's values when set, labels append
+/// to the template's list, draft opens the CR as a draft.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ChangeRequestEnv {
+    /// Custom title; replaces the template's `with.title` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Custom body; replaces the template's `with.body` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// Labels appended to the template's `with.labels` .
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Open the CR as a draft.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 impl EnvRef {
@@ -167,6 +195,7 @@ impl EnvRef {
             branch_format: None,
             release_version: String::new(),
             require_branch_protection: true,
+            change_request: None,
         }
     }
 }

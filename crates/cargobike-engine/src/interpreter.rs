@@ -1204,6 +1204,13 @@ fn environment_env_ref(
             .get("require_branch_protection")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true),
+        // The registry's change-request overrides (R11), stamped the
+        // same way; a snapshot without them leaves the template's own
+        // `with` params standing alone.
+        change_request: environment
+            .env_inputs
+            .get("change_request")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     }
 }
 

@@ -117,7 +117,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
              database:\n  url: \"{url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_display}\n\n\
              auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\
-             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
+             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n        change_request:\n          title: \"The keyed release {{version}}\"\n          labels: [keyed]\n          draft: true\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("write the test config");
@@ -377,6 +377,27 @@ async fn test_authed_release_lifecycle() {
     // the cancel is deterministic — and draining it now means the
     // cleanup wait below sees BOTH releases' change requests close.
     wait_for_cr_recorded(&client, &base, &auth_header, &keyed_id).await;
+    // R11/F-143/F-147: the registry's change_request overrides shaped
+    // the keyed CR — the title's `{version}` placeholder resolved at
+    // provision, the label appended, the draft flag on.
+    {
+        let state = cargobike_engine::mock::MockState::load(&mock.state_file());
+        let keyed_cr = state
+            .change_requests
+            .values()
+            .find(|summary| summary.title.starts_with("The keyed release"))
+            .expect("the keyed CR carries the registry's title");
+        assert_eq!(
+            keyed_cr.title,
+            format!("The keyed release 2.0.{run_tag}"),
+            "the version placeholder resolved at provision time"
+        );
+        assert!(keyed_cr.labels.contains(&"keyed".to_owned()));
+        assert!(
+            keyed_cr.draft,
+            "the registry's draft flag opened the CR as a draft"
+        );
+    }
     let keyed_cancel = client
         .post(format!("{base}/api/v1/releases/{keyed_id}/cancel"))
         .header(auth_header.0, auth_header.1.clone())

@@ -846,7 +846,7 @@ pub enum ConcurrencyValue {
 }
 
 /// Custom CR shaping per environment .
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ChangeRequestOverrides {
     /// Custom title; placeholders.
@@ -856,7 +856,7 @@ pub struct ChangeRequestOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     /// Appended to template labels .
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
     /// Open as draft.
     #[serde(default)]

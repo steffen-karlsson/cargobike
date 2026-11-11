@@ -241,9 +241,22 @@
   Also `inputs`/`env.inputs.*` provision stamping from the registry
   (`environments.<name>.repo/edits` as well-known `env.inputs`) lives only in
   the harness binary.
-- [ ] Registry environment `change_request.{title,body,labels,draft}` appended
-  to template `with` per R11 — labels/title flows partially hand-rolled in
-  `builtin::ChangeRequest`; registry overrides not plumbed.
+- [x] Registry environment `change_request.{title,body,labels,draft}` appended
+  to template `with` per R11: the provision stamps the registry's
+  block into the snapshot (the same well-known env-input ride as
+  `require_branch_protection`), `EnvRef` carries it as
+  `ChangeRequestEnv`, and the `change-request` step applies R11 —
+  title/body REPLACE the template's `with` values, labels APPEND to
+  the template's list, draft forces the flag (F-144's `with.draft`
+  is read too, both YAML shapes). The trait's
+  `create_change_request` grows the `draft` param (octocrab's
+  create-PR builder carries it; the mock records title/labels/draft
+  for the E2E read). En route, F-147's missing halves for these
+  fields landed: the provision RESOLVES the placeholders
+  ({application}/{environment}/{version}/{release_id}/{release_url} +
+  `{{`/`}}` escapes; commit_message included — it also resolved
+  nothing before) and boot validation refuses unknown placeholders
+  in `commit_message` and `change_request.{title,body}`.
 
 ## 8. Auth / API polish (Phase 2 leftovers + §9)
 

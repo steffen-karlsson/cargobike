@@ -194,7 +194,12 @@ pub trait Provider: Send + Sync {
     ) -> ProviderResult<CommitResult>;
 
     /// Opens a change request . Existing open CRs are found by head
-    /// branch first ( `change-request` idempotency).
+    /// branch first ( `change-request` idempotency). `draft` opens the
+    /// CR as a draft (F-144's `change-request.with.draft` / the
+    /// registry's `change_request.draft`, R11).
+    // The provider contract mirrors the provider REST surface; the
+    // seven parameters ARE the call.
+    #[allow(clippy::too_many_arguments)]
     async fn create_change_request(
         &self,
         repo: &RepoRef,
@@ -203,6 +208,7 @@ pub trait Provider: Send + Sync {
         title: &str,
         body: &str,
         labels: &[String],
+        draft: bool,
     ) -> ProviderResult<ChangeRequest>;
 
     /// Gets a CR by number.

@@ -75,6 +75,15 @@ pub struct CrSummary {
     pub url: String,
     pub head_sha: String,
     pub state: String,
+    /// The CR's title (the registry-override plumbing's E2E read).
+    #[serde(default)]
+    pub title: String,
+    /// The CR's labels (template + registry, appended per R11).
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Whether the CR opened as a draft.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 /// The `state` text to the core value (the mock's single mapping).
@@ -398,9 +407,10 @@ impl Provider for MockProvider {
         _repo: &RepoRef,
         head: &str,
         _base: &str,
-        _title: &str,
+        title: &str,
         _body: &str,
-        _labels: &[String],
+        labels: &[String],
+        draft: bool,
     ) -> ProviderResult<CoreChangeRequest> {
         let path = self.state_file();
         let mut state = MockState::load(&path);
@@ -418,6 +428,9 @@ impl Provider for MockProvider {
             url: format!("mock://crs/{number}"),
             head_sha: head_sha.clone(),
             state: "open".to_owned(),
+            title: title.to_owned(),
+            labels: labels.to_vec(),
+            draft,
         };
         state
             .change_requests
