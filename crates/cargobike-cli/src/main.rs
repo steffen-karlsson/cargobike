@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use cargobike_cli::ci;
 use cargobike_cli::client::{CallError, Client};
 use cargobike_cli::config::{self, OutputFormat};
 use cargobike_cli::render;
@@ -381,7 +382,18 @@ async fn release_verb(
             wait,
             timeout,
         } => {
-            let body = serde_json::json!({ "application": application, "version": version });
+            // F-84's untrusted half: the Actions environment's CI
+            // facts ride the body as annotations (the server's
+            // verified claims stay the authority; `metadata.annotations`
+            // is the only thing these can become).
+            let body = match ci::CiContext::from_environment() {
+                Some(context) => serde_json::json!({
+                    "application": application,
+                    "version": version,
+                    "annotations": context.annotations(),
+                }),
+                None => serde_json::json!({ "application": application, "version": version }),
+            };
             let document = client.post_json(&url, body).await.map_err(call_failure)?;
             let rendered = render::documents(output, &document)
                 .map_err(|failure| (12, failure.to_string()))?;

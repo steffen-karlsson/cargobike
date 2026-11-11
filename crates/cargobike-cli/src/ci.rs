@@ -17,6 +17,21 @@ pub struct CiContext {
 }
 
 impl CiContext {
+    /// The context's UNTRUSTED annotations (F-84): the CLI never
+    /// asserts CI facts — the server's verified token claims are the
+    /// authority — so the environment's values ride the create body's
+    /// `annotations` map and land in `metadata.annotations` verbatim.
+    /// The `ci.` prefix names their origin; kebab-case keys per the
+    /// naming rules.
+    pub fn annotations(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([
+            ("ci".to_owned(), "github-actions".to_owned()),
+            ("ci.repository".to_owned(), self.repository.clone()),
+            ("ci.sha".to_owned(), self.sha.clone()),
+            ("ci.run-id".to_owned(), self.run_id.clone()),
+        ])
+    }
+
     /// Reads the CI environment; `None` outside Actions.
     pub fn from_environment() -> Option<Self> {
         let repository = env::var("GITHUB_REPOSITORY").ok()?;
@@ -141,6 +156,11 @@ mod tests {
         assert_eq!(context.repository, "org/repo");
         assert_eq!(context.sha, "abc123");
         assert_eq!(context.run_id, "42");
+        let annotations = context.annotations();
+        assert_eq!(annotations["ci"], "github-actions");
+        assert_eq!(annotations["ci.repository"], "org/repo");
+        assert_eq!(annotations["ci.sha"], "abc123");
+        assert_eq!(annotations["ci.run-id"], "42");
         unsafe {
             env::remove_var("GITHUB_REPOSITORY");
             env::remove_var("GITHUB_SHA");

@@ -218,11 +218,20 @@
 - [x] `--auth`/`CARGOBIKE_AUTH` (none|api-key|exec|github-actions; exec keeps
   the context's shape, api-key materializes CARGOBIKE_API_KEY{,_FILE}) and
   `--ca-file`/`CARGOBIKE_CA_FILE` + `~`-expansion on CA/key file refs.
-- [ ] CI env assembly: `ci::CiContext::from_environment` is still not
-  attached to a create request. The split is now verified: the server
-  is the authority (claims → `status.ci`, F-83/F-84 done), so the CLI
-  half is UNTRUSTED annotations only (`metadata.annotations` per
-  F-84) — wire it when the create body grows an `annotations` map.
+- [x] CI env assembly: `ci::CiContext::from_environment` now rides the
+  create body as UNTRUSTED annotations — `CiContext::annotations()`
+  (`ci`, `ci.repository`, `ci.sha`, `ci.run-id`, kebab-case keys), the
+  CLI's `release create` attaches them when the Actions environment is
+  present, and the server stores the flat string map verbatim in
+  `metadata.annotations` (F-84's whole shape: the verified claims stay
+  the authority — a body value can become nothing else). The refusal
+  is strict: a structured annotation value or a non-object
+  `annotations` field is 400 `InvalidRequest` naming the annotation;
+  the webhook and retry paths carry none. E2E: the authed lifecycle's
+  create roundtrips the annotations and refuses the structured value;
+  the CLI's wiremock create asserts the annotated body inside the
+  Actions environment (the `body_partial_json` matcher is the
+  whole proof).
 - [x] List paging: the CLI's list walks the cursor — while a page
   says `has_more`, the next request carries `after=<cursor>` and the
   items accumulate until the pages run out (the rendered output is

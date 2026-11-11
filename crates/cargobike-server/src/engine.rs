@@ -609,6 +609,7 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                     retried_from: None,
                     idempotency_key: None,
                     sha: Some(sha),
+                    annotations: &crate::release::NO_ANNOTATIONS,
                 },
             )
             .await

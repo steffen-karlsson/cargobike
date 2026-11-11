@@ -167,11 +167,21 @@ async fn test_authed_release_lifecycle() {
         .expect("clock")
         .as_micros();
     let version_a = format!("1.2.{run_tag}");
+    // The create body carries the UNTRUSTED annotations (F-84): the
+    // CLI's CI facts ride here; the server stores them verbatim in
+    // `metadata.annotations` and derives nothing from them.
     let create = |client: &reqwest::Client, version: &str| -> reqwest::RequestBuilder {
         client
             .post(format!("{base}/api/v1/releases"))
             .header(auth_header.0, auth_header.1.clone())
-            .json(&serde_json::json!({ "application": "my-service", "version": version }))
+            .json(&serde_json::json!({
+                "application": "my-service",
+                "version": version,
+                "annotations": {
+                    "ci": "github-actions",
+                    "ci.run-id": "42",
+                }
+            }))
     };
     let response = create(&client, &version_a).send().await.expect("http");
     assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
@@ -184,6 +194,36 @@ async fn test_authed_release_lifecycle() {
     let document: serde_json::Value = response.json().await.expect("release json");
     let id = document["metadata"]["id"].as_str().expect("id").to_owned();
     assert!(location.ends_with(&id));
+    // F-84: the annotations roundtrip verbatim as `metadata.annotations`
+    // — the only thing a caller-supplied body value can become.
+    assert_eq!(
+        document["metadata"]["annotations"],
+        serde_json::json!({ "ci": "github-actions", "ci.run-id": "42" }),
+        "the annotations land verbatim: {document}"
+    );
+    // And they are UNTRUSTED: a structured value is not an annotation —
+    // the create refuses with 400 naming the annotation (a flat string
+    // map is the whole shape).
+    let structured = client
+        .post(format!("{base}/api/v1/releases"))
+        .header(auth_header.0, auth_header.1.clone())
+        .json(&serde_json::json!({
+            "application": "my-service",
+            "version": format!("9.9.{run_tag}"),
+            "annotations": { "ci.sha": { "nested": "value" } }
+        }))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(structured.status(), reqwest::StatusCode::BAD_REQUEST);
+    let structured_body: serde_json::Value = structured.json().await.expect("problem body");
+    assert_eq!(structured_body["code"], "InvalidRequest");
+    assert!(
+        structured_body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("ci.sha")),
+        "the refusal names the annotation: {structured_body}"
+    );
 
     // Duplicate create answers 200 with the existing release (the same
     // id); the interpreter started after the 202, so the release is

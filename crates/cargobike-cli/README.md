@@ -42,6 +42,10 @@ cargobike application list
 
 # The release lifecycle.
 cargobike release create my-service 1.2.3
+cargobike release create my-service 1.2.3
+# inside GitHub Actions the create body additionally carries the CI
+# facts as UNTRUSTED annotations (ci.repository/ci.sha/ci.run-id;
+# the server's verified token claims stay the authority)
 cargobike release create my-service 1.2.3 --wait --timeout 30m # polls to terminal
 cargobike release list -a my-service --phase PendingApproval --limit 50
 cargobike release list --since 24h          # updated at-or-after; RFC 3339 also fine

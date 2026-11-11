@@ -233,6 +233,39 @@ async fn create_release(
             )
         })?
         .to_owned();
+    // F-84's untrusted half: caller-supplied annotations ride the
+    // body as a flat string map and land in `metadata.annotations`
+    // verbatim — nothing derives `status.ci` or actor facts from them
+    // (the verified claims are the authority). Anything else refuses.
+    let annotations: std::collections::BTreeMap<String, String> = match body.get("annotations") {
+        None | Some(serde_json::Value::Null) => Default::default(),
+        Some(serde_json::Value::Object(map)) => {
+            let mut parsed = std::collections::BTreeMap::new();
+            for (name, value) in map {
+                let Some(text) = value.as_str() else {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        crate::http::errors::INVALID_REQUEST,
+                        "field-invalid",
+                        format!(
+                            "The annotation `{name}` must be a string (a flat string map; \
+                             structured values are not annotations)."
+                        ),
+                    ));
+                };
+                parsed.insert(name.clone(), text.to_owned());
+            }
+            parsed
+        }
+        Some(_) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                crate::http::errors::INVALID_REQUEST,
+                "field-invalid",
+                "The field `annotations` must be a flat string map.",
+            ));
+        }
+    };
     let version = body
         .get("version")
         .and_then(serde_json::Value::as_str)
@@ -293,6 +326,7 @@ async fn create_release(
             retried_from: None,
             idempotency_key: idempotency_key.as_deref(),
             sha: provenance_sha,
+            annotations: &annotations,
         },
     )
     .await?;
@@ -648,6 +682,7 @@ async fn retry_release(
             retried_from: Some(retried_from.as_str()),
             idempotency_key: None,
             sha: caller.sha_claim.as_deref(),
+            annotations: &crate::release::NO_ANNOTATIONS,
         },
     )
     .await?;

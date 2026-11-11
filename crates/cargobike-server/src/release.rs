@@ -521,7 +521,11 @@ pub(crate) struct CreateOutcome {
 /// records), which release a `--new` retry forks from, and the
 /// idempotency key deduplicating retries. Bundled so the create path's
 /// signatures stay under clippy's argument budget.
-#[derive(Clone, Copy, Default)]
+/// The empty annotation map (the webhook and retry create paths).
+pub(crate) static NO_ANNOTATIONS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
+
+#[derive(Clone, Copy)]
 pub(crate) struct CreateOrigin<'a> {
     /// The caller's verified identity (F-83/F-84), when known.
     pub actor: Option<&'a ReleaseActor>,
@@ -534,6 +538,12 @@ pub(crate) struct CreateOrigin<'a> {
     /// request's supplied SHA — the version policy verifies the tag
     /// against the provider's object with it.
     pub sha: Option<&'a str>,
+    /// The caller-supplied annotations (F-84's untrusted half): flat
+    /// string map, stored verbatim in `metadata.annotations` — the
+    /// server NEVER derives `status.ci` or actor facts from them (the
+    /// verified claims are the authority). The webhook and retry
+    /// paths carry none.
+    pub annotations: &'a std::collections::BTreeMap<String, String>,
 }
 
 /// The caller's identity as the release document records it (F-83):
@@ -883,7 +893,7 @@ pub(crate) async fn create_release_row(
             "resource_version": 1,
             "retried_from": retried,
             "labels": {},
-            "annotations": {},
+            "annotations": serde_json::to_value(origin.annotations).unwrap_or_default(),
         },
         "spec": {
             "application": application,

@@ -6,7 +6,7 @@
 use cargobike_cli::client::Client;
 use cargobike_cli::config::{AuthConfig, OutputFormat, Resolved, SecretRef};
 use std::path::Path;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 /// The document the mock's server hands out (the document's root shape).
@@ -438,4 +438,50 @@ async fn test_application_list_renders_the_availability() {
         text.contains("the provider reports `truth`"),
         "the unavailable reason shows: {text}"
     );
+}
+
+/// F-84's untrusted half: inside the Actions environment the CLI's
+/// `release create` body carries the CI facts as `annotations` (the
+/// server's verified claims stay the authority — nothing here ever
+/// asserts provenance).
+#[tokio::test]
+async fn test_create_carries_the_ci_annotations_inside_actions() {
+    let server = MockServer::start().await;
+    let id = "0192f0d0-0000-7000-8000-000000000002";
+    Mock::given(method("POST"))
+        .and(path("/api/v1/releases"))
+        .and(body_partial_json(serde_json::json!({
+            "application": "web",
+            "version": "1.2.3",
+            "annotations": {
+                "ci": "github-actions",
+                "ci.repository": "org/repo",
+                "ci.sha": "abc123",
+                "ci.run-id": "42",
+            }
+        })))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(202).set_body_json(release_document(id))
+        })
+        .mount(&server)
+        .await;
+    let uri = server.uri();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("cargobike")
+            .expect("the binary")
+            .env("CARGOBIKE_URL", uri)
+            .env("GITHUB_REPOSITORY", "org/repo")
+            .env("GITHUB_SHA", "abc123")
+            .env("GITHUB_RUN_ID", "42")
+            .args(["release", "create", "web", "1.2.3"])
+            .output()
+            .expect("runs")
+    })
+    .await
+    .expect("joined");
+    assert!(output.status.success(), "the create sent");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains(id), "the created release renders: {text}");
+    // The recorded request's body is the whole proof: a miss would have
+    // answered 404 and failed above.
 }
