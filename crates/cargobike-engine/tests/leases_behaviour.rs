@@ -1,5 +1,6 @@
-//! Lease behaviour against a real database. Requires
-//! `CARGOBIKE_TEST_DATABASE_URL` (the skips otherwise).
+//! Lease behaviour against a real database: the exported
+//! `CARGOBIKE_TEST_DATABASE_URL` wins, else a throwaway container
+//! (the shared test-support helper).
 
 #[allow(clippy::print_stderr, clippy::expect_used)]
 #[tokio::test(flavor = "current_thread")]
@@ -7,15 +8,8 @@ async fn test_acquire_release_transfer_behaviour() {
     use cargobike_engine::{LeaseAttempt, LeaseRepository, LeaseTransfer};
     use uuid::Uuid;
 
-    let url = match std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        Some(url) => url,
-        None => {
-            eprintln!("skipping: no fixture database");
-            return;
-        }
+    let Some(url) = cargobike_testsupport::database_url().await else {
+        return;
     };
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)

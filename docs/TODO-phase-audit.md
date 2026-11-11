@@ -350,9 +350,23 @@
   release, branch delete). Found + fixed a real bug en route: the GraphQL
   result check now looks for the `errors` member (octocrab unwraps `data`
   itself).
-- [ ] `testcontainers` Postgres (PRD 1.4/2.9): absent from dev-deps; DB tests
-  *skip* when `CARGOBIKE_TEST_DATABASE_URL` is unset, so a bare `cargo test`
-  quietly zeroes integration coverage. Make `make test` self-sufficient.
+- [x] `testcontainers` Postgres (PRD 1.4/2.9): done as the dev-only
+  `cargobike-testsupport` crate (a new workspace member, never a
+  `[dependencies]` entry of a product crate). Precedence:
+  `CARGOBIKE_TEST_DATABASE_URL` (CI) wins, else ONE throwaway
+  Postgres 17 container per test process (`testcontainers` +
+  `testcontainers-modules`, `postgres:17-alpine` — parity with the
+  spike script; the handle is leaked so the container lives for the
+  process, the async cell ensures one per process, the container work
+  runs on the blocking pool because a nested runtime cannot start on a
+  runtime thread), else the tests **skip with the reason printed** —
+  the silent skip (a bare `cargo test` quietly zeroing integration
+  coverage) was the failure mode. Consumers: the engine suite's
+  fixture + `leases_behaviour`, the server's five DB suites — all raw
+  `std::env::var` reads routed through `database_url()`. The container
+  path needs a Docker host (verified locally: with none, the suites
+  degrade to the printed skip; with a container host they
+  provision — the same code path, only the client differing).
 - [x] Interpreter status writes + phase rollup: the rollup's unit tests
   (incl. the queue-Waiting→Pending fix) + the suites exercise the writes
   end-to-end (the attempts, the CR stamps, the terminals).

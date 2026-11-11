@@ -23,17 +23,10 @@ pub async fn db_lock() -> tokio::sync::MutexGuard<'static, ()> {
 /// The database the durable tests use: the fixture URL (CI passes it via
 /// `CARGOBIKE_TEST_DATABASE_URL`; local development spins
 /// `scripts/spike-postgres.sh`).
-pub fn fixture_database_url() -> Option<String> {
-    match std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        Some(url) => Some(url),
-        None => {
-            eprintln!("skipping: no fixture database (CARGOBIKE_TEST_DATABASE_URL)");
-            None
-        }
-    }
+pub async fn fixture_database_url() -> Option<String> {
+    // The shared helper: the exported URL wins (CI), else a throwaway
+    // Postgres container makes the suite self-sufficient.
+    cargobike_testsupport::database_url().await
 }
 
 /// A per-test DBOS schema (lowercase alphanumeric): the DBOS system

@@ -103,6 +103,8 @@ cargo test -p cargobike-engine --features crash-hooks \
 - `tests/leases_behaviour.rs` covers the lease rows' conditional
   acquire/transfer/release.
 
-DB-backed tests need a Postgres (`CARGOBIKE_TEST_DATABASE_URL`, or
-`scripts/spike-postgres.sh` start). Contributions: see
-[`AGENTS.md`](AGENTS.md).
+DB-backed tests need a Postgres — the `cargobike-testsupport` dev
+dependency provisions a throwaway container when
+`CARGOBIKE_TEST_DATABASE_URL` is unset (with the exported URL, or
+`scripts/spike-postgres.sh` start, the suites use that database).
+Contributions: see [`AGENTS.md`](AGENTS.md).

@@ -23,6 +23,7 @@ behaviour rule.
 | `cargobike-provider-github` | GitHub provider + webhooks | [README](crates/cargobike-provider-github/README.md) / [AGENTS](crates/cargobike-provider-github/AGENTS.md) |
 | `cargobike-cli` | CLI client (no DB deps) | [README](crates/cargobike-cli/README.md) / [AGENTS](crates/cargobike-cli/AGENTS.md) |
 | `cargobike-extension-sdk` | WIT + guest bindings (Phase 5+) | [README](crates/cargobike-extension-sdk/README.md) / [AGENTS](crates/cargobike-extension-sdk/AGENTS.md) |
+| `cargobike-testsupport` | Test-only infrastructure (dev-deps target; the self-sufficient test database) | [README](crates/cargobike-testsupport/README.md) / [AGENTS](crates/cargobike-testsupport/AGENTS.md) |
 
 `templates/service.yaml` is the canonical example template;
 `docs/TODO-phase-audit.md` is the live code-vs-PRD gap list.
@@ -55,9 +56,10 @@ behaviour rule.
  with the PRD id where one anchors the behaviour).
 - Databases: DBOS and sqlx integration tests need Postgres. CI provides one
  and exports `CARGOBIKE_TEST_DATABASE_URL`; locally use
- `scripts/spike-postgres.sh start`. Until `testcontainers` wiring lands
- (audit TODO §9), tests **skip** without the URL — don't mistake a skip for
- a pass when reviewing.
+ `scripts/spike-postgres.sh start`. The `cargobike-testsupport` crate makes
+ the suites self-sufficient: without the URL, each test process provisions a
+ throwaway Postgres container (Docker present) or **skips with the reason
+ printed** (no Docker) — don't mistake a skip for a pass when reviewing.
 - The crash-injection harness runs under `--features cargobike-engine/crash-hooks`
  (the CI test job does exactly this; the crash-injection harness).
 - Before any commit, run the four gates:

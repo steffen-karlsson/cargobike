@@ -117,5 +117,7 @@ CARGOBIKE_TEST_DATABASE_URL=postgres://... cargo test -p cargobike-server
 - Config unit tests cover the secret shapes, the interpolation fail-fast,
   and the `${VAR:-default}` default syntax.
 
-Tests skip without `CARGOBIKE_TEST_DATABASE_URL` (testcontainers wiring is a
-TODO). See [`AGENTS.md`](AGENTS.md) for contribution rules.
+Without `CARGOBIKE_TEST_DATABASE_URL`, the `cargobike-testsupport` dev
+dependency provisions a throwaway Postgres container per test process
+(Docker present) or skips with the reason printed (no Docker). See
+[`AGENTS.md`](AGENTS.md) for contribution rules.

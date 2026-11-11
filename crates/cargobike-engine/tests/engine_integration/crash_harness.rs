@@ -24,17 +24,8 @@ const MILESTONES: [&str; 4] = [
     "after/stage/labels",
 ];
 
-fn fixture_database_url() -> Option<String> {
-    match std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        Some(url) => Some(url),
-        None => {
-            eprintln!("skipping: no fixture database (CARGOBIKE_TEST_DATABASE_URL)");
-            None
-        }
-    }
+async fn fixture_database_url() -> Option<String> {
+    cargobike_testsupport::database_url().await
 }
 
 /// Spawns one harness process. `start_milestone` runs `start` with the
@@ -154,7 +145,7 @@ fn assert_convergence(scratch: &std::path::Path, milestone: &str) {
 #[tokio::test(flavor = "current_thread")]
 async fn crash_at_every_step_boundary_converges() {
     let _the_db = crate::fixture::db_lock().await;
-    let Some(database_url) = fixture_database_url() else {
+    let Some(database_url) = fixture_database_url().await else {
         return;
     };
     let binary = env!("CARGO_BIN_EXE_engine-harness");

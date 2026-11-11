@@ -45,7 +45,7 @@ const SECRET_NAME: &str = "notify-token";
 #[tokio::test(flavor = "current_thread")]
 async fn test_reconciler_signals_a_stalled_merge_wait() {
     let _the_db = fixture::db_lock().await;
-    let Some(database_url) = fixture::fixture_database_url() else {
+    let Some(database_url) = fixture::fixture_database_url().await else {
         return;
     };
     let scratch = fixture::scratch_dir();
@@ -181,7 +181,7 @@ async fn test_reconciler_signals_a_stalled_merge_wait() {
 #[tokio::test(flavor = "current_thread")]
 async fn test_named_secrets_never_reach_dbos_state() {
     let _the_db = fixture::db_lock().await;
-    let Some(database_url) = fixture::fixture_database_url() else {
+    let Some(database_url) = fixture::fixture_database_url().await else {
         return;
     };
     let scratch = fixture::scratch_dir();
@@ -349,7 +349,7 @@ async fn test_supersede_cancels_the_old_attempt_and_cleans_up() {
         .try_init();
 
     let _the_db = fixture::db_lock().await;
-    let Some(database_url) = fixture::fixture_database_url() else {
+    let Some(database_url) = fixture::fixture_database_url().await else {
         return;
     };
     let scratch = fixture::scratch_dir();
@@ -520,7 +520,7 @@ async fn test_reject_policy_fails_the_environment_in_the_document() {
         .try_init();
 
     let _the_db = fixture::db_lock().await;
-    let Some(database_url) = fixture::fixture_database_url() else {
+    let Some(database_url) = fixture::fixture_database_url().await else {
         return;
     };
     let scratch = fixture::scratch_dir();
@@ -709,7 +709,7 @@ async fn test_queue_wakes_when_the_lease_releases() {
         .try_init();
 
     let _the_db = fixture::db_lock().await;
-    let Some(database_url) = fixture::fixture_database_url() else {
+    let Some(database_url) = fixture::fixture_database_url().await else {
         return;
     };
     let scratch = fixture::scratch_dir();
@@ -913,7 +913,7 @@ async fn test_queue_wakes_when_the_lease_releases() {
 #[tokio::test(flavor = "current_thread")]
 async fn test_fork_retry_reruns_only_the_failed_step() {
     let _the_db = fixture::db_lock().await;
-    let Some(database_url) = fixture::fixture_database_url() else {
+    let Some(database_url) = fixture::fixture_database_url().await else {
         return;
     };
     let scratch = fixture::scratch_dir();
@@ -1063,7 +1063,7 @@ async fn test_fork_retry_reruns_only_the_failed_step() {
 #[tokio::test(flavor = "current_thread")]
 async fn test_a_step_output_over_the_cap_refuses_the_step() {
     let _the_db = fixture::db_lock().await;
-    let Some(database_url) = fixture::fixture_database_url() else {
+    let Some(database_url) = fixture::fixture_database_url().await else {
         return;
     };
     let scratch = fixture::scratch_dir();

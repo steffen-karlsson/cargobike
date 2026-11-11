@@ -37,16 +37,7 @@ environments:
 /// Boot every crate... scratch/Port info here.
 #[allow(clippy::print_stderr, clippy::expect_used)]
 async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvider>, String)> {
-    let url = match std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
-    {
-        Some(url) => url,
-        None => {
-            eprintln!("skipping: CARGOBIKE_TEST_DATABASE_URL is unset");
-            return None;
-        }
-    };
+    let url = cargobike_testsupport::database_url().await?;
     // The shared fixture DB's leftovers: lease rows outlive their
     // releases (a supersede guard cannot read a deleted holder's
     // version), so this run's applications start with clean rows.

@@ -6,11 +6,7 @@
 #[allow(clippy::print_stderr, clippy::expect_used)]
 #[tokio::test(flavor = "current_thread")]
 async fn test_sighup_swap_is_observed_without_restart() {
-    let Some(fix_url) = std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-    else {
-        eprintln!("skipping: CARGOBIKE_TEST_DATABASE_URL is unset");
+    let Some(fix_url) = cargobike_testsupport::database_url().await else {
         return;
     };
 

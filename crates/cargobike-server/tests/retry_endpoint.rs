@@ -37,16 +37,7 @@ environments:
 
 #[allow(clippy::expect_used, clippy::print_stderr)]
 async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvider>, String)> {
-    let url = match std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
-    {
-        Some(url) => url,
-        None => {
-            eprintln!("skipping: CARGOBIKE_TEST_DATABASE_URL is unset");
-            return None;
-        }
-    };
+    let url = cargobike_testsupport::database_url().await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");

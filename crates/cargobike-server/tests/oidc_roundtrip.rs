@@ -101,11 +101,7 @@ fn craft_jwt(key_path: &std::path::Path, claims: serde_json::Value, kid: &str) -
 #[allow(clippy::expect_used, clippy::print_stderr)]
 #[tokio::test(flavor = "current_thread")]
 async fn test_oidc_token_passes_and_enforces_claims() {
-    let Some(fix_url) = std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-    else {
-        eprintln!("skipping: CARGOBIKE_TEST_DATABASE_URL is unset");
+    let Some(fix_url) = cargobike_testsupport::database_url().await else {
         return;
     };
 
@@ -453,11 +449,7 @@ environments:
 #[allow(clippy::expect_used, clippy::print_stderr)]
 #[tokio::test(flavor = "current_thread")]
 async fn test_oidc_discovery_resolves_jwks_and_unknown_kid_refetches_once() {
-    let Some(_fix_url) = std::env::var("CARGOBIKE_TEST_DATABASE_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-    else {
-        eprintln!("skipping: CARGOBIKE_TEST_DATABASE_URL is unset");
+    let Some(_fix_url) = cargobike_testsupport::database_url().await else {
         return;
     };
 

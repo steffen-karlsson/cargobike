@@ -33,6 +33,7 @@ rules):
 | `cargobike-cli` | The `cargobike` CLI: contexts, auth, release commands, rendering | [README](crates/cargobike-cli/README.md) · [AGENTS](crates/cargobike-cli/AGENTS.md) |
 | `cargobike-api` | Shared DTOs, OpenAPI surface, typed client (planned) | [README](crates/cargobike-api/README.md) · [AGENTS](crates/cargobike-api/AGENTS.md) |
 | `cargobike-extension-sdk` | WIT + guest bindings for sidecar/WASM extensions | [README](crates/cargobike-extension-sdk/README.md) · [AGENTS](crates/cargobike-extension-sdk/AGENTS.md) |
+| `cargobike-testsupport` | Test-only infrastructure (dev-dependencies target): the self-sufficient test database — env URL, else a throwaway Postgres container, else a printed skip | [README](crates/cargobike-testsupport/README.md) · [AGENTS](crates/cargobike-testsupport/AGENTS.md) |
 
 Dependency direction: everything depends on `cargobike-core`; the CLI and
 server stay free of database crates; the engine depends on core only.

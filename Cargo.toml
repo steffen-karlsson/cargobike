@@ -8,6 +8,9 @@ members = [
     "crates/cargobike-cli",
     "crates/cargobike-extension-sdk",
     "crates/cargobike-provider-github",
+    # Test-only: never a product dependency (the workspace's test
+    # infrastructure, PRD 1.4/2.9).
+    "crates/cargobike-testsupport",
 ]
 [workspace.package]
 version = "0.1.0"
@@ -54,6 +57,10 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 # Shared dev-dependencies (unit tests live in #[cfg(test)] mod tests, PRD 20.4)
 rstest = "0.26"
 pretty_assertions = "1"
+
+# Test infrastructure (dev-only consumers; PRD 1.4/2.9)
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 
 [profile.release]
 strip = true
