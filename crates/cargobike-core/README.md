@@ -19,7 +19,7 @@ What lives here:
 | `template` | `PipelineTemplate`: inputs, environment inputs, `step_groups`, steps, gates; source strings kept verbatim so snapshots stay faithful to the source  |
 | `provider` | The async `Provider` trait (branches, commits, CRs, files, labels, statuses, protection checks, optional auto-merge/tag/release/webhooks), `ProviderCaps`, edit types |
 | `edits` | Structural edit application over JSON/YAML/TOML with dot-notation paths — never text substitution |
-| `step` | `StepType` trait, `StepContext`, `StepOutput`, `EnvRef`, the `HttpService` seam for SSRF-guarded HTTP (the server and sidecar clients implement it)  |
+| `step` | `StepType` trait, `StepContext`, `StepOutput`, `EnvRef` (carries the registry's per-environment facts: repo, edits, commit message, and the `require_branch_protection` flag — default `true`, so a missing stamp fails closed), the `HttpService` seam for SSRF-guarded HTTP (the server and sidecar clients implement it)  |
 | `registry` | `ProviderRegistry` (resolve by name) and `CredentialStore` (resolve `{ secret: <name> }`)  |
 | `webhook` | Provider-neutral `NormalisedEvent` shapes: `TagPush`, `ChangeRequestClosed` (carries the repo id + the sender for the correlation), `Unrecognised`; plus `normalise_github` — the shared HMAC-SHA256 delivery verification (constant-time, two-secret rotation) both the GitHub provider and the engine's harness mock run, so their behaviour cannot drift |
 

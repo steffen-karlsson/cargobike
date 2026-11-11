@@ -24,6 +24,8 @@ const SUPERSEDE_APP: &str = "supersede-probe";
 const FORK_APP: &str = "fork-retry-probe";
 /// The output-cap probe's app name.
 const OUTCAP_APP: &str = "out-cap-probe";
+/// The reject-policy probe's app name.
+const REJECT_APP: &str = "reject-probe";
 
 /// The correlation stamp carries the sweep's join keys; the merge wait's
 /// step id is the template's auto-generated one (two declared ids
@@ -384,11 +386,7 @@ async fn test_supersede_cancels_the_old_attempt_and_cleans_up() {
     let id_b = uuid::Uuid::parse_str(&release_b).expect("B's id");
     // The previous run's rows: unique versions would be one answer; the
     // simple one is a wipe of this test's own application rows.
-    sqlx::query("DELETE FROM releases WHERE application = $1")
-        .bind(SUPERSEDE_APP)
-        .execute(&pool)
-        .await
-        .expect("this application's old rows gone");
+    clear_application_rows(&pool, SUPERSEDE_APP).await;
     seed_release(&pool, &id_a, SUPERSEDE_APP, "1.0.0").await;
     seed_release(&pool, &id_b, SUPERSEDE_APP, "1.1.0").await;
 
@@ -506,6 +504,131 @@ async fn test_supersede_cancels_the_old_attempt_and_cleans_up() {
     instance.shutdown().await;
 }
 
+/// The `concurrency: reject` policy's refusal lands in the release
+/// document (F-74's `ConcurrencyRejected` + F-38's implicit set-status:
+/// the workflow exits, the document must say `Failed`, never stay
+/// `Running`).
+#[tokio::test(flavor = "current_thread")]
+async fn test_reject_policy_fails_the_environment_in_the_document() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "cargobike_engine=debug,dbos=warn".to_owned()),
+        )
+        .try_init();
+
+    let _the_db = fixture::db_lock().await;
+    let Some(database_url) = fixture::fixture_database_url() else {
+        return;
+    };
+    let scratch = fixture::scratch_dir();
+    let schema = fixture::schema_for_test("reject");
+    let pool = fixture::fixture_pool(&database_url).await;
+
+    let credentials: Arc<dyn cargobike_core::registry::CredentialStore> =
+        Arc::new(cargobike_engine::mock::StubCredentials);
+
+    let mut config = dbos::Config::new(REJECT_APP, &database_url);
+    config.schema = schema;
+    config.app_version = Some("reject-1".to_owned());
+    let instance = dbos::DBOS::new(config);
+    let (services, _provider) =
+        fixture::mock_services(&scratch, pool.clone(), &instance, credentials);
+    let interpreter = cargobike_engine::register_interpreter(&instance, services)
+        .expect("the interpreter registers before launch");
+    instance.launch().await.expect("the instance launches");
+
+    clear_application_rows(&pool, REJECT_APP).await;
+    // A lease already held by another release (any version: the reject
+    // policy refuses before the version guard runs).
+    let holder = uuid::Uuid::now_v7();
+    seed_release(&pool, &holder, REJECT_APP, "9.9.9").await;
+    sqlx::query(
+        "INSERT INTO leases (application, environment, holder_release_id, holder_version) \
+         VALUES ($1, 'stage', $2, '9.9.9')",
+    )
+    .bind(REJECT_APP)
+    .bind(holder)
+    .execute(&pool)
+    .await
+    .expect("the holder's lease row seeds");
+
+    let release_id = uuid::Uuid::now_v7().to_string();
+    let release_uuid = uuid::Uuid::parse_str(&release_id).expect("the probe's uuid");
+    seed_release(&pool, &release_uuid, REJECT_APP, "1.0.0").await;
+    let workflow = cargobike_engine::interpreter::interpret_workflow_id(&release_id);
+    let _handle = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs {
+                snapshot: fixture::probe_snapshot(
+                    &release_id,
+                    REJECT_APP,
+                    "1.0.0",
+                    fixture::REJECT_TEMPLATE,
+                ),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the probe starts");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let data = query_release(&pool, &release_uuid).await;
+        let failed = data
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Failed");
+        let code = data
+            .pointer("/status/error/code")
+            .and_then(serde_json::Value::as_str);
+        let stage_failed = data
+            .pointer("/status/environments/0/phase")
+            .and_then(serde_json::Value::as_str)
+            == Some("Failed");
+        if failed && code == Some("ConcurrencyRejected") && stage_failed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reject refusal never landed in the document: {data}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // The holder keeps its lease: a rejected release never takes it.
+    let lease_holder = holder_of(&pool, REJECT_APP)
+        .await
+        .expect("the holder's lease row stands");
+    assert_eq!(
+        lease_holder, holder,
+        "the rejected release never takes the lease"
+    );
+
+    let _ = instance.cancel(&workflow).await;
+    instance.shutdown().await;
+}
+
+/// The application's rows wiped before a test seeds its own: the lease
+/// rows survive the releases delete otherwise, and a rerun against the
+/// shared fixture DB would find a holder whose release row is gone
+/// (the supersede guard rejects a version-less holder).
+async fn clear_application_rows(pool: &sqlx::PgPool, application: &str) {
+    sqlx::query("DELETE FROM leases WHERE application = $1")
+        .bind(application)
+        .execute(pool)
+        .await
+        .expect("this application's lease rows gone");
+    sqlx::query("DELETE FROM releases WHERE application = $1")
+        .bind(application)
+        .execute(pool)
+        .await
+        .expect("this application's release rows gone");
+}
+
 /// The release row's insert (a test's minimal document: the release the
 /// interpreter's status writes will fill).
 async fn seed_release(pool: &sqlx::PgPool, id: &uuid::Uuid, application: &str, version: &str) {
@@ -602,11 +725,7 @@ async fn test_fork_retry_reruns_only_the_failed_step() {
     instance.launch().await.expect("the instance launches");
 
     // The rows the interpreter's status writes land in + unique keys.
-    sqlx::query("DELETE FROM releases WHERE application = $1")
-        .bind(FORK_APP)
-        .execute(&pool)
-        .await
-        .expect("this application's rows clear");
+    clear_application_rows(&pool, FORK_APP).await;
     let release_id = uuid::Uuid::now_v7().to_string();
     let release_uuid = uuid::Uuid::parse_str(&release_id).expect("the fork's uuid");
     seed_release(&pool, &release_uuid, FORK_APP, "1.0.0").await;
@@ -752,11 +871,7 @@ async fn test_a_step_output_over_the_cap_refuses_the_step() {
         ..(*services).clone()
     });
 
-    sqlx::query("DELETE FROM releases WHERE application = $1")
-        .bind(OUTCAP_APP)
-        .execute(&pool)
-        .await
-        .expect("this application's rows clear");
+    clear_application_rows(&pool, OUTCAP_APP).await;
     let interpreter = cargobike_engine::register_interpreter(&instance, capped)
         .expect("the interpreter registers before launch");
     instance.launch().await.expect("the instance launches");

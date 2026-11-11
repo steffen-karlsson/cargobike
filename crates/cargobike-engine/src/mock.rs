@@ -219,7 +219,9 @@ impl Provider for MockProvider {
 
     fn capabilities(&self) -> ProviderCaps {
         ProviderCaps {
-            branch_protection: false,
+            // The mock's base branch is review-protected: the lifecycle
+            // runs the F-65 fail-closed gate like production does.
+            branch_protection: true,
             tag_protection: false,
             auto_merge: false,
             releases: false,
@@ -232,6 +234,23 @@ impl Provider for MockProvider {
 
     async fn get_repo_path(&self, repo: &RepoRef) -> ProviderResult<String> {
         Ok(format!("mock/{}", repo.id))
+    }
+
+    /// F-65: the mock's base branch always requires one review, so the
+    /// change-request step's fail-closed gate passes on the happy path.
+    async fn check_branch_protection(
+        &self,
+        _repo: &RepoRef,
+        branch: &str,
+    ) -> ProviderResult<cargobike_core::provider::BranchProtection> {
+        if branch == BASE_BRANCH {
+            Ok(cargobike_core::provider::BranchProtection {
+                requires_reviews: true,
+                required_review_count: Some(1),
+            })
+        } else {
+            Err(ProviderError::NotFound("branch protection"))
+        }
     }
 
     async fn create_branch(

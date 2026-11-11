@@ -345,6 +345,13 @@ pub(crate) async fn provision_snapshot_parts(
                 serde_json::json!(commit_message),
             );
         }
+        // F-65: the registry-only branch-protection flag rides the
+        // snapshot (R11: security-relevant settings are registry-only,
+        // and the interpreter reads only the snapshot).
+        staged.insert(
+            "require_branch_protection".to_owned(),
+            serde_json::json!(entry.require_branch_protection),
+        );
         if let Some(inputs) = &entry.inputs {
             for (name, value) in inputs {
                 staged.insert(name.clone(), value.clone());

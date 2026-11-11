@@ -96,6 +96,23 @@ environments:
     steps: [include: deploy]
 "#;
 
+/// The reject-policy template: the environment refuses while another
+/// release holds the lease (F-74).
+pub const REJECT_TEMPLATE: &str = r#"
+name: reject
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+environments:
+  - name: stage
+    concurrency: reject
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+"#;
+
 /// A one-step template for the secrets scan: an `http-call` whose header
 /// value references the named secret.
 pub const SECRET_TEMPLATE: &str = r#"

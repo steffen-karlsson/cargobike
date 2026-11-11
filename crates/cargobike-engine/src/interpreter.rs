@@ -394,11 +394,64 @@ async fn run_environment(
                 match crate::concurrency::enter(services, snapshot, environment).await {
                     Ok(LeaseDecision::Proceed) => break,
                     Ok(LeaseDecision::WaitForLease) => continue,
-                    Err(error) => return dbos::Result::Ok(error_to_outcome(environment, error)),
+                    Err(error) => {
+                        // Same F-38 rule as the first enter: the refusal
+                        // lands in the document, not just the workflow.
+                        let release_error = ReleaseError::new(error.code(), error.to_string());
+                        status_write(
+                            format!("status/{}/terminal", environment.name),
+                            release_id,
+                            &services.statuses,
+                            |store, release_id| {
+                                let environment = environment.name.clone();
+                                let release_error = release_error.clone();
+                                async move {
+                                    store
+                                        .environment_terminal(
+                                            release_id,
+                                            &environment,
+                                            EnvironmentPhase::Failed,
+                                            Some(release_error),
+                                            time::OffsetDateTime::now_utc(),
+                                        )
+                                        .await
+                                }
+                            },
+                        )
+                        .await?;
+                        return dbos::Result::Ok(error_to_outcome(environment, error));
+                    }
                 }
             }
         }
         Err(concurrency_error) => {
+            // F-38: the implicit set-status cannot be omitted. A refusal
+            // here never acquired the lease and never ran a step, so
+            // without this write the release would read `Running`
+            // forever while the workflow exits SUCCESS.
+            let release_error =
+                ReleaseError::new(concurrency_error.code(), concurrency_error.to_string());
+            status_write(
+                format!("status/{}/terminal", environment.name),
+                release_id,
+                &services.statuses,
+                |store, release_id| {
+                    let environment = environment.name.clone();
+                    let release_error = release_error.clone();
+                    async move {
+                        store
+                            .environment_terminal(
+                                release_id,
+                                &environment,
+                                EnvironmentPhase::Failed,
+                                Some(release_error),
+                                time::OffsetDateTime::now_utc(),
+                            )
+                            .await
+                    }
+                },
+            )
+            .await?;
             return dbos::Result::Ok(error_to_outcome(environment, concurrency_error));
         }
     }
@@ -1144,6 +1197,13 @@ fn environment_env_ref(
             .map(str::to_owned),
         branch_format: None,
         release_version: snapshot.release.version.clone(),
+        // The registry's per-environment flag, stamped at provision time;
+        // a snapshot without it fails closed (the default-true rule).
+        require_branch_protection: environment
+            .env_inputs
+            .get("require_branch_protection")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
     }
 }
 

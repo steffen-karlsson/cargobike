@@ -148,11 +148,16 @@ pub struct EnvRef {
     /// without an explicit value writes the version; providers can't
     /// know it otherwise).
     pub release_version: String,
+    /// The registry's `require_branch_protection` (default `true`,
+    /// R2): `change-request` fails closed when the base branch is not
+    /// review-protected or the provider cannot check .
+    pub require_branch_protection: bool,
 }
 
 impl EnvRef {
     /// An environment view without a provisioned repo (the templates whose
-    /// steps take their own repo parameter).
+    /// steps take their own repo parameter). Branch protection defaults
+    /// to required: a missing registry stamp must fail closed, not open.
     pub fn named(name: &str) -> Self {
         Self {
             name: name.to_owned(),
@@ -161,6 +166,7 @@ impl EnvRef {
             commit_message: None,
             branch_format: None,
             release_version: String::new(),
+            require_branch_protection: true,
         }
     }
 }

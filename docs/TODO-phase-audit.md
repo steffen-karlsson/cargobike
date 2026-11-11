@@ -64,9 +64,18 @@
 
 ## 2. Provider-side security checks wired to the engine (PRD §4.5/§4.7/§4.12)
 
-- [ ] **F-65 branch protection**: the `change-request` step never calls
-  `Provider::check_branch_protection`; `require_branch_protection` is parsed in
-  config but consulted nowhere. Must fail closed by default.
+- [x] **F-65 branch protection enforced at the change-request step**: the
+  registry's `require_branch_protection` (default `true`) rides the
+  snapshot's per-environment inputs; the step's create path checks the
+  provider's capability first (an incapable provider is a refusal, not
+  a skip), then `check_branch_protection` on the base branch — no
+  protection record or no required reviews is a permanent failure. The
+  gate runs only when the step is about to create: a recovery replay
+  that finds its own CR never re-fails on a mid-flight protection
+  change (F-19 safety). Unit matrix in `builtin.rs` (capable/incapable,
+  protected/unprotected, opt-out, found-CR replay); the mock provider
+  models a review-protected `main` so every lifecycle path runs the
+  gate.
 - [x] **The correlation stamp happens**: the interpreter stamps the
   `(provider, repo_id, cr_number) → (release, environment, wait-step,
   attempt)` row right after the change-request step's checkpoint (a
@@ -113,6 +122,14 @@
   `register_built_in`, and the unit test refuses all four shapes
   (`wait`, `wait: merge`, `wait/merge`, `builtin/http-call`) while an
   unreserved sidecar name still installs.
+- [x] Implicit set-status on concurrency refusals (F-38/F-74): a
+  `reject` policy (or the supersede guard's refusal) used to exit the
+  workflow silently — the release stayed `Running` forever. The
+  enter-failure paths now write the environment's terminal `Failed`
+  with `ConcurrencyRejected` (`test_reject_policy_fails_the_environment_
+  in_the_document`); the integration tests also wipe their own lease
+  rows, so reruns against the shared fixture DB no longer meet a
+  version-less leftover holder.
 
 ## 4. CEL / engine knobs (F-27, F-40)
 
