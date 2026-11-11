@@ -227,6 +227,7 @@ pub async fn host(
     config_rx: tokio::sync::watch::Receiver<Arc<Config>>,
     pool: sqlx::PgPool,
     provider_override: ProviderOverride,
+    availability: std::sync::Arc<crate::availability::Availability>,
 ) -> Result<EngineHosting, crate::config::ConfigError> {
     // Providers: the github entries build; extensions log and skip
     // (their transport is the next phase's work).
@@ -366,6 +367,7 @@ pub async fn host(
                 config: config_rx,
                 providers: services.providers.clone(),
                 steps: services.steps.clone(),
+                availability,
             }),
         }),
     )
@@ -483,6 +485,9 @@ struct ServerTagPushCreator {
     pool: sqlx::PgPool,
     config: tokio::sync::watch::Receiver<Arc<Config>>,
     providers: Arc<cargobike_core::registry::ProviderRegistry>,
+    /// F-10's availability (the tag-push create refuses while the
+    /// matched app's verified-path label does not check out).
+    availability: Arc<crate::availability::Availability>,
     steps: Arc<cargobike_engine::StepRegistry>,
 }
 
@@ -587,6 +592,7 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
                 config: config.clone(),
                 step_types: self.steps.installed().into_iter().collect(),
                 providers: &self.providers,
+                availability: &self.availability,
             };
             // The row half only: the interpreter's start is refused
             // from inside a step, so the creator plans and the webhook

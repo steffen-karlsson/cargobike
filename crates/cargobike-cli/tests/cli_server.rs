@@ -391,3 +391,51 @@ async fn test_the_list_walks_the_cursor_to_the_last_page() {
         "both pages' rows show: {text}"
     );
 }
+
+/// `application list` (F-106/F-10): the registry's names and their
+/// verified-path availability — an unavailable app prints its reason.
+#[tokio::test]
+async fn test_application_list_renders_the_availability() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/applications"))
+        .respond_with(|_: &Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "applications": [
+                    {
+                        "name": "web",
+                        "template": "service@1",
+                        "available": true,
+                        "unavailable_reason": serde_json::Value::Null,
+                    },
+                    {
+                        "name": "broken",
+                        "template": "service@1",
+                        "available": false,
+                        "unavailable_reason":
+                            "the registry declares the repository path `wrong` but the provider reports `truth`",
+                    },
+                ]
+            }))
+        })
+        .mount(&server)
+        .await;
+    let output = Command::cargo_bin("cargobike")
+        .expect("the binary")
+        .env("CARGOBIKE_URL", server.uri())
+        .arg("application")
+        .arg("list")
+        .output()
+        .expect("runs");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("web\tservice@1\tavailable")
+            && text.contains("broken\tservice@1\tunavailable:"),
+        "both availability postures render: {text}"
+    );
+    assert!(
+        text.contains("the provider reports `truth`"),
+        "the unavailable reason shows: {text}"
+    );
+}

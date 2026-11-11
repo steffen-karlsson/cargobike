@@ -519,6 +519,9 @@ pub struct ReconcilerSection {
     pub interval: String,
     /// Batched lookup size .
     pub batch_size: u32,
+    /// The F-10 verified-path re-check (the background retry that
+    /// heals a mismatch or an outage). Default 1m .
+    pub verified_path_interval: String,
 }
 
 impl Default for ReconcilerSection {
@@ -526,6 +529,7 @@ impl Default for ReconcilerSection {
         Self {
             interval: "5m".to_owned(),
             batch_size: 100,
+            verified_path_interval: "1m".to_owned(),
         }
     }
 }

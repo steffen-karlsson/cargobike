@@ -66,6 +66,16 @@ pub struct MockState {
     /// provider's tag objects; the mock's truth lives here).
     #[serde(default)]
     pub tags: std::collections::BTreeMap<String, String>,
+    /// Scripted repository paths, keyed by repo id (F-10's verified-path
+    /// check reads the provider's truth; an absent id answers the
+    /// default `mock/{id}`).
+    #[serde(default)]
+    pub repo_paths: std::collections::BTreeMap<String, String>,
+    /// One-shot path-lookup failure, keyed to one repo id: the NEXT
+    /// `get_repo_path` for that id errors, then the flag clears (the
+    /// F-10 fail-closed posture needs an erroring lookup to script).
+    #[serde(default)]
+    pub fail_path_lookup_for: Option<String>,
 }
 
 /// A change request compact enough for the state file.
@@ -192,6 +202,26 @@ impl MockProvider {
         state.save(&path);
     }
 
+    /// Scripts the provider's truth for a repository path (F-10's
+    /// verified-path check reads it back).
+    pub fn set_repo_path(&self, repo_id: &str, repo_path: &str) {
+        let path = self.state_file();
+        let mut state = MockState::load(&path);
+        state
+            .repo_paths
+            .insert(repo_id.to_owned(), repo_path.to_owned());
+        state.save(&path);
+    }
+
+    /// Scripts the NEXT path lookup for one repo to fail (the F-10
+    /// fail-closed posture's erroring-lookup case).
+    pub fn fail_next_path_lookup_for(&self, repo_id: &str) {
+        let path = self.state_file();
+        let mut state = MockState::load(&path);
+        state.fail_path_lookup_for = Some(repo_id.to_owned());
+        state.save(&path);
+    }
+
     /// Marks a change request merged: the head branch's files land on
     /// the base branch — what the engine's merge verification reads.
     pub fn mark_merged(&self, number: u64) -> Result<(), ProviderError> {
@@ -257,6 +287,19 @@ impl Provider for MockProvider {
     }
 
     async fn get_repo_path(&self, repo: &RepoRef) -> ProviderResult<String> {
+        let path = self.state_file();
+        let mut state = MockState::load(&path);
+        if state.fail_path_lookup_for.as_deref() == Some(repo.id.as_str()) {
+            state.fail_path_lookup_for = None;
+            state.save(&path);
+            return Err(ProviderError::Request(format!(
+                "the scripted path lookup for `{}` failed",
+                repo.id
+            )));
+        }
+        if let Some(scripted) = state.repo_paths.get(&repo.id) {
+            return Ok(scripted.clone());
+        }
         Ok(format!("mock/{}", repo.id))
     }
 

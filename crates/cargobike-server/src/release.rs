@@ -579,6 +579,7 @@ pub(crate) async fn create_release_core(
         releases: &state.releases,
         config: state.config.borrow().clone(),
         providers: &state.engine.services.providers,
+        availability: &state.availability,
         step_types: state
             .engine
             .services
@@ -607,6 +608,9 @@ pub(crate) struct CoreParts<'a> {
     /// The provider registry (F-95's tag verification reads the
     /// provider's tag object).
     pub providers: &'a cargobike_core::registry::ProviderRegistry,
+    /// F-10's verified-path availability (the create refuses while
+    /// the application's label does not check out).
+    pub availability: &'a crate::availability::Availability,
 }
 
 /// The row half of a create: validation + provision + the
@@ -809,6 +813,26 @@ pub(crate) async fn create_release_row(
         return Err(paused_refusal("application", application, reason));
     }
 
+    // F-10: an application whose verified-path label does not check
+    // out against the provider refuses the create — the registry's
+    // repo identity cannot be trusted while the mismatch stands (or
+    // the label cannot be verified at all). The background sweep
+    // heals it; a duplicate with the same idempotency key already
+    // answered above (the caller owns that release).
+    if let Some(reason) = parts.availability.reason(application) {
+        let detail = if reason.is_empty() {
+            format!("The application `{application}` is unavailable.")
+        } else {
+            format!("The application `{application}` is unavailable: {reason}")
+        };
+        return Err(crate::http::errors::ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            crate::http::errors::STATE_CONFLICT,
+            "application-unavailable",
+            detail,
+        ));
+    }
+
     // The provision first: the compiled template's environment list is
     // the doc's initial shape (every environment opens `Pending`, so a
     // partial start can never roll the release-phase `Completed` while
@@ -913,7 +937,7 @@ pub(crate) async fn create_release_row(
 /// The pause decision of a registry entry (F-142): `Some(reason)` means
 /// paused (the reason is optional — an empty text is a bare `paused:
 /// true`), `None` means running.
-fn paused_reason(paused: Option<&crate::config::PausedEntry>) -> Option<&str> {
+pub(crate) fn paused_reason(paused: Option<&crate::config::PausedEntry>) -> Option<&str> {
     match paused {
         Some(crate::config::PausedEntry::Reason { reason }) => Some(reason.as_str()),
         Some(crate::config::PausedEntry::Bool(true)) => Some(""),

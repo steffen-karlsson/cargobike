@@ -68,6 +68,12 @@ enum Command {
         #[command(subcommand)]
         command: ReleaseCommand,
     },
+    /// The application registry (F-106/F-10: the names and their
+    /// availability).
+    Application {
+        #[command(subcommand)]
+        command: ApplicationCommand,
+    },
 }
 
 #[derive(Clone, Subcommand)]
@@ -178,6 +184,13 @@ fn real_main() -> i32 {
                 code
             }
         },
+        Command::Application { command } => match run_application(command, &cli) {
+            Ok(exit_code) => exit_code,
+            Err((code, message)) => {
+                eprintln!("{message}");
+                code
+            }
+        },
     }
 }
 
@@ -205,6 +218,77 @@ fn run_release(command: ReleaseCommand, cli: &Cli) -> Result<i32, (i32, String)>
         let client = Client::new(&resolved).await.map_err(call_failure)?;
         release_verb(command, &client, output).await
     })
+}
+
+/// The application verbs' entry (the release's twin: resolve the
+/// context, build the client, run the verb).
+fn run_application(command: ApplicationCommand, cli: &Cli) -> Result<i32, (i32, String)> {
+    let config = load_config(cli)?;
+    let overrides = config::Overrides {
+        url: cli.url.clone(),
+        allow_http: cli.allow_http,
+        context: cli.context.clone(),
+        auth: cli.auth.clone(),
+        audience: cli.audience.clone(),
+        ca_file: cli.ca_file.clone(),
+        output: cli.output,
+    };
+    let resolved = config::resolve(&config, &overrides).map_err(|failure| (1, failure.0))?;
+    let output = resolved.output;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|failure| (12, format!("the runtime refused: {failure}")))?;
+    runtime.block_on(async {
+        let client = Client::new(&resolved).await.map_err(call_failure)?;
+        application_verb(command, &client, output).await
+    })
+}
+
+/// The application registry's verbs: `list` walks the server's F-106
+/// surface — names, templates, and the F-10 availability (an
+/// unavailable app prints its reason).
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+async fn application_verb(
+    command: ApplicationCommand,
+    client: &Client,
+    output: OutputFormat,
+) -> Result<i32, (i32, String)> {
+    match command {
+        ApplicationCommand::List => {
+            let body = client
+                .get_json("/api/v1/applications")
+                .await
+                .map_err(call_failure)?;
+            match output {
+                OutputFormat::Table => {
+                    for app in body["applications"].as_array().unwrap_or(&Vec::new()) {
+                        let name = app["name"].as_str().unwrap_or_default();
+                        let template = app["template"].as_str().unwrap_or_default();
+                        let available = match app["available"].as_bool() {
+                            Some(true) => "available".to_owned(),
+                            Some(false) => {
+                                let reason = app["unavailable_reason"].as_str().unwrap_or_default();
+                                if reason.is_empty() {
+                                    "unavailable".to_owned()
+                                } else {
+                                    format!("unavailable: {reason}")
+                                }
+                            }
+                            None => "unknown".to_owned(),
+                        };
+                        println!("{name}\t{template}\t{available}");
+                    }
+                }
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    let rendered = render::documents(output, &body)
+                        .map_err(|failure| (12, failure.to_string()))?;
+                    print!("{rendered}");
+                }
+            }
+            Ok(0)
+        }
+    }
 }
 
 #[allow(clippy::print_stderr)]
@@ -271,6 +355,14 @@ fn encode_since_arg(text: &str) -> String {
         }
         Err(_) => encode_query_value(text),
     }
+}
+
+/// The application registry's verbs (F-106: `application list`).
+#[derive(Clone, Subcommand)]
+enum ApplicationCommand {
+    /// Lists the registered applications (F-10: an unverified
+    /// verified-path label shows as unavailable with its reason).
+    List,
 }
 
 /// The verbs (theirs shapes: flat bodies; the problem details surfaced);

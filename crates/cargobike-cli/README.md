@@ -17,6 +17,7 @@ Components:
 | `config` | The CLI config file (`CARGOBIKE_CONFIG`, default `~/.config/cargobike/config.yaml` or `$XDG_CONFIG_HOME/cargobike/config.yaml`): contexts, auth types (`none`, `api-key`, `exec`, `github-actions`), `ca_file`, `defaults.output`; the `http://` refusal rule (`--allow-http` override) and the precedence walk |
 | `client` | `reqwest`-backed API caller: bearer per auth shape, RFC 9457 error surfacing, exit-code mapping (10 auth / 11 unreachable / 12 invalid response) |
 | `ci` | GitHub Actions auto-detection: `GITHUB_REPOSITORY`/`GITHUB_SHA`/`GITHUB_RUN_ID` context struct, the OIDC request environment, the audience resolution (`--audience` > `CARGOBIKE_AUDIENCE` > `cargobike`), and the ID-token exchange (`ACTIONS_ID_TOKEN_REQUEST_URL?audience=…` with the request token as bearer) |
+| `application list` (main) | `GET /api/v1/applications`: the registered applications with their F-10 availability — table `name  template  available|unavailable: reason`, or the whole body as JSON/YAML |
 | `render` | Output rendering: table rows (`metadata.id`, `spec.application`, `spec.version`, `status.phase`) or full documents as JSON/YAML |
 | `main` | clap wiring: global flags with env fallbacks, `context list/use`, the release verbs, `create --wait` polling |
 
@@ -34,6 +35,10 @@ Pending (audit TODO §5): the `release watch` SSE command (4.7),
 # Configure a context (file layout in §9.7).
 cargobike context list
 cargobike context use production
+
+# The application registry (F-106/F-10): names, templates, and the
+# verified-path availability (an unavailable app prints its reason).
+cargobike application list
 
 # The release lifecycle.
 cargobike release create my-service 1.2.3

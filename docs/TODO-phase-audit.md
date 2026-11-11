@@ -109,9 +109,31 @@
   (the receiver's E2E asserts it against a protection-incapable
   provider, and the provider's ruleset logic is wiremock-covered in
   4.9's lifecycle suite). Launchpad/other triggers: n/a in v1.
-- [ ] **F-10 verified-path labels**: no startup `get_repo_path` check, no
-  "app unavailable on mismatch" marking, no background retry, and no
-  `cargobike validate --resolve` strict mode.
+- [x] **F-10 verified-path labels** (the `cargobike validate --resolve`
+  half stays with the `validate` item below — `validate` does not
+  exist yet, so the strict mode rides that build): the boot check
+  runs before the API serves — the declared `source.path` is compared
+  against the provider's `get_repo_path` over a PATH-LESS probe (the
+  GitHub provider short-circuits a declared label to itself, so the
+  probe must not carry it); mismatch, provider error, or an unknown
+  provider = the application is *unavailable*, fail-closed (the
+  server does NOT fail). Unavailable apps: the create refuses 409
+  naming the reason (the idempotency-key replay still answers — the
+  caller owns that release), `GET /api/v1/applications` (F-106's
+  first half, now real; `/templates` still pending) surfaces the
+  state, and the background sweep
+  (`reconciler.verified_path_interval`, default 1m, configurable so
+  the E2E watches the heal converge in ~1s) re-verifies against the
+  CURRENT config — a renamed-back repo heals without a restart.
+  Case-insensitive compare (GitHub paths are case-preserving but
+  case-insensitive; a case-only mismatch would be a permanent false
+  alarm). `cargobike application list` renders the state (CLI F-106
+  half). The mock provider grew scripted repo paths
+  (`set_repo_path`, `fail_next_path_lookup_for` — one-shot,
+  repo-keyed like the commit failure). E2E:
+  `test_mismatched_path_label_refuses_then_heals` (boot mismatch →
+  listing + refusal → rename-back → sweep heals → create passes →
+  drained); unit: the availability module's seven cases.
 
 ## 3. Queue wake, event log, and remaining Phase 3 seams
 

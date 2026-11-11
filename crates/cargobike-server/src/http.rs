@@ -36,6 +36,9 @@ pub struct AppState {
     pub config_path: Option<std::path::PathBuf>,
     /// The engine's hosting: the interpreter/cleanup/DBOS handles.
     pub engine: Arc<EngineHosting>,
+    /// F-10 verified-path availability: the application → reason map
+    /// of labels that do not check out against the provider.
+    pub availability: Arc<crate::availability::Availability>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -64,6 +67,7 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
         .route("/api/v1/releases/{id}/cancel", post(cancel_release))
         .route("/api/v1/releases/{id}/retry", post(retry_release))
         .route("/api/v1/whoami", get(whoami))
+        .route("/api/v1/applications", get(list_applications))
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
             crate::auth::require_auth,
@@ -768,8 +772,26 @@ pub async fn boot(
     let pool = crate::db::connect(&config).await?;
     let (config_tx, config_rx) = tokio::sync::watch::channel(Arc::clone(&config));
     let auth = Arc::new(crate::auth::AuthState::new(config_rx.clone())?);
-    let engine =
-        crate::engine::host(&config, config_rx.clone(), pool.clone(), provider_override).await?;
+    // F-10: the verified-path availability view is created before the
+    // engine hosting (the webhook's tag-push creator refuses against
+    // it too), then the boot check fills it: a mismatch (or an
+    // unverifiable label) marks the application unavailable — the
+    // server does NOT fail (the strict, fail-on-error check is
+    // `cargobike validate --resolve`, 4.8) — and the background sweep
+    // retries against the provider.
+    let availability = Arc::new(crate::availability::Availability::new());
+    let engine = crate::engine::host(
+        &config,
+        config_rx.clone(),
+        pool.clone(),
+        provider_override,
+        Arc::clone(&availability),
+    )
+    .await?;
+    availability
+        .refresh(&config, &engine.services.providers)
+        .await;
+    availability.spawn_background_sweep(config_rx.clone(), engine.services.providers.clone());
     let state = Arc::new(AppState {
         config: config_rx,
         ready: AtomicBool::new(false),
@@ -777,6 +799,7 @@ pub async fn boot(
         auth,
         config_path: config_path.map(|path| path.to_path_buf()),
         engine: Arc::new(engine),
+        availability,
     });
     spawn_sighup_reload(Arc::clone(&state), config_tx);
     elect_leader(&pool, config.leader_election.enabled, &state.ready)
@@ -832,6 +855,40 @@ async fn whoami(
         "grants": caller.grants,
         "bootstrap": caller.bootstrap,
     }))
+}
+
+/// `GET /api/v1/applications` (F-106): the registered applications
+/// with their F-10 availability — a verified-path mismatch (or an
+/// unverifiable label) shows here with its reason, the same reason a
+/// create refuses with.
+async fn list_applications(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(_caller): axum::Extension<crate::auth::AuthedCaller>,
+) -> axum::Json<serde_json::Value> {
+    let config = state.config.borrow().clone();
+    let unavailable = state.availability.snapshot();
+    let applications: Vec<serde_json::Value> = config
+        .applications
+        .iter()
+        .map(|app| {
+            let reason = unavailable.get(&app.name).cloned();
+            serde_json::json!({
+                "name": app.name,
+                "description": app.description,
+                "provider": app.source.provider,
+                "repository": {
+                    "id": app.source.id,
+                    "path": app.source.path,
+                },
+                "template": app.template,
+                "labels": app.labels,
+                "paused": crate::release::paused_reason(app.paused.as_ref()).is_some(),
+                "available": reason.is_none(),
+                "unavailable_reason": reason,
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({ "applications": applications }))
 }
 
 /// `POST /webhooks/{provider}` (5.1): verify before parse, the
