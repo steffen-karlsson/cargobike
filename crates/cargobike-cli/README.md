@@ -40,6 +40,8 @@ cargobike release create my-service 1.2.3
 cargobike release create my-service 1.2.3 --wait --timeout 30m # polls to terminal
 cargobike release list -a my-service --phase PendingApproval --limit 50
 cargobike release list --since 24h          # updated at-or-after; RFC 3339 also fine
+                                             # (list walks the cursor: --limit is the
+                                             #  page size, not the listing's cap)
 cargobike release get 0192f0d0-...
 cargobike release cancel 0192f0d0-...
 cargobike release retry 0192f0d0-...          # fork from the last failure (same ID)

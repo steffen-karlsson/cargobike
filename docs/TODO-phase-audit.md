@@ -201,7 +201,11 @@
   is the authority (claims → `status.ci`, F-83/F-84 done), so the CLI
   half is UNTRUSTED annotations only (`metadata.annotations` per
   F-84) — wire it when the create body grows an `annotations` map.
-- [ ] List paging: CLI sends no `after` cursor; deep listings stop at page 1.
+- [x] List paging: the CLI's list walks the cursor — while a page
+  says `has_more`, the next request carries `after=<cursor>` and the
+  items accumulate until the pages run out (the rendered output is
+  the union). E2E: a wiremock two-page surface asserts both pages'
+  rows render.
 - [x] `~` expansion for `ca_file`/key/CA file refs: the resolution walk
   tilde-expands the context's `ca_file`, the flag's `--ca-file`, and the
   api-key override's `CARGOBIKE_API_KEY_FILE`; the client's secret-ref
@@ -216,13 +220,22 @@
 - [ ] **Per-repo installation lookup (F-122, 4.1)**: `GithubAuth::App` takes one
   static `installation_id`; no repo→installation resolution, no per-repo scoped
   token minting.
-- [ ] Minimal GitHub App permission set: not documented (4.1 third bullet).
+- [x] Minimal GitHub App permission set (4.1/F-66): documented in the
+  provider's README — the permission table (metadata/contents/
+  pull requests/issues/commit statuses/administration/rulesets), the
+  webhook note (signature verification needs no API permission),
+  the `allow_direct_commit` bypass caveat, and the installation-scope
+  recommendation.
 - [ ] `graphql_client` typed queries (4.3): absent — reconciler batching and
   compile-time schema checks; current GraphQL is an ad hoc
   `enablePullRequestAutoMerge` payload.
-- [ ] `update_branch` returns `Unsupported` (F-46 includes it in the trait
-  contract; deferred to a v1.1 step type — either implement the provider op or
-  reconcile the PRD deviation).
+- [x] `update_branch` returns `Unsupported` (F-46): reconciled as a
+  documented v1 deviation — no v1 step type consumes the op (the
+  `update-branch` step is v1.1), and octocrab 0.54 has no wrapper for
+  the branch-update endpoint (its `merge_upstream` is fork-only), so
+  the implementation (raw request or git-refs fast-forward) lands
+  WITH its consumer. The deviation is spelled out in the provider's
+  README.
 - [x] `pull_request.closed` normalisation carries `repository_id` (the
   `base.repo.id`, `repository.id` fallback) and the `sender.login` — the
   correlation's full key and the actor both survive; the normalise lives

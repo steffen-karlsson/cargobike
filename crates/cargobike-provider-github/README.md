@@ -35,8 +35,46 @@ suite green; the GHES `api_url` base rides the provider's build (the config's
 `api_url` reaches `Octocrab::builder().base_uri`). Still pending: 4.3's
 `graphql_client` typed queries. Known gaps tracked in
 [`docs/TODO-phase-audit.md`](../../docs/TODO-phase-audit.md) §6: per-repo
-installation lookup (the config pins one static installation id today) and
-minimal-GitHub-App permission documentation.
+installation lookup (the config pins one static installation id today).
+
+### Minimal GitHub App permission set (F-66)
+
+The provider's REST surface maps to these repository permissions in the
+GitHub App's settings — nothing broader is needed:
+
+| Permission | Level | The calls it covers |
+|---|---|---|
+| Metadata | Read-only (mandatory) | repo lookups, `owner_name` |
+| Contents | Read & write | `create_branch` (`git refs`), `commit_files`, `read_file`, `create_tag`, `tag_sha` (git refs/tags) |
+| Pull requests | Read & write | `create_change_request`, find-by-head, get, list |
+| Issues | Read & write | `add_labels` (labels ride the issues API), `comment` |
+| Commit statuses | Read & write | `set_commit_status` (`builtin/wait-for-check`) |
+| Administration | Read-only | `check_branch_protection` (`GET …/branches/{b}/protection`) |
+| Repository rulesets | Read-only | `check_tag_protection` (`GET …/rulesets`) |
+
+Notes:
+
+- Webhook deliveries need **no** API permission — the receiver verifies the
+  `X-Hub-Signature-256` HMAC against the configured secret; creating the
+  webhook itself is the operator's (or the App's Webhooks permission, if you
+  let it manage its own hooks).
+- `enable_auto_merge` and CR merges need nothing beyond Pull requests above.
+- An environment with `allow_direct_commit: true` against a protected default
+  branch additionally needs **bypass** on that branch's protection rule (or
+  the rule must exempt the App) — that is the registry's explicit opt-in,
+  never a permission this provider grants itself.
+- The installation token should be scoped to the repositories the applications
+  actually release; per-repo installation lookup (F-122) is still pending.
+
+### `update_branch` (F-46): a documented v1 deviation
+
+The trait method exists with the default `Unsupported`; **no v1 step type
+consumes it** (the `update-branch` step is v1.1). The GitHub implementation
+deliberately did not land before its consumer: octocrab 0.54 has no wrapper for
+`PUT /repos/{repo}/branches/{branch}/update` (its `merge_upstream` is the
+fork-only sync endpoint), so the implementation will either wrap the update
+endpoint with a raw request or fast-forward the ref via `git refs` (failing
+closed on non-fast-forward) when the v1.1 step type arrives.
 
 ## Usage
 

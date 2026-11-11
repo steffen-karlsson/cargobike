@@ -326,8 +326,35 @@ async fn release_verb(
             if let Some(since) = since {
                 query.push(format!("since={}", encode_since_arg(&since)));
             }
-            let path = format!("{}?{}", url, query.join("&"));
-            let page = client.get_json(&path).await.map_err(call_failure)?;
+            // The cursor walk (deep listings stop at page 1): while
+            // the page says more exists, the next request carries the
+            // cursor as `after` and the items accumulate.
+            let mut items: Vec<serde_json::Value> = Vec::new();
+            let mut after: Option<String> = None;
+            loop {
+                let mut query = query.clone();
+                if let Some(cursor) = &after {
+                    query.push(format!("after={cursor}"));
+                }
+                let path = format!("{}?{}", url, query.join("&"));
+                let page = client.get_json(&path).await.map_err(call_failure)?;
+                if let Some(rows) = page["items"].as_array() {
+                    items.extend(rows.iter().cloned());
+                }
+                let has_more = page["has_more"].as_bool().unwrap_or(false);
+                after = page["cursor"]
+                    .as_str()
+                    .filter(|_| has_more)
+                    .map(str::to_owned);
+                if after.is_none() {
+                    break;
+                }
+            }
+            let page = serde_json::json!({
+                "items": items,
+                "cursor": null,
+                "has_more": false,
+            });
             let rendered =
                 render::documents(output, &page).map_err(|failure| (12, failure.to_string()))?;
             print!("{rendered}");

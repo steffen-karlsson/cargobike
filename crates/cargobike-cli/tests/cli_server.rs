@@ -342,3 +342,52 @@ async fn test_the_binary_lists_the_table_rows() {
     assert!(text.contains(id.as_str()), "the id shows the row: {text}");
     assert!(text.contains("PendingApproval"), "the phase shows: {text}");
 }
+
+#[tokio::test]
+#[allow(clippy::expect_used)]
+/// The cursor walk: a first page that says `has_more` makes the CLI
+/// request the next page with `after=<cursor>` until the pages run
+/// out — deep listings no longer stop at page 1.
+async fn test_the_list_walks_the_cursor_to_the_last_page() {
+    use wiremock::matchers::query_param;
+
+    let first_id = "0192f0d0-0000-7000-8000-000000000001";
+    let second_id = "0192f0d0-0000-7000-8000-000000000002";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/releases"))
+        .and(query_param("after", "0192f0d0-0000-7000-8000-000000000001"))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [release_document(second_id)],
+                "cursor": null,
+                "has_more": false,
+            }))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/releases"))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [release_document(first_id)],
+                "cursor": first_id,
+                "has_more": true,
+            }))
+        })
+        .mount(&server)
+        .await;
+    let output = Command::cargo_bin("cargobike")
+        .expect("the binary")
+        .env("CARGOBIKE_URL", server.uri())
+        .arg("release")
+        .arg("list")
+        .output()
+        .expect("runs");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(first_id) && text.contains(second_id),
+        "both pages' rows show: {text}"
+    );
+}
