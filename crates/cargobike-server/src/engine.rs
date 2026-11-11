@@ -508,8 +508,19 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
         _sha: &str,
         sender: &str,
     ) -> Result<cargobike_engine::TagPushOutcome, String> {
-        let _ = sender;
         let config = self.config.borrow().clone();
+        // F-97: the verified delivery's pusher is the actor the created
+        // releases record — webhook-triggered creates are authorized by
+        // signature + trigger, so the sender is provenance, not a claim
+        // to trust.
+        let sender_actor = crate::release::ReleaseActor {
+            actor: cargobike_core::model::Actor {
+                issuer: format!("webhook/{provider}"),
+                subject: sender.to_owned(),
+                display_name: sender.to_owned(),
+            },
+            ci: None,
+        };
         let mut outcome = cargobike_engine::TagPushOutcome {
             created: vec![],
             duplicates: vec![],
@@ -579,8 +590,18 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
             // The row half only: the interpreter's start is refused
             // from inside a step, so the creator plans and the webhook
             // workflow's body addresses the interpreters.
-            match crate::release::create_release_row(&parts, app, &app.name, &version, None, None)
-                .await
+            match crate::release::create_release_row(
+                &parts,
+                app,
+                &app.name,
+                &version,
+                crate::release::CreateOrigin {
+                    actor: Some(&sender_actor),
+                    retried_from: None,
+                    idempotency_key: None,
+                },
+            )
+            .await
             {
                 Ok(created_row) => {
                     let id = created_row

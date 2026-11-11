@@ -146,6 +146,10 @@ environments:
     .expect("template");
 
     // Config with one OIDC entry and a single registered application.
+    // The entry carries the REAL GitHub Actions issuer (the CI-context
+    // provider label keys on it) with the local JWKS via `jwks_url` —
+    // the override's own use case .
+    let actions_issuer = "https://token.actions.githubusercontent.com";
     let config_path = std::env::temp_dir().join(format!("cb-oidc-config-{port}.yaml"));
     std::fs::write(
         &config_path,
@@ -153,16 +157,22 @@ environments:
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
              database:\n  url: \"{fix_url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {}\n\n\
-             auth:\n  oidc:\n    - name: test-oidc\n      issuer: \"{issuer}\"\n      audience: cargobike\n      jwks_url: \"{issuer}/jwks\"\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:create, release:read, release:cancel]\n\n\
+             auth:\n  oidc:\n    - name: test-oidc\n      issuer: \"{actions_issuer}\"\n      audience: cargobike\n      jwks_url: \"{issuer}/jwks\"\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:create, release:read, release:cancel]\n\n\
              applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    versioning:\n      scheme: semver\n      tag_format: \"v{{version}}\"\n    releasers:\n      - oidc: test-oidc\n    environments:\n      preview:\n        repo: {{ provider: github, id: \"42\" }}\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n",
             templates_dir.display(),
         ),
     )
     .expect("config");
 
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), None).await else {
-        eprintln!("skipping: boot failed");
-        return;
+    let boot = cargobike_server::boot(Some(&config_path), None).await;
+    let (router, _state) = match boot {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("skipping: boot failed: {error:?}");
+            let dumped = std::fs::read_to_string(&config_path).unwrap_or_default();
+            eprintln!("the config:\n{dumped}");
+            return;
+        }
     };
     // The JWKS rides on the same router as the API: one port, one process.
     let router = router.route(
@@ -186,10 +196,14 @@ environments:
         .expect("clock")
         .as_secs();
     let claims_base = serde_json::json!({
-        "iss": issuer, "aud": "cargobike", "sub": "ci-runner",
+        "iss": actions_issuer, "aud": "cargobike", "sub": "repo:my-org/my-service:ref:refs/tags/v1.0.0",
         "repository_owner_id": "123456", "repository_id": "123456",
+        "repository": "my-org/my-service",
+        "workflow_ref": "my-org/my-service/.github/workflows/release.yml",
+        "run_id": "424242",
         "ref": "refs/tags/v1.0.0", "iat": now, "nbf": now.saturating_sub(5), "exp": now + 600,
     });
+    const ACTIONS_ISSUER: &str = "https://token.actions.githubusercontent.com";
 
     // A matching token: 202 + Location (the creates via OIDC, //).
     let good = craft_jwt(&keypair.key_path, claims_base.clone(), "test-kid");
@@ -207,16 +221,59 @@ environments:
         response.text().await
     );
     assert!(response.headers().get("Location").is_some());
-    // The release id (the drain at the test's end uses it; its
+    // F-83/F-84: the release's status carries the caller's verified
+    // identity (issuer + subject off the token) and the CI context —
+    // built from claims only, the Actions provider label keyed on the
+    // real issuer, the run URL synthesized from the verified pair.
+    let created: serde_json::Value = response.json().await.expect("release json");
+    let created_location = format!(
+        "/api/v1/releases/{}",
+        created
+            .pointer("/metadata/id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    );
+    assert_eq!(
+        created
+            .pointer("/status/actor/issuer")
+            .and_then(serde_json::Value::as_str),
+        Some(ACTIONS_ISSUER),
+        "the actor's issuer is the verified token issuer"
+    );
+    assert_eq!(
+        created
+            .pointer("/status/actor/subject")
+            .and_then(serde_json::Value::as_str),
+        Some("repo:my-org/my-service:ref:refs/tags/v1.0.0")
+    );
+    assert_eq!(
+        created
+            .pointer("/status/ci/provider")
+            .and_then(serde_json::Value::as_str),
+        Some("github-actions"),
+        "the CI provider label keys on the issuer: {created}"
+    );
+    assert_eq!(
+        created
+            .pointer("/status/ci/repository")
+            .and_then(serde_json::Value::as_str),
+        Some("my-org/my-service")
+    );
+    assert_eq!(
+        created
+            .pointer("/status/ci/run_id")
+            .and_then(serde_json::Value::as_str),
+        Some("424242")
+    );
+    assert_eq!(
+        created
+            .pointer("/status/ci/run_url")
+            .and_then(serde_json::Value::as_str),
+        Some("https://github.com/my-org/my-service/actions/runs/424242")
+    );
+    // (created_location feeds the drain at the test's end; its
     // interpreter must reach terminal before this binary exits, or its
-    // orphaned PENDING row poisons later boots' recovery).
-    let created_location = response
-        .headers()
-        .get("Location")
-        .expect("Location")
-        .to_str()
-        .expect("ascii")
-        .to_owned();
+    // orphaned PENDING row poisons later boots' recovery.)
 
     // whoami reports the resolved identity and grants .
     let response = client
@@ -227,7 +284,10 @@ environments:
         .expect("http");
     let body: serde_json::Value = response.json().await.expect("body");
     assert_eq!(body["origin"], "test-oidc");
-    assert_eq!(body["subject"], "ci-runner");
+    assert_eq!(
+        body["subject"],
+        "repo:my-org/my-service:ref:refs/tags/v1.0.0"
+    );
     assert!(
         body["grants"]
             .as_array()
@@ -240,7 +300,7 @@ environments:
     let mismatched = craft_jwt(
         &keypair.key_path,
         serde_json::json!({
-            "iss": issuer, "aud": "cargobike", "sub": "ci-runner",
+            "iss": actions_issuer, "aud": "cargobike", "sub": "ci-runner",
             "repository_owner_id": "9999",
             "iat": now, "exp": now + 600,
         }),
@@ -259,7 +319,7 @@ environments:
     let wrong_aud = craft_jwt(
         &keypair.key_path,
         serde_json::json!({
-            "iss": issuer, "aud": "someone-else", "sub": "ci-runner",
+            "iss": actions_issuer, "aud": "someone-else", "sub": "ci-runner",
             "iat": now, "exp": now + 600,
         }),
         "test-kid",
@@ -282,7 +342,7 @@ environments:
     let spoofed_repo = craft_jwt(
         &keypair.key_path,
         serde_json::json!({
-            "iss": issuer, "aud": "cargobike", "sub": "ci-runner",
+            "iss": actions_issuer, "aud": "cargobike", "sub": "ci-runner",
             "repository_owner_id": "123456", "repository_id": "999",
             "iat": now, "exp": now + 600,
         }),
@@ -384,7 +444,7 @@ async fn test_oidc_discovery_resolves_jwks_and_unknown_kid_refetches_once() {
     let _ = std::fs::create_dir_all(&templates_dir);
     std::fs::write(
         templates_dir.join("service.yaml"),
-        "name: service\nversion: \"1\"\n",
+        "name: service\nversion: \"1\"\ninputs: {}\nenvironment_inputs: {}\nenvironments:\n  - name: preview\n    steps: []\n",
     )
     .expect("template");
     let config_path = std::env::temp_dir().join(format!("cb-oidc-disc-config-{port}.yaml"));
@@ -402,9 +462,15 @@ async fn test_oidc_discovery_resolves_jwks_and_unknown_kid_refetches_once() {
 
     // NOTE: no `jwks_url` — the discovery document is the only path to
     // the JWKS, and it names the GHA-style `/.well-known/jwks`.
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), None).await else {
-        eprintln!("skipping: boot failed");
-        return;
+    let boot = cargobike_server::boot(Some(&config_path), None).await;
+    let (router, _state) = match boot {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("skipping: boot failed: {error:?}");
+            let dumped = std::fs::read_to_string(&config_path).unwrap_or_default();
+            eprintln!("the config:\n{dumped}");
+            return;
+        }
     };
     let discovery_body = serde_json::json!({
         "issuer": issuer,

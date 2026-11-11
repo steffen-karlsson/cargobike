@@ -465,13 +465,58 @@ pub(crate) struct CreateOutcome {
     pub created: bool,
 }
 
+/// The create's origin context: who asked (the actor the document
+/// records), which release a `--new` retry forks from, and the
+/// idempotency key deduplicating retries. Bundled so the create path's
+/// signatures stay under clippy's argument budget.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CreateOrigin<'a> {
+    /// The caller's verified identity (F-83/F-84), when known.
+    pub actor: Option<&'a ReleaseActor>,
+    /// The release a `--new` retry forks from .
+    pub retried_from: Option<&'a str>,
+    /// The Idempotency-Key deduplicating create retries .
+    pub idempotency_key: Option<&'a str>,
+}
+
+/// The caller's identity as the release document records it (F-83):
+/// the verified `(issuer, subject)` pair plus a display name, and the
+/// CI context when the token carried one (F-84: claims only —
+/// body-supplied values are never part of this).
+#[derive(Clone, Debug)]
+pub(crate) struct ReleaseActor {
+    /// The `(issuer, subject)` + display name triple .
+    pub actor: cargobike_core::model::Actor,
+    /// The verified CI context , when the token described a run.
+    pub ci: Option<cargobike_core::model::CiContext>,
+}
+
+/// The actor as the document's status object carries it.
+fn actor_json(actor: Option<&ReleaseActor>) -> serde_json::Value {
+    let Some(stamp) = actor else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "issuer": stamp.actor.issuer,
+        "subject": stamp.actor.subject,
+        "display_name": stamp.actor.display_name,
+    })
+}
+
+/// The CI context as the document's status object carries it.
+fn ci_json(actor: Option<&ReleaseActor>) -> serde_json::Value {
+    actor
+        .and_then(|stamp| stamp.ci.as_ref())
+        .and_then(|ci| serde_json::to_value(ci).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
 pub(crate) async fn create_release_core(
     state: &crate::http::AppState,
     app: &crate::config::ApplicationEntry,
     application: &str,
     version: &str,
-    retried_from: Option<&str>,
-    idempotency_key: Option<&str>,
+    origin: CreateOrigin<'_>,
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
     let parts = CoreParts {
         releases: &state.releases,
@@ -490,8 +535,7 @@ pub(crate) async fn create_release_core(
         app,
         application,
         version,
-        retried_from,
-        idempotency_key,
+        origin,
     )
     .await
 }
@@ -523,8 +567,7 @@ pub(crate) async fn create_release_row(
     app: &crate::config::ApplicationEntry,
     application: &str,
     version: &str,
-    retried_from: Option<&str>,
-    idempotency_key: Option<&str>,
+    origin: CreateOrigin<'_>,
 ) -> Result<CreateRow, crate::http::errors::ApiError> {
     let id = Uuid::now_v7();
     let now = sqlx::types::time::OffsetDateTime::now_utc();
@@ -533,7 +576,7 @@ pub(crate) async fn create_release_row(
     // same `Idempotency-Key` converges on the release the first attempt
     // produced, whatever the body says — the caller already has this
     // release, and a re-provision would only fork the caller's intent.
-    if let Some(key) = idempotency_key {
+    if let Some(key) = origin.idempotency_key {
         if let Some(existing_json) = parts
             .releases
             .find_by_idempotency_key(key)
@@ -597,7 +640,8 @@ pub(crate) async fn create_release_row(
             })
         })
         .collect::<Vec<_>>();
-    let retried = retried_from
+    let retried = origin
+        .retried_from
         .map(|from| serde_json::Value::String(from.to_owned()))
         .unwrap_or(serde_json::Value::Null);
     let document = serde_json::json!({
@@ -623,6 +667,8 @@ pub(crate) async fn create_release_row(
         "status": {
             "phase": "Pending",
             "error": serde_json::Value::Null,
+            "actor": actor_json(origin.actor),
+            "ci": ci_json(origin.actor),
             "environments": provisions,
         },
     });
@@ -742,22 +788,13 @@ pub(crate) async fn create_from_parts(
     app: &crate::config::ApplicationEntry,
     application: &str,
     version: &str,
-    retried_from: Option<&str>,
-    idempotency_key: Option<&str>,
+    origin: CreateOrigin<'_>,
 ) -> Result<CreateOutcome, crate::http::errors::ApiError> {
-    let created = create_release_row(
-        parts,
-        app,
-        application,
-        version,
-        retried_from,
-        idempotency_key,
-    )
-    .await?;
+    let created = create_release_row(parts, app, application, version, origin).await?;
     let Some(snapshot) = created.snapshot else {
         return Ok(created.outcome);
     };
-    record_create_key(parts, idempotency_key, &created.release_id).await;
+    record_create_key(parts, origin.idempotency_key, &created.release_id).await;
     start_release_interpreter(interpreter, created.release_id, snapshot).await;
     Ok(created.outcome)
 }

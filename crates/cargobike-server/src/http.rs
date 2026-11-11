@@ -261,13 +261,27 @@ async fn create_release(
         Err(error) => return Err(auth_to_api(&error)),
     };
 
+    // F-83/F-84: the release records the caller's verified identity
+    // (issuer + subject) and, when the token described a CI run, the
+    // verified CI context — never body-supplied values.
+    let caller_actor = crate::release::ReleaseActor {
+        actor: cargobike_core::model::Actor {
+            issuer: caller.issuer.clone(),
+            subject: caller.subject.clone(),
+            display_name: caller.display_name.clone(),
+        },
+        ci: caller.ci.clone(),
+    };
     let outcome = create_release_core(
         state.as_ref(),
         app,
         &application,
         &version,
-        None,
-        idempotency_key.as_deref(),
+        crate::release::CreateOrigin {
+            actor: Some(&caller_actor),
+            retried_from: None,
+            idempotency_key: idempotency_key.as_deref(),
+        },
     )
     .await?;
     if !outcome.created {
@@ -603,13 +617,25 @@ async fn retry_release(
             format!("The application `{application}` is not in the registry."),
         ));
     };
+    let caller_actor = crate::release::ReleaseActor {
+        actor: cargobike_core::model::Actor {
+            issuer: caller.issuer.clone(),
+            subject: caller.subject.clone(),
+            display_name: caller.display_name.clone(),
+        },
+        ci: caller.ci.clone(),
+    };
+    let retried_from = id.to_string();
     let outcome = crate::release::create_release_core(
         state.as_ref(),
         app,
         &application,
         &version,
-        Some(id.to_string().as_str()),
-        None,
+        crate::release::CreateOrigin {
+            actor: Some(&caller_actor),
+            retried_from: Some(retried_from.as_str()),
+            idempotency_key: None,
+        },
     )
     .await?;
     let location = format!(

@@ -58,9 +58,13 @@
   JSON of the template + the release identity + the inputs + the
   pinned step-type versions (`snapshot_content_hash`).
 - [ ] The remaining status surface: the SSE `watch` (Phase 5), the
-  event-log writes (Phase 5), the attempts' `fork_from` values (the
-  retry work), and the metadata's actor/CiContext half (the caller's
-  identity lands with 4.5's OIDC exchange).
+  event-log writes (Phase 5), and the attempts' `fork_from` values (the
+  retry work).
+- [x] The status's actor/CiContext half (F-83/F-84): the create stamps
+  `status.actor` (the verified `(issuer, subject)` + display name)
+  and `status.ci` (claims-built; the Actions provider label keys on
+  the real issuer) into the release document; the webhook path
+  records the verified delivery's sender (F-97).
 
 ## 2. Provider-side security checks wired to the engine (PRD §4.5/§4.7/§4.12)
 
@@ -182,9 +186,11 @@
 - [x] `--auth`/`CARGOBIKE_AUTH` (none|api-key|exec|github-actions; exec keeps
   the context's shape, api-key materializes CARGOBIKE_API_KEY{,_FILE}) and
   `--ca-file`/`CARGOBIKE_CA_FILE` + `~`-expansion on CA/key file refs.
-- [ ] CI env assembly: `ci::CiContext::from_environment` is never attached to a
-  create request (US-1's auto-detect creates no annotations today; server is the
-  authority on claims — verify the split before wiring).
+- [ ] CI env assembly: `ci::CiContext::from_environment` is still not
+  attached to a create request. The split is now verified: the server
+  is the authority (claims → `status.ci`, F-83/F-84 done), so the CLI
+  half is UNTRUSTED annotations only (`metadata.annotations` per
+  F-84) — wire it when the create body grows an `annotations` map.
 - [ ] List paging: CLI sends no `after` cursor; deep listings stop at page 1.
 - [x] `~` expansion for `ca_file`/key/CA file refs: the resolution walk
   tilde-expands the context's `ca_file`, the flag's `--ca-file`, and the
@@ -245,8 +251,21 @@
   storm cannot hammer the issuer (`tests/oidc_roundtrip.rs` counts
   the JWKS hits: 1 cached, 2 after the rotation, still 2 after the
   storm probe — also the §9 rate-limit test item).
-- [ ] `CiContext` extraction from token claims (F-83) and F-84
-  "verified values from claims, not body".
+- [x] `CiContext` extraction from token claims (F-83) and F-84
+  "verified values from claims, not body": a token carrying
+  `repository_id` describes a CI run, so `decode_oidc` builds the
+  `CiContext` (provider label keyed on the issuer — the real Actions
+  issuer → `github-actions`, else `oidc`; repository/workflow_ref/
+  run_id off claims; run_url synthesised from the verified pair for
+  Actions) and the create stamps `status.actor` (the verified
+  `(issuer, subject)` + display name) and `status.ci` into the release
+  document. The webhook path records the verified delivery's sender
+  as the actor (issuer `webhook/{provider}`, F-97). The roundtrip test
+  runs the REAL Actions issuer through the `jwks_url` override and
+  asserts both status halves; en route its silent boot-skip was fixed
+  (the stub template lacked `environments`), and the single-key JWKS
+  heuristic now answers only kid-less headers so a declared unknown
+  `kid` reaches the rotation refetch.
 - [ ] Application groups (§4.13a, the planned 2.7a): discovery scan, virtual
   app materialisation, `{application}` placeholder resolution in edits/match,
   `extends` merge (maps deep, lists replace, `source` whole), ownership

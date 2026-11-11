@@ -68,8 +68,68 @@ pub struct AuthedCaller {
     pub grants: Vec<String>,
     /// `repository_id` claim when the token carried one .
     pub repository_id: Option<String>,
+    /// The CI context built from VERIFIED token claims (F-83/F-84):
+    /// body-supplied values never reach here.
+    pub ci: Option<cargobike_core::model::CiContext>,
     /// Bootstrap-key caller (the never network-legal).
     pub bootstrap: bool,
+}
+
+/// The GitHub Actions token issuer (the CI provider label's anchor).
+const GITHUB_ACTIONS_ISSUER: &str = "https://token.actions.githubusercontent.com";
+
+/// The CI context off verified claims (F-83): a token that carries a
+/// `repository_id` describes a CI run, so the run's facts ride the
+/// caller into the release document. Values come from the claims
+/// only (F-84) — the caller's body is never consulted. An issuer
+/// without a known CI provider labels itself `oidc`.
+fn ci_of(issuer: &str, claims: &serde_json::Value) -> Option<cargobike_core::model::CiContext> {
+    let string_of = |name: &str| {
+        claims
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let repository_id = string_of("repository_id");
+    if repository_id.is_empty() {
+        return None;
+    }
+    let repository = string_of("repository");
+    let workflow_ref = {
+        let declared = string_of("workflow_ref");
+        if declared.is_empty() {
+            string_of("workflow")
+        } else {
+            declared
+        }
+    };
+    let run_id = string_of("run_id");
+    let provider = if issuer == GITHUB_ACTIONS_ISSUER {
+        "github-actions"
+    } else {
+        "oidc"
+    };
+    let run_url = {
+        let declared = string_of("run_url");
+        if !declared.is_empty() {
+            declared
+        } else if provider == "github-actions" && !repository.is_empty() && !run_id.is_empty() {
+            // The Actions token carries no run URL; the run's address is
+            // derivable from the verified repository + run id.
+            format!("https://github.com/{repository}/actions/runs/{run_id}")
+        } else {
+            String::new()
+        }
+    };
+    Some(cargobike_core::model::CiContext {
+        provider: provider.to_owned(),
+        repository,
+        repository_id,
+        workflow_ref,
+        run_id,
+        run_url,
+    })
 }
 
 impl AuthedCaller {
@@ -378,8 +438,11 @@ impl AuthState {
         }
     }
 
-    /// The key for a token header out of a JWKS: the `kid` match first,
-    /// a single-key document second (kid-less issuers).
+    /// The key for a token header out of a JWKS: the `kid` match first.
+    /// A single-key document answers only when the header declared NO
+    /// kid (kid-less issuers): a declared-but-unknown `kid` is a
+    /// rotation signal, not a reason to try the wrong key, so it falls
+    /// through to the refetch path instead of the heuristic.
     fn select_key<'a>(
         jwks: &'a jsonwebtoken::jwk::JwkSet,
         kid: &Option<String>,
@@ -387,7 +450,11 @@ impl AuthState {
         jwks.keys
             .iter()
             .find(|jwk| jwk.common.key_id.as_deref() == kid.as_deref())
-            .or_else(|| (jwks.keys.len() == 1).then(|| &jwks.keys[0]))
+            .or_else(|| {
+                kid.is_none()
+                    .then(|| &jwks.keys[0])
+                    .filter(|_| !jwks.keys.is_empty())
+            })
     }
 
     /// Resolves a Bearer-credential caller: API keys first , then
@@ -407,6 +474,7 @@ impl AuthState {
                 display_name: key.description.clone().unwrap_or_else(|| key.name.clone()),
                 grants: key.grants.clone(),
                 repository_id: None,
+                ci: None,
                 bootstrap: false,
             });
         }
@@ -422,6 +490,7 @@ impl AuthState {
                     display_name: "bootstrap".to_owned(),
                     grants: vec!["*".to_owned()],
                     repository_id: None,
+                    ci: None,
                     bootstrap: true,
                 });
             }
@@ -516,6 +585,7 @@ impl AuthState {
                     .get("repository_id")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
+                ci: ci_of(&entry.issuer, &claims),
                 bootstrap: false,
             });
         }
