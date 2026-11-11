@@ -332,8 +332,13 @@
   release at the paused environment — snapshot pinning means a
   mid-flight pause needs a live pause/wake control plane, which is
   post-v1 work.
-- [ ] Curated env overrides list (F-125) covers 6 scalars; PRD's curated list +
-  documented surfaces (flags) not published — docs task.
+- [x] Curated env overrides list (F-125): the published list lives
+  in the server README's "Curated overrides" table — the three flags
+  (`--config`/`--listen`/`--public-url`), the six scalar envs
+  (`CARGOBIKE_SERVER_{LISTEN,PUBLIC_URL,DATABASE_URL,DATABASE_URL_FILE,
+  LOG_LEVEL,LOG_FORMAT}`), the bootstrap key pair, and the four
+  GitHub provider env stamps — flag > env > file > default, the
+  `*_FILE` paths read (never interpolated).
 
 ## 9. Test coverage vs §14 (what's untested that must be)
 

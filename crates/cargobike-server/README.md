@@ -64,6 +64,28 @@ The SIGHUP reload re-reads config, re-validates, and swaps the shared
 config the auth layer and handlers read; a broken file logs and keeps the
 previous one.
 
+### Curated overrides (F-125)
+
+Every scalar has three sources — flag > env > config file > default —
+over a **published** list (never an automatic `__` mapping: lists such as
+`applications` cannot be env vars, and an automatic mapping would freeze
+every internal key name into a stable API).
+
+| Surface | Name | Maps to |
+|---|---|---|
+| flag | `--config` (env `CARGOBIKE_SERVER_CONFIG`) | the config file path (default `/etc/cargobike/config.yaml`) |
+| flag | `--listen` | `server.listen` |
+| flag | `--public-url` | `server.public_url` |
+| env | `CARGOBIKE_SERVER_LISTEN` | `server.listen` |
+| env | `CARGOBIKE_SERVER_PUBLIC_URL` | `server.public_url` |
+| env | `CARGOBIKE_SERVER_DATABASE_URL` / `CARGOBIKE_SERVER_DATABASE_URL_FILE` | `database.url` / `database.url_file` (the `*_FILE` path is READ, not interpolated) |
+| env | `CARGOBIKE_SERVER_LOG_LEVEL` / `CARGOBIKE_SERVER_LOG_FORMAT` | `logging.level` / `logging.format` |
+| env | `CARGOBIKE_SERVER_BOOTSTRAP_API_KEY` / `…_FILE` | the dev/localhost bootstrap key (auth; hashed at rest) |
+| env | `CARGOBIKE_SERVER_GITHUB_APP_ID` | `providers[github].auth.app_id` (stamps — creates — the github entry when the file declares none) |
+| env | `CARGOBIKE_SERVER_GITHUB_PRIVATE_KEY_FILE` | `providers[github].auth.private_key` (file-shaped; required with the `APP_ID` stamp) |
+| env | `CARGOBIKE_SERVER_GITHUB_API_URL` | `providers[github].api_url` (GHES) |
+| env | `CARGOBIKE_SERVER_GITHUB_WEBHOOK_SECRET_FILE` | `providers[github].webhook_secrets` (the file's own values win where declared) |
+
 Health/discovery (unauthenticated):
 
 ```bash
