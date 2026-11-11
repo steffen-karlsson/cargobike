@@ -62,6 +62,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
             "keyed-service",
             "paused-service",
             "env-paused-service",
+            "bare-service",
         ] {
             sqlx::query("DELETE FROM leases WHERE application = $1")
                 .bind(application)
@@ -117,7 +118,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
              database:\n  url: \"{url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_display}\n\n\
              auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\
-             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n        change_request:\n          title: \"The keyed release {{version}}\"\n          labels: [keyed]\n          draft: true\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
+             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n        change_request:\n          title: \"The keyed release {{version}}\"\n          labels: [keyed]\n          draft: true\n  - name: bare-service\n    source:\n      provider: github\n      id: \"777888\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("write the test config");
@@ -238,6 +239,27 @@ async fn test_authed_release_lifecycle() {
         retried_document["metadata"]["id"].as_str().expect("id"),
         keyed_id,
         "the key's retry converges on the first attempt's release"
+    );
+
+    // F-32a: an environment that does not supply every per-environment
+    // input the template declares refuses the create at the choke
+    // point — the refusal names the gap instead of a CEL resolve
+    // failure surfacing mid-flight.
+    let bare_create = client
+        .post(format!("{base}/api/v1/releases"))
+        .header(auth_header.0, auth_header.1.clone())
+        .json(&serde_json::json!({ "application": "bare-service", "version": format!("6.0.{run_tag}") }))
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(bare_create.status(), reqwest::StatusCode::BAD_REQUEST);
+    let bare_body: serde_json::Value = bare_create.json().await.expect("problem body");
+    assert_eq!(bare_body["code"], "InvalidRequest");
+    assert!(
+        bare_body["detail"].as_str().is_some_and(
+            |detail| detail.contains("does not supply the per-environment input `repo`")
+        ),
+        "the refusal names the missing input: {bare_body}"
     );
 
     // F-142: a paused application refuses the create with 409 and a

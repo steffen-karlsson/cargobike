@@ -356,6 +356,9 @@ pub(crate) async fn provision_snapshot_parts(
 
     // The environments' staged inputs: the registry's repo/edits and
     // the custom per-environment inputs over the template's shape.
+    // The declared names read before the mutable loop (a second
+    // borrow of the compiled template would not fly mid-iteration).
+    let declared_env_inputs: Vec<String> = compiled.environment_inputs.keys().cloned().collect();
     let application_inputs = app.inputs.clone().unwrap_or_default();
     for environment in compiled.environments.iter_mut() {
         let Some(entry) = app.environments.get(&environment.name) else {
@@ -429,6 +432,24 @@ pub(crate) async fn provision_snapshot_parts(
         if let Some(inputs) = &entry.inputs {
             for (name, value) in inputs {
                 staged.insert(name.clone(), value.clone());
+            }
+        }
+        // F-32a: every environment supplies every per-environment
+        // input the template declares. The refusal names the gap — a
+        // missing input surfaced as a CEL resolve failure mid-flight
+        // (or a provider-less step error) helps nobody.
+        for name in &declared_env_inputs {
+            if !staged.get(name).is_some_and(|value| !value.is_null()) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    errors::INVALID_REQUEST,
+                    "field-required",
+                    format!(
+                        "the environment `{}` does not supply the per-environment input \
+                         `{name}` the template `{}` declares",
+                        environment.name, app.template
+                    ),
+                ));
             }
         }
         environment.env_inputs = staged;

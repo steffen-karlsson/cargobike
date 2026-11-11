@@ -236,11 +236,17 @@
 
 ## 7. F-32a provision-time checks (registry ↔ template)
 
-- [ ] "Every environment must supply every per-environment input" is enforced
-  nowhere (engine compile doesn't see env_inputs; server doesn't provision).
-  Also `inputs`/`env.inputs.*` provision stamping from the registry
-  (`environments.<name>.repo/edits` as well-known `env.inputs`) lives only in
-  the harness binary.
+- [x] "Every environment must supply every per-environment input"
+  (F-32a) is enforced at the create's choke point: the provision
+  checks the staged env inputs against the template's declared
+  `environment_inputs` (nulls count as missing) and refuses with 400
+  naming the environment + the input. The second half of the old
+  claim was stale — the registry's `repo`/`edits`/custom-inputs /
+  app-wide `inputs` stamping lives in the SERVER's provision
+  (`provision_snapshot_parts`), not only the harness binary; the
+  interpreter resolves `${{ env.inputs.* }}` off the staged
+  snapshot. E2E: `bare-service` (an environment without the
+  template's `repo` input) refuses the create.
 - [x] Registry environment `change_request.{title,body,labels,draft}` appended
   to template `with` per R11: the provision stamps the registry's
   block into the snapshot (the same well-known env-input ride as
