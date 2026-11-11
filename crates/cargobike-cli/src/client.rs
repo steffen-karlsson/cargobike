@@ -82,6 +82,17 @@ impl Client {
         self.send(reqwest::Method::POST, path, Some(body)).await
     }
 
+    /// The SSE watch's request builder (US-4): the bearer rides it,
+    /// `reqwest-eventsource` drives the streaming and the
+    /// `Last-Event-ID` reconnect.
+    pub fn event_source(&self, path: &str) -> reqwest::RequestBuilder {
+        let mut request = self.http.get(format!("{}{}", self.base, path));
+        if let Some(token) = &self.bearer {
+            request = request.bearer_auth(token.expose_secret());
+        }
+        request
+    }
+
     /// DELETEs the path (204/200 both fine).
     pub async fn delete(&self, path: &str) -> Result<serde_json::Value, CallError> {
         self.send(reqwest::Method::DELETE, path, None).await

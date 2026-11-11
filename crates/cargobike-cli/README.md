@@ -19,15 +19,16 @@ Components:
 | `ci` | GitHub Actions auto-detection: `GITHUB_REPOSITORY`/`GITHUB_SHA`/`GITHUB_RUN_ID` context struct, the OIDC request environment, the audience resolution (`--audience` > `CARGOBIKE_AUDIENCE` > `cargobike`), and the ID-token exchange (`ACTIONS_ID_TOKEN_REQUEST_URL?audience=…` with the request token as bearer) |
 | `application list` (main) | `GET /api/v1/applications`: the registered applications with their F-10 availability — table `name  template  available|unavailable: reason`, or the whole body as JSON/YAML |
 | `render` | Output rendering: table rows (`metadata.id`, `spec.application`, `spec.version`, `status.phase`) or full documents as JSON/YAML |
-| `main` | clap wiring: global flags with env fallbacks, `context list/use`, the release verbs, `create --wait` polling |
+| `main` | clap wiring: global flags with env fallbacks, `context list/use`, the release verbs, `create --wait` riding the SSE watch |
+| `watch` | The SSE watch (US-4/F-102): `release watch [--until <env>] [--timeout <cap>]` and `create --wait` stream the event log via `reqwest-eventsource` (a broken stream reconnects with `Last-Event-ID` automatically), `indicatif` progress on a TTY / plain event lines in CI, and US-4's exit matrix decides the code — 0 completed (a Skipped `--until` environment counts, with a message), 1 failed, 2 canceled/superseded, 3 the `--timeout` expiry, 10/11/12 the client failures |
 
 ## Status
 
 Phase 4 scope (4.5/4.6 complete; 4.9's CLI-half tests exist). The OIDC
 exchange, the `-o` honouring, the auth/CA overrides, `--since`, and
 `release retry` (`--new` included) landed (audit §5's ticked items).
-Pending (audit TODO §5): the `release watch` SSE command (4.7),
-`cargobike validate` (4.8), `release approve`, `--events`.
+Pending (audit TODO §5): `cargobike validate` (4.8),
+`release approve`, `--events`.
 
 ## Usage
 
@@ -46,7 +47,10 @@ cargobike release create my-service 1.2.3
 # inside GitHub Actions the create body additionally carries the CI
 # facts as UNTRUSTED annotations (ci.repository/ci.sha/ci.run-id;
 # the server's verified token claims stay the authority)
-cargobike release create my-service 1.2.3 --wait --timeout 30m # polls to terminal
+cargobike release create my-service 1.2.3 --wait --timeout 30m # the SSE watch to terminal (exit 0/1/2/3)
+cargobike release watch <id> --until preview --timeout 30m     # streams the event log; the environment's
+                                             # terminal phase ends it (Skipped = exit 0), the
+                                             # CLI-side --timeout ends it with exit 3
 cargobike release list -a my-service --phase PendingApproval --limit 50
 cargobike release list --since 24h          # updated at-or-after; RFC 3339 also fine
                                              # (list walks the cursor: --limit is the

@@ -592,6 +592,16 @@ async fn test_authed_release_lifecycle() {
         .await
         .expect("http");
     assert_eq!(watch.status(), reqwest::StatusCode::OK);
+    // F-102's reconnect half: a `Last-Event-ID` of the first sequence
+    // resumes AFTER it — that stream's frames start at the second
+    // event (read below, once the cancel closed both).
+    let resumed = client
+        .get(format!("{base}/api/v1/releases/{fresh_id}/watch"))
+        .header(auth_header.0, auth_header.1.clone())
+        .header("Last-Event-ID", "1")
+        .send()
+        .await
+        .expect("http");
     let cancel = client
         .post(format!("{base}/api/v1/releases/{fresh_id}/cancel"))
         .header(auth_header.0, auth_header.1.clone())
@@ -620,6 +630,15 @@ async fn test_authed_release_lifecycle() {
     assert!(
         watched.contains("event: environment-change-request"),
         "the interpreter's transitions streamed: {watched}"
+    );
+    let resumed_body = resumed.text().await.expect("the resumed stream ends");
+    assert!(
+        !resumed_body.contains("id: 1\nevent: created"),
+        "the resume skips the first event: {resumed_body}"
+    );
+    assert!(
+        resumed_body.contains("event: canceled"),
+        "the resume still reaches the close: {resumed_body}"
     );
     assert_eq!(
         client

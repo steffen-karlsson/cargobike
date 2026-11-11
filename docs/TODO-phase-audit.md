@@ -220,13 +220,19 @@
   ID token (the flag/env/default audience); `Client::bearer_for` mints on
   the `github-actions` shape (unit + binary E2E against wiremock, incl.
   the request-token header and the audience query param).
-- [ ] **`release watch` (4.7) missing entirely** — SSE client
-  (`reqwest-eventsource`), `--until <environment>` (incl. `Skipped` = exit 0),
-  exit codes 0/1/2/3/10/11/12 (10/11/12 exist in `client::exit_code` but the
-  RequestBodyLimit/409 nuance is untested), `Last-Event-ID` reconnect,
-  `indicatif` progress (non-TTY disabled). `create --wait` polls 1s instead
-  (stopgap; watch must replace it — the server's `/watch` SSE endpoint
-  landed in Phase 5.4, see §1's tick; only the CLI consumer remains).
+- [x] **`release watch` (4.7) landed** — `cargobike-cli/src/watch.rs`:
+  SSE over `reqwest-eventsource` (a broken stream reconnects carrying
+  `Last-Event-ID` automatically; the server honours it — the lifecycle
+  E2E asserts a `Last-Event-ID: 1` stream skips the first event and
+  still reaches the close), `--until <environment>` with `Skipped` =
+  exit 0 + message, US-4's whole matrix (0/1/2/3 + the client
+  10/11/12: a refused bearer is 10, a dead server 11, an unknown
+  release's 404 is 12), `indicatif` spinner on a TTY with plain event
+  lines in CI, and `create --wait` now rides the same watch (the 1s
+  polling stopgap is gone). The wiremock suite drives the binary
+  through every exit code; wiremock's `set_body_string` stamps its
+  own `text/plain` mime over any header, so the SSE lane answers via
+  `set_body_raw(bytes, "text/event-stream")`.
 - [ ] **`cargobike validate` (4.8, US-13) missing** — offline config/template
   validation reusing server `validation.rs` + engine `compile_with`, with
   `miette` diagnostics; no `--resolve` mode yet.

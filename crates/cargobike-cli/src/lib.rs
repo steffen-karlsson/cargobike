@@ -5,3 +5,4 @@ pub mod ci;
 pub mod client;
 pub mod config;
 pub mod render;
+pub mod watch;

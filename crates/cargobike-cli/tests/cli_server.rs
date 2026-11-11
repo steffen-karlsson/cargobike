@@ -485,3 +485,209 @@ async fn test_create_carries_the_ci_annotations_inside_actions() {
     // The recorded request's body is the whole proof: a miss would have
     // answered 404 and failed above.
 }
+
+/// The watch's SSE frame vocabulary (the server's `event:` is the
+/// event-log kind, `id:` the per-release sequence).
+fn sse_frame(sequence: u64, kind: &str, environment: Option<&str>) -> String {
+    let data = match environment {
+        Some(environment) => serde_json::json!({
+            "sequence": sequence,
+            "at": "2026-01-01T00:00:00Z",
+            "actor": { "subject": "ci" },
+            "kind": kind,
+            "reason": format!("the environment {environment} reached its phase"),
+            "data": { "environment": environment, "phase": "Completed" },
+            "hash": "00",
+            "prev": "00",
+        }),
+        None => serde_json::json!({
+            "sequence": sequence,
+            "at": "2026-01-01T00:00:00Z",
+            "actor": { "subject": "ci" },
+            "kind": kind,
+            "reason": "why",
+            "data": {},
+            "hash": "00",
+            "prev": "00",
+        }),
+    };
+    format!("id: {sequence}\nevent: {kind}\ndata: {data}\n\n")
+}
+
+/// Mounts the watch lane: the SSE endpoint (a canned stream) and the
+/// release document the close path reads.
+async fn mock_watch_lane(body: String, document_phase: &str) -> (MockServer, String) {
+    let id = "0192f0d0-0000-7000-8000-000000000003";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}/watch")))
+        .respond_with(move |_: &Request| {
+            // The raw-body form: wiremock's `set_body_string` stamps
+            // its own `text/plain` mime over any header.
+            ResponseTemplate::new(200).set_body_raw(body.clone().into_bytes(), "text/event-stream")
+        })
+        .mount(&server)
+        .await;
+    let mut document = release_document(id);
+    document["status"]["phase"] = serde_json::Value::String(document_phase.to_owned());
+    let phase = document_phase.to_owned();
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}")))
+        .respond_with(move |_: &Request| {
+            let mut document = document.clone();
+            document["status"]["phase"] = serde_json::Value::String(phase.clone());
+            ResponseTemplate::new(200).set_body_json(document.clone())
+        })
+        .mount(&server)
+        .await;
+    (server, id.to_owned())
+}
+
+/// The binary's (code, stdout) for a watch invocation.
+#[allow(clippy::expect_used)]
+async fn run_watch(
+    url: &str,
+    id: &str,
+    until: Option<&str>,
+    timeout: Option<&str>,
+) -> (i32, String) {
+    let url = url.to_owned();
+    let id = id.to_owned();
+    let until = until.map(str::to_owned);
+    let timeout = timeout.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        let mut arguments = vec!["release".to_owned(), "watch".to_owned(), id];
+        if let Some(until) = until.as_deref() {
+            arguments.push("--until".to_owned());
+            arguments.push(until.to_owned());
+        }
+        if let Some(timeout) = timeout.as_deref() {
+            arguments.push("--timeout".to_owned());
+            arguments.push(timeout.to_owned());
+        }
+        let output = Command::cargo_bin("cargobike")
+            .expect("the binary")
+            .env("CARGOBIKE_URL", url)
+            .args(&arguments)
+            .output()
+            .expect("runs");
+        let code = output.status.code().unwrap_or(-1);
+        let stdout = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (code, stdout)
+    })
+    .await
+    .expect("joined")
+}
+
+/// US-4's matrix, the `--until` half: the environment's own terminal
+/// event ends the watch — completed exits 0.
+#[tokio::test]
+async fn test_watch_until_completed_exits_zero() {
+    let body = format!(
+        "{}{}",
+        sse_frame(1, "created", None),
+        sse_frame(2, "environment-completed", Some("preview")),
+    );
+    let (server, id) = mock_watch_lane(body, "Running").await;
+    let (code, out) = run_watch(&server.uri(), &id, Some("preview"), None).await;
+    assert_eq!(code, 0, "completed exits 0: {out}");
+    assert!(out.contains("completed"), "the message says it: {out}");
+}
+
+/// T5f: a Skipped `--until` environment counts as success (exit 0
+/// with the message).
+#[tokio::test]
+async fn test_watch_until_skipped_exits_zero() {
+    let body = sse_frame(1, "environment-skipped", Some("preview"));
+    let (server, id) = mock_watch_lane(body, "Running").await;
+    let (code, out) = run_watch(&server.uri(), &id, Some("preview"), None).await;
+    assert_eq!(code, 0, "skipped counts as success: {out}");
+    assert!(out.contains("skipped"), "the message says it: {out}");
+}
+
+/// The `--until` failures: the environment's `environment-failed`
+/// exits 1; a canceled environment exits 2.
+#[tokio::test]
+async fn test_watch_until_failed_and_canceled_exit_one_and_two() {
+    let body = sse_frame(1, "environment-failed", Some("preview"));
+    let (server, id) = mock_watch_lane(body, "Running").await;
+    let (code, out) = run_watch(&server.uri(), &id, Some("preview"), None).await;
+    assert_eq!(code, 1, "failed exits 1: {out}");
+
+    let body = sse_frame(1, "environment-canceled", Some("preview"));
+    let (server, id) = mock_watch_lane(body, "Canceled").await;
+    let (code, out) = run_watch(&server.uri(), &id, Some("preview"), None).await;
+    assert_eq!(code, 2, "canceled exits 2: {out}");
+}
+
+/// Without `--until`: the stream's close (the server ends it on the
+/// terminal phase) reads the document — the phase maps the code.
+#[tokio::test]
+async fn test_watch_without_until_reads_the_rolled_up_phase() {
+    let body = sse_frame(1, "created", None);
+    let (server, id) = mock_watch_lane(body.clone(), "Canceled").await;
+    let (code, out) = run_watch(&server.uri(), &id, None, None).await;
+    assert_eq!(code, 2, "a canceled release exits 2: {out}");
+    assert!(out.contains("canceled"), "the message says it: {out}");
+
+    let (server, id) = mock_watch_lane(body.clone(), "Failed").await;
+    let (code, out) = run_watch(&server.uri(), &id, None, None).await;
+    assert_eq!(code, 1, "a failed release exits 1: {out}");
+
+    let (server, id) = mock_watch_lane(body.clone(), "Completed").await;
+    let (code, _) = run_watch(&server.uri(), &id, None, None).await;
+    assert_eq!(code, 0, "a completed release exits 0");
+}
+
+/// The CLI's `--timeout` bounds the idle too: exit 3 when the server
+/// never answers the stream.
+#[tokio::test]
+async fn test_watch_timeout_exits_three() {
+    let id = "0192f0d0-0000-7000-8000-000000000004";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}/watch")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_delay(std::time::Duration::from_secs(3)),
+        )
+        .mount(&server)
+        .await;
+    let (code, out) = run_watch(&server.uri(), id, None, Some("1s")).await;
+    assert_eq!(code, 3, "the CLI-side timeout exits 3: {out}");
+}
+
+/// The client column: a refused bearer is 10, a dead server is 11,
+/// anything else the server answered is 12.
+#[tokio::test]
+async fn test_watch_client_failures_exit_ten_eleven_twelve() {
+    let id = "0192f0d0-0000-7000-8000-000000000005";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}/watch")))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let (code, _) = run_watch(&server.uri(), id, None, None).await;
+    assert_eq!(code, 10, "a refused bearer exits 10");
+
+    // The unreachable server: a dead port's transport failure is 11.
+    let (code, _) = run_watch("http://127.0.0.1:1", id, None, Some("2s")).await;
+    assert_eq!(code, 11, "an unreachable server exits 11");
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}/watch")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "code": "ReleaseNotFound", "detail": "no such release"
+        })))
+        .mount(&server)
+        .await;
+    let (code, _) = run_watch(&server.uri(), id, None, None).await;
+    assert_eq!(code, 12, "an unknown release is an invalid response (12)");
+}

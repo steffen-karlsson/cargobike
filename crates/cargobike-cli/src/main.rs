@@ -3,12 +3,12 @@
 //! dependencies; the server's API is the only peer.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use cargobike_cli::ci;
 use cargobike_cli::client::{CallError, Client};
 use cargobike_cli::config::{self, OutputFormat};
 use cargobike_cli::render;
+use cargobike_cli::watch;
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
@@ -124,6 +124,21 @@ enum ReleaseCommand {
         /// The page size (1-500).
         #[arg(long, default_value = "50")]
         limit: u32,
+    },
+    /// Watches the release over SSE (US-4): the event log streams
+    /// live; exit codes 0/1/2/3 gate CI (10/11/12 the client
+    /// failures).
+    Watch {
+        /// The release ID (UUIDv7).
+        id: Uuid,
+        /// Return once this environment reaches a terminal phase (a
+        /// Skipped counts as success).
+        #[arg(long)]
+        until: Option<String>,
+        /// The watch's cap (the humantime, e.g. `30m`); exit 3 on
+        /// expiry.
+        #[arg(long)]
+        timeout: Option<String>,
     },
     /// Prints the release document.
     Get {
@@ -408,7 +423,23 @@ async fn release_verb(
             if !wait {
                 return Ok(0);
             }
-            poll_until_terminal(client, id.as_str(), timeout).await
+            // US-4's other door: `create --wait` is the watch without
+            // an `--until` (the polling stopgap is gone).
+            let outcome = watch::watch(client, id.as_str(), None, timeout.as_deref())
+                .await
+                .map_err(watch_failure)?;
+            finish_watch(outcome).await
+        }
+        ReleaseCommand::Watch { id, until, timeout } => {
+            let outcome = watch::watch(
+                client,
+                &id.to_string(),
+                until.as_deref(),
+                timeout.as_deref(),
+            )
+            .await
+            .map_err(watch_failure)?;
+            finish_watch(outcome).await
         }
         ReleaseCommand::List {
             application,
@@ -507,39 +538,19 @@ async fn release_verb(
 }
 
 /// The wait: polls every second until a terminal phase.
-async fn poll_until_terminal(
-    client: &Client,
-    id: &str,
-    timeout: Option<String>,
-) -> Result<i32, (i32, String)> {
-    let deadline: Option<Instant> = timeout
-        .as_deref()
-        .and_then(|text| humantime::parse_duration(text).ok())
-        .map(|cap| current_time() + cap);
-    let path = format!("/api/v1/releases/{id}");
-    loop {
-        let document = client.get_json(&path).await.map_err(call_failure)?;
-        let phase = document
-            .pointer("/status/phase")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        match phase.as_str() {
-            "Completed" => return Ok(0),
-            "Failed" => return Ok(1),
-            "Canceled" | "Superseded" => return Ok(2),
-            _ => {}
-        }
-        if deadline.as_ref().is_some_and(|due| &current_time() >= due) {
-            return Ok(3);
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+/// The watch's ending: the outcome's message prints (the Skipped
+/// environment's success note especially), the code is the exit.
+#[allow(clippy::print_stdout)] // the CLI's own output contract
+async fn finish_watch(outcome: watch::WatchOutcome) -> Result<i32, (i32, String)> {
+    if !outcome.message.is_empty() {
+        println!("{}", outcome.message);
     }
+    Ok(outcome.code)
 }
 
-// A clippy-friendly shim around std::time::Instant (the no clock trait).
-fn current_time() -> Instant {
-    Instant::now()
+/// The watch's (code, message) failure shape.
+fn watch_failure(failure: (i32, String)) -> (i32, String) {
+    failure
 }
 
 // ---- context commands -------------------------------------------------------
