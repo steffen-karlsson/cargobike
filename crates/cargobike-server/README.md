@@ -32,7 +32,11 @@ interpreter/cleanup/reconciler before `launch()`, the create provisions a
 snapshot and starts the interpreter (the release status advances live via
 the engine's status store), and the cancel stops the workflow and starts
 the cleanup that closes recorded CRs, deletes branches and settles the
-leases. Pending work: snapshot/approvals
+leases. The approvals endpoint (Phase 5.5, F-59/F-96) records
+decisions per principal per step of the current attempt (migration
+`0007`), runs the approvers policy, and starts the engine's
+`cargobike.approval.v1` workflow once the threshold crosses (or
+immediately on a reject). Pending work: snapshot
 endpoints (Phase 5), application-group discovery, the supersede chain's
 server side, the leader-lock-loss fence, and the full SSRF set (the HTTP
 seam is a first-cut guard).

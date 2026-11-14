@@ -18,6 +18,7 @@ pub const TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
 pub const VERSION_NOT_VERIFIED: &str = "VersionNotVerified";
 pub const PROVIDER_NOT_FOUND: &str = "ProviderNotFound";
 pub const WEBHOOK_UNTRUSTED: &str = "WebhookUntrusted";
+pub const APPROVAL_FORBIDDEN: &str = "ApprovalForbidden";
 const CANONICAL_FORBIDDEN_SLUG: &str = "forbidden-resource";
 const FORBIDDEN_RESOURCE: &str = "ForbiddenResource";
 

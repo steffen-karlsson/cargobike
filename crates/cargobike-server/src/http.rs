@@ -65,6 +65,7 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
             get(get_release).delete(delete_release),
         )
         .route("/api/v1/releases/{id}/cancel", post(cancel_release))
+        .route("/api/v1/releases/{id}/approvals", post(post_approval))
         .route("/api/v1/releases/{id}/events", get(list_events))
         .route("/api/v1/releases/{id}/watch", get(watch_release))
         .route("/api/v1/releases/{id}/retry", post(retry_release))
@@ -355,6 +356,305 @@ async fn create_release(
 use axum::response::IntoResponse;
 
 /// cancel is a dedicated endpoint starting a cleanup workflow .
+/// `POST /api/v1/releases/{id}/approvals` (F-59): submits one
+/// approval decision. The counting policy (F-96) runs here — the
+/// recorded decisions of the CURRENT attempt count against the
+/// environment's `required`; the workflow that wakes the parked wait
+/// starts once the threshold is crossed, or immediately on a reject
+/// (the engine's `cargobike.approval.v1`, idempotent on the decision).
+#[allow(clippy::too_many_lines)]
+async fn post_approval(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,
+    Path(id): Path<Uuid>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Result<axum::response::Response, ApiError> {
+    use crate::http::errors;
+    // F-99: the grant is the first gate (the approvers policy narrows
+    // it further below).
+    if !caller.has_grant("release:approve") {
+        return Err(ApiError::forbidden(
+            "The `release:approve` grant is required.",
+        ));
+    }
+    let field_required = |name: &str| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            errors::INVALID_REQUEST,
+            "field-required",
+            format!("The field `{name}` is required."),
+        )
+    };
+    let environment = body
+        .get("environment")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| field_required("environment"))?
+        .to_owned();
+    let step_id = body
+        .get("step_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| field_required("step_id"))?
+        .to_owned();
+    let decision = body
+        .get("decision")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| field_required("decision"))?
+        .to_owned();
+    if !matches!(decision.as_str(), "approve" | "reject") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            errors::INVALID_REQUEST,
+            "field-invalid",
+            "The field `decision` must be `approve` or `reject`.",
+        ));
+    }
+    let comment = match body.get("comment") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(_) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                errors::INVALID_REQUEST,
+                "field-invalid",
+                "The field `comment` must be a string.",
+            ));
+        }
+    };
+
+    let document = state.releases.get(&id).await.map_err(repository_to_api)?;
+    let application = document
+        .pointer("/spec/application")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let config = state.config.borrow().clone();
+    let Some(app) = config.application(&application) else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            errors::RELEASE_NOT_FOUND,
+            "release-not-found",
+            "The release's application is not in the registry.",
+        ));
+    };
+    // F-96's policy: the environment's approval block. No policy, no
+    // approvers — fail closed.
+    let policy = app
+        .environments
+        .get(&environment)
+        .and_then(|entry| entry.approval.clone())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::FORBIDDEN,
+                errors::APPROVAL_FORBIDDEN,
+                "approval-forbidden",
+                format!(
+                    "The application `{application}` declares no approval policy for the environment `{environment}`."
+                ),
+            )
+        })?;
+
+    // F-20b: submissions are accepted ONLY while the environment is
+    // `PendingApproval` at THAT step of the current attempt — a stale
+    // or speculative submission answers 409.
+    let environment_status = document
+        .pointer("/status/environments")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|environments| {
+            environments.iter().find(|record| {
+                record.get("name").and_then(serde_json::Value::as_str) == Some(environment.as_str())
+            })
+        })
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                errors::STATE_CONFLICT,
+                "state-conflict",
+                format!("The release has no environment `{environment}`."),
+            )
+        })?;
+    let pending = environment_status
+        .get("phase")
+        .and_then(serde_json::Value::as_str)
+        == Some("PendingApproval")
+        && environment_status
+            .get("pending_step")
+            .and_then(serde_json::Value::as_str)
+            == Some(step_id.as_str());
+    if !pending {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            errors::STATE_CONFLICT,
+            "state-conflict",
+            format!(
+                "The environment `{environment}` is not awaiting an approval at the step `{step_id}`; submissions are accepted only while the step is pending."
+            ),
+        ));
+    }
+    // The attempt ordinal: the document's attempts array length (the
+    // retry fork appends; approvals never carry across attempts).
+    let attempt = document
+        .pointer("/status/attempts")
+        .and_then(serde_json::Value::as_array)
+        .map_or(1, |attempts| attempts.len().max(1)) as i32;
+    // The CR head binding (F-96): the decision lands against the CR
+    // the environment's flow opened (NULL when there is none).
+    let head_sha = environment_status
+        .pointer("/change_request/head_sha")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+
+    // The policy (F-96): the caller must be an approver; the release's
+    // own creator may not self-approve by default.
+    let release_actor = document
+        .pointer("/status/actor")
+        .filter(|actor| !actor.is_null())
+        .and_then(|actor| {
+            Some((
+                actor.get("issuer").and_then(serde_json::Value::as_str)?,
+                actor.get("subject").and_then(serde_json::Value::as_str)?,
+            ))
+        });
+    if let Err(refusal) =
+        crate::approvals::authorize_approval(&policy, &caller, app, &environment, release_actor)
+    {
+        let detail = match refusal {
+            crate::approvals::ApprovalRefusal::NoPolicy => format!(
+                "The application `{application}` declares no approval policy for the environment `{environment}`."
+            ),
+            crate::approvals::ApprovalRefusal::NotAnApprover => format!(
+                "The caller does not satisfy the approvers policy of the environment `{environment}`."
+            ),
+            crate::approvals::ApprovalRefusal::SelfApproval => {
+                "The release's creator may not approve it (`allow_self_approval` is false)."
+                    .to_owned()
+            }
+            crate::approvals::ApprovalRefusal::MachineApprover => {
+                "Machine approvers are disabled for this environment.".to_owned()
+            }
+        };
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            errors::APPROVAL_FORBIDDEN,
+            "approval-forbidden",
+            detail,
+        ));
+    }
+
+    // Record the decision (one per principal per step of this
+    // attempt; a re-submission answers 409 — flip-flopping is not a
+    // decision).
+    let principal = crate::approvals::principal_of(&caller);
+    let record = crate::approvals::ApprovalRecord {
+        release_id: id,
+        environment: environment.clone(),
+        step_id: step_id.clone(),
+        attempt,
+        principal: principal.clone(),
+        head_sha: head_sha.clone(),
+        decision: decision.clone(),
+        approver: caller.display_name.clone(),
+        comment: comment.clone(),
+    };
+    let repository = crate::approvals::ApprovalRepository::new(state.releases.pool().clone());
+    let Some(record) = repository
+        .record(&record, sqlx::types::time::OffsetDateTime::now_utc())
+        .await
+        .map_err(|failure| {
+            tracing::error!(release = %id, %failure, "the approval insert failed");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                errors::INTERNAL_ERROR,
+                "internal-error",
+                "The decision could not be recorded.",
+            )
+        })?
+    else {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            errors::STATE_CONFLICT,
+            "state-conflict",
+            format!("The principal `{principal}` already decided the step `{step_id}`."),
+        ));
+    };
+
+    // The threshold (F-96): distinct approving principals of this
+    // attempt, bound to the same CR head. A reject fires immediately.
+    let required = policy.required.max(1);
+    let count = repository
+        .approving_count(id, &environment, &step_id, attempt, head_sha.as_deref())
+        .await
+        .map_err(|failure| {
+            tracing::error!(release = %id, %failure, "the approval count failed");
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                errors::INTERNAL_ERROR,
+                "internal-error",
+                "The decisions could not be counted.",
+            )
+        })?;
+    let fires = record.decision == "reject" || count >= required;
+    let mut accepted = false;
+    if fires {
+        // The durable follow-through: the signal send + the event
+        // (idempotent on the decision — a replayed submission
+        // converges on the first run).
+        let workflow_id = format!(
+            "cargobike/approval/{id}/{environment}/{step_id}/{principal}/{}",
+            record.decision
+        );
+        state
+            .engine
+            .approval
+            .start_with(
+                cargobike_engine::ApprovalArgs {
+                    release_id: id,
+                    environment: environment.clone(),
+                    step_id: step_id.clone(),
+                    decision: record.decision.clone(),
+                    principal: principal.clone(),
+                    approver: caller.display_name.clone(),
+                    actor: crate::release::actor_json(Some(&crate::release::ReleaseActor {
+                        actor: cargobike_core::model::Actor {
+                            issuer: caller.issuer.clone(),
+                            subject: caller.subject.clone(),
+                            display_name: caller.display_name.clone(),
+                        },
+                        ci: caller.ci.clone(),
+                    })),
+                    comment: record.comment.clone(),
+                },
+                dbos::StartOptions {
+                    workflow_id: Some(workflow_id.as_str()),
+                    ..dbos::StartOptions::default()
+                },
+            )
+            .await
+            .map_err(|failure| {
+                tracing::error!(release = %id, %failure, "the approval workflow refused to start");
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    errors::INTERNAL_ERROR,
+                    "internal-error",
+                    "The decision was recorded but its follow-through refused to start.",
+                )
+            })?;
+        accepted = true;
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "accepted": accepted,
+            "decision": record.decision,
+            "approvals": count,
+            "required": required,
+        })),
+    )
+        .into_response())
+}
+
 async fn cancel_release(
     State(state): State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<crate::auth::AuthedCaller>,

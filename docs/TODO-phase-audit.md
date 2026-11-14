@@ -249,7 +249,20 @@
   record appends with `fork_from`; the re-arm drops the row's
   terminal flag), `--new` copies to a fresh row with `retried_from`;
   the CLI verb covers both (guards: 404 / non-failed 409).
-- [ ] `release approve` / approvals-submission UX missing (F-59; server endpoint is Phase 5.5 — keep in phase order).
+- [x] Approvals endpoint (F-59/F-96/F-20b, Phase 5.5) —
+  `POST /api/v1/releases/{id}/approvals` records one decision per
+  principal per step of the CURRENT attempt (migration `0007`), runs
+  the approvers policy (selector match, `allow_self_approval` default
+  off against the VERIFIED creator, `allow_machine_approvers` default
+  off, bootstrap keys never), refuses 409 unless the environment is
+  `PendingApproval` AT THAT step (the new `pending_step` the engine
+  half stamps), counts DISTINCT principals to `required` (head-SHA
+  bound), fires a reject immediately, and starts the engine's
+  `cargobike.approval.v1` workflow (signal + hash-chained event) once
+  the threshold crosses. The E2E drives both-required machine
+  approvers, the 403s, the 409s, the threshold, the reject's
+  `ApprovalRejected`, and the self-approval refusal. The CLI verb
+  (`release approve`) remains (4.6/4.9) — the next item's scope.
 - [x] `release list --since` present: an RFC 3339 stamp passes through; a
   humantime duration (`24h`) converts to now-minus (query encoding is a
   small private helper; the server's refusal surfaces unknown inputs).
@@ -496,9 +509,10 @@
   and the lease release sends `LeaseReleased` to B's waiting attempt:
   the holder flips to B and B's own CR opens (the run continued, not
   the 3600s wake-timeout re-poll).
-- [ ] Approval auth matrix (F-96): self-approval, distinct count, reject,
-  409-while-not-PendingApproval, attempt+head-SHA binding — approvals endpoint
-  doesn't exist yet (Phase 5.5, but keep the CLI-side covered by 4.6/4.9 too).
+- [x] Approval auth matrix (F-96): self-approval, distinct count, reject,
+  409-while-not-PendingApproval, attempt+head-SHA binding — covered by
+  the approvals endpoint's E2E + unit matrix (above) and the policy
+  unit tests in `crates/cargobike-server/src/approvals.rs`.
 - [x] Watch exit-code matrix (US-4) incl. Skipped-success and reconnects —
   landed with `release watch` (§5's tick above): the wiremock suite
   drives the binary through 0-completed/0-skipped/1-failed/2-canceled/

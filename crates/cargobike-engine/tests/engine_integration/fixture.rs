@@ -55,10 +55,11 @@ pub async fn fixture_pool(database_url: &str) -> sqlx::PgPool {
         .connect(database_url)
         .await
         .expect("the fixture database connects");
-    sqlx::migrate!("../cargobike-server/migrations")
-        .run(&pool)
-        .await
-        .expect("the cargobike migrations apply");
+    let migrator = sqlx::migrate!("../cargobike-server/migrations");
+    if let Err(failure) = migrator.run(&pool).await {
+        let versions: Vec<i64> = migrator.iter().map(|migration| migration.version).collect();
+        panic!("the cargobike migrations apply: {failure}; source versions {versions:?}");
+    }
     pool
 }
 

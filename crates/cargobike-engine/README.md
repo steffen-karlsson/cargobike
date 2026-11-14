@@ -10,6 +10,14 @@ crash-resilient execution. It depends on `cargobike-core` only (plus `dbos`,
 constructs the engine's services and starts releases (see
 [the audit TODO](../../docs/TODO-phase-audit.md) §0 for the wiring status).
 
+A `build.rs` watches the SERVER's migrations directory
+(`cargo:rerun-if-changed`) — the engine's tests and the crash-harness
+bin embed it via `sqlx::migrate!("../cargobike-server/migrations")`,
+and cargo does not watch files outside the crate on its own: without
+the watch, a freshly added migration leaves every engine artifact
+with a stale embedded schema (the migrator then refuses against the
+database the server already migrated).
+
 What lives here (PRD §16 Phase 3 tasks mapped to modules):
 
 | Module | Contents | Task |

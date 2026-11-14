@@ -53,6 +53,10 @@ pub struct EngineHosting {
     /// its return value is the fork's own workflow id).
     pub retry:
         dbos::WorkflowRef<cargobike_engine::RetryArgs, String, cargobike_engine::InterpreterError>,
+    /// The approval workflow's registration (the approvals endpoint's
+    /// durable follow-through, Phase 5.5).
+    pub approval:
+        dbos::WorkflowRef<cargobike_engine::ApprovalArgs, (), cargobike_engine::InterpreterError>,
     /// The per-provider materialised webhook secrets (the receiver's
     /// verification input; the two-secret rotation is the list).
     pub webhook_secrets: std::collections::BTreeMap<String, Vec<secrecy::SecretString>>,
@@ -410,6 +414,17 @@ pub async fn host(
     )
     .map_err(|failure| crate::config::ConfigError::Parse(failure.to_string()))?;
 
+    let approval = cargobike_engine::register_approval(
+        &instance,
+        std::sync::Arc::new(cargobike_engine::ApprovalServices {
+            events: events.clone(),
+        }),
+    )
+    .map_err(|failure| {
+        crate::config::ConfigError::Parse(format!(
+            "the approval workflow refused to register: {failure}"
+        ))
+    })?;
     instance.launch().await.map_err(|failure| {
         crate::config::ConfigError::Parse(format!("the DBOS launch failed: {failure}"))
     })?;
@@ -442,6 +457,7 @@ pub async fn host(
         cleanup,
         webhook,
         retry,
+        approval,
         webhook_secrets,
     })
 }

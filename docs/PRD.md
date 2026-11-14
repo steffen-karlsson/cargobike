@@ -1845,7 +1845,8 @@ build-release:
 	cargo build --release
 
 test:
-	cargo test --all-targets
+	cargo build --bins --features cargobike-engine/crash-hooks
+	cargo test --all-targets --features cargobike-engine/crash-hooks
 
 lint: fmt-check clippy
 

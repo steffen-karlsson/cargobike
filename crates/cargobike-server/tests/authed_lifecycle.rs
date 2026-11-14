@@ -54,6 +54,8 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
             "paused-service",
             "env-paused-service",
             "bare-service",
+            "approval-service",
+            "self-approval-service",
         ] {
             sqlx::query("DELETE FROM leases WHERE application = $1")
                 .bind(application)
@@ -81,6 +83,18 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
         .hash_password(presented.as_bytes(), &salt)
         .expect("hash the presented key")
         .to_string();
+    // The approver keys' presented material — DISTINCT digests, or
+    // the server's hash lookup merges both names into one principal.
+    let approver_presented = "cbk_test_approver_secret";
+    let approver_hash = argon2::Argon2::default()
+        .hash_password(approver_presented.as_bytes(), &salt)
+        .expect("hash the approver key")
+        .to_string();
+    let second_presented = "cbk_test_second_secret";
+    let second_hash = argon2::Argon2::default()
+        .hash_password(second_presented.as_bytes(), &salt)
+        .expect("hash the second approver key")
+        .to_string();
 
     let dir = std::env::temp_dir();
     let scratch = dir
@@ -99,6 +113,34 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
     let templates_dir = dir.join(format!("cb-authed-templates-{port}"));
     let _ = std::fs::create_dir_all(&templates_dir);
     std::fs::write(templates_dir.join("service.yaml"), TEMPLATE).expect("write template");
+    /// The approval-wait template: the release parks on the human
+    /// gate after the CR opens (Phase 5.5's endpoint target).
+    const APPROVAL_TEMPLATE: &str = r#"
+name: approval-service
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+environments:
+  - name: preview
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+      - id: cr
+        uses: builtin/change-request@1
+        with:
+          branch: ${{ steps.edit.outputs.branch }}
+      - id: approval-gate
+        wait: approval
+        timeout: 1h
+        on_timeout: fail
+"#;
+    std::fs::write(
+        templates_dir.join("approval-service.yaml"),
+        APPROVAL_TEMPLATE,
+    )
+    .expect("write the approval template");
     let templates_display = templates_dir.display().to_string();
 
     let config_path = dir.join(format!("cb-authed-test-{port}.yaml"));
@@ -108,15 +150,22 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: http://127.0.0.1:{port}\n\n\
              database:\n  url: \"{url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
              templates:\n  directory: {templates_display}\n\n\
-             auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\
-             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n        change_request:\n          title: \"The keyed release {{version}}\"\n          labels: [keyed]\n          draft: true\n  - name: bare-service\n    source:\n      provider: github\n      id: \"777888\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
+             auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete, release:approve]\n    - name: approver-key\n      hash: \"{approver_hash}\"\n      grants: [release:read, release:approve]\n    - name: second-approver-key\n      hash: \"{second_hash}\"\n      grants: [release:read, release:approve]\n\n\
+             applications:\n  - name: my-service\n    source:\n      provider: github\n      id: \"123456\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: keyed-service\n    source:\n      provider: github\n      id: \"654321\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n        change_request:\n          title: \"The keyed release {{version}}\"\n          labels: [keyed]\n          draft: true\n  - name: approval-service\n    source:\n      provider: github\n      id: \"222333\"\n    template: approval-service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n        approval:\n          required: 2\n          allow_machine_approvers: true\n          approvers:\n            - api_key: approver-key\n            - api_key: second-approver-key\n  - name: self-approval-service\n    source:\n      provider: github\n      id: \"444555\"\n    template: approval-service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n        approval:\n          required: 1\n          allow_machine_approvers: true\n          approvers:\n            - api_key: test-key\n  - name: bare-service\n    source:\n      provider: github\n      id: \"777888\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: paused-service\n    paused:\n      reason: freezing deploys for the audit\n    source:\n      provider: github\n      id: \"111222\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n  - name: env-paused-service\n    source:\n      provider: github\n      id: \"333444\"\n    template: service@1\n    releasers:\n      - api_key: test-key\n    environments:\n      preview:\n        paused:\n          reason: the canary burn\n        repo:\n          provider: github\n          id: \"42\"\n        edits:\n          - file: apps/stage/manifest.yaml\n            field: image.tag\n"
         ),
     )
     .expect("write the test config");
 
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), Some(providers)).await
-    else {
-        eprintln!("skipping: server boot failed");
+    let boot = cargobike_server::boot(Some(&config_path), Some(providers)).await;
+    let Ok((router, _state)) = boot else {
+        // The reason prints: a skip that hides a boot regression is a
+        // silent test loss (the "don't mistake a skip for a pass"
+        // rule's harness half).
+        let failure = match boot {
+            Err(failure) => failure.to_string(),
+            Ok(_) => unreachable!(),
+        };
+        eprintln!("skipping: server boot failed: {failure}");
         return None;
     };
     tokio::spawn(async move {
@@ -346,7 +395,8 @@ async fn test_authed_release_lifecycle() {
             "release:create",
             "release:read",
             "release:cancel",
-            "release:delete"
+            "release:delete",
+            "release:approve"
         ])
     );
 
@@ -705,5 +755,385 @@ fn verify_event_chain(release: &str, items: &[serde_json::Value]) {
             "the hash verifies at {item}"
         );
         prev = item["hash"].as_str().expect("the hash").to_owned();
+    }
+}
+
+/// The approvals lifecycle (F-59/F-96, Phase 5.5): a two-required
+/// machine-approver gate — the endpoint's 403s (grant, policy,
+/// self-approval), the 409s (wrong step, already decided, not
+/// pending), the threshold (one approval does not fire; the second
+/// distinct principal's does), and the reject's immediate failure with
+/// the F-8 `ApprovalRejected` code. Requires
+/// `CARGOBIKE_TEST_DATABASE_URL`.
+#[allow(clippy::print_stderr, clippy::expect_used)]
+#[tokio::test(flavor = "current_thread")]
+async fn test_approval_decisions_lifecycle() {
+    let Some((base, _mock, _scratch)) = test_server().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+    let creator: (String, String) = (
+        "Authorization".to_owned(),
+        "Bearer cbk_test_plain_secret".to_owned(),
+    );
+    let approver: (String, String) = (
+        "Authorization".to_owned(),
+        "Bearer cbk_test_approver_secret".to_owned(),
+    );
+
+    // One helper: create a release for an app and wait until its
+    // preview environment parks on the approval gate.
+    let park = |application: &'static str, version: String| {
+        let base = base.clone();
+        let client = client.clone();
+        let creator = creator.clone();
+        async move {
+            let created = client
+                .post(format!("{base}/api/v1/releases"))
+                .header(&creator.0, creator.1.clone())
+                .json(&serde_json::json!({
+                    "application": application,
+                    "version": version,
+                }))
+                .send()
+                .await
+                .expect("http");
+            assert_eq!(
+                created.status(),
+                reqwest::StatusCode::ACCEPTED,
+                "the release creates: {:?}",
+                created.text().await
+            );
+            let body: serde_json::Value = created.json().await.expect("the release body");
+            let id = body["metadata"]["id"].as_str().expect("the id").to_owned();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                let document: serde_json::Value = client
+                    .get(format!("{base}/api/v1/releases/{id}"))
+                    .header(&creator.0, creator.1.clone())
+                    .send()
+                    .await
+                    .expect("http")
+                    .json()
+                    .await
+                    .expect("the document");
+                let parked = document
+                    .pointer("/status/environments/0/phase")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("PendingApproval")
+                    && document
+                        .pointer("/status/environments/0/pending_step")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("approval-gate");
+                if parked {
+                    return id;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the release {id} never parked on the approval gate"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    };
+    let submit = |header: (String, String), id: String, body: serde_json::Value| {
+        let base = base.clone();
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("{base}/api/v1/releases/{id}/approvals"))
+                .header(&header.0, header.1)
+                .json(&body)
+                .send()
+                .await
+                .expect("http")
+        }
+    };
+    let run_tag = std::process::id();
+
+    // ---- The two-required gate ----
+    let id = park("approval-service", format!("3.0.{run_tag}")).await;
+
+    // The wrong step: 409 (F-20b — only the parked step accepts).
+    let response = submit(
+        approver.clone(),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-9",
+            "decision": "approve",
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+
+    // The creator holds `release:approve` (the grant widened for this
+    // test) but is NOT an approver of this environment: 403
+    // `ApprovalForbidden` (F-96).
+    let response = submit(
+        creator.clone(),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "approve",
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let problem: serde_json::Value = response.json().await.expect("the problem body");
+    assert_eq!(problem["code"], "ApprovalForbidden");
+
+    // The first approval: recorded, but `required: 2` does not fire.
+    let response = submit(
+        approver.clone(),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "approve",
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let body: serde_json::Value = response.json().await.expect("the decision body");
+    assert_eq!(body["accepted"], false, "one of two does not fire");
+    assert_eq!(body["approvals"], 1);
+    assert_eq!(body["required"], 2);
+
+    // The same principal re-submits: 409 (a decision is not
+    // flip-floppable, and the distinct count stays honest).
+    let response = submit(
+        approver.clone(),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "reject",
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+
+    // The second distinct key's approval crosses the threshold: the
+    // workflow wakes the parked wait and the release completes.
+    let response = submit(
+        (
+            "Authorization".to_owned(),
+            "Bearer cbk_test_second_secret".to_owned(),
+        ),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "approve",
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "the duplicate-principal submission refuses: {:?}",
+        response.text().await
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let document = loop {
+        let document: serde_json::Value = client
+            .get(format!("{base}/api/v1/releases/{id}"))
+            .header(&creator.0, creator.1.clone())
+            .send()
+            .await
+            .expect("http")
+            .json()
+            .await
+            .expect("the document");
+        let phase = document
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if phase == "Completed" {
+            break document;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the release never completed on the threshold; phase {phase}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    // The decision's events rode the hash-chained log (F-111/F-113).
+    let events: serde_json::Value = client
+        .get(format!("{base}/api/v1/releases/{id}/events"))
+        .header(&creator.0, creator.1.clone())
+        .send()
+        .await
+        .expect("http")
+        .json()
+        .await
+        .expect("the events");
+    let kinds: Vec<&str> = events["items"]
+        .as_array()
+        .expect("the items")
+        .iter()
+        .filter_map(|event| event["kind"].as_str())
+        .collect();
+    assert!(
+        kinds.contains(&"approval-granted"),
+        "the approval's event landed: {kinds:?}"
+    );
+    // A submission to the COMPLETED environment: 409 (F-20b).
+    let response = submit(
+        approver.clone(),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "approve",
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    // The terminal release deletes (the drain: no in-flight wait).
+    let response = client
+        .delete(format!("{base}/api/v1/releases/{id}"))
+        .header(&creator.0, creator.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+    let _ = document;
+
+    // ---- The reject path: a single reject fails the environment ----
+    let id = park("approval-service", format!("3.1.{run_tag}")).await;
+    let response = submit(
+        approver.clone(),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "reject",
+            "comment": "not this one",
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let body: serde_json::Value = response.json().await.expect("the decision body");
+    assert_eq!(body["accepted"], true, "a reject fires immediately");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let document: serde_json::Value = client
+            .get(format!("{base}/api/v1/releases/{id}"))
+            .header(&creator.0, creator.1.clone())
+            .send()
+            .await
+            .expect("http")
+            .json()
+            .await
+            .expect("the document");
+        let phase = document
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if phase == "Failed" {
+            assert_eq!(
+                document
+                    .pointer("/status/error/code")
+                    .and_then(serde_json::Value::as_str),
+                Some("ApprovalRejected"),
+                "the failure carries the F-8 vocabulary code"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the release never failed on the reject; phase {phase}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    // The terminal release deletes.
+    let response = client
+        .delete(format!("{base}/api/v1/releases/{id}"))
+        .header(&creator.0, creator.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // ---- Self-approval: the creator may not wave its own release ----
+    let id = park("self-approval-service", format!("3.2.{run_tag}")).await;
+    let response = submit(
+        creator.clone(),
+        id.clone(),
+        serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "approve",
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let problem: serde_json::Value = response.json().await.expect("the problem body");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .expect("the detail")
+            .contains("self"),
+        "the refusal names the self-approval rule: {problem}"
+    );
+    // The parked release drains: cancel AFTER the CR is recorded
+    // (fixture DB hygiene — the cleanup reads the release's books),
+    // then delete.
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let document: serde_json::Value = client
+                .get(format!("{base}/api/v1/releases/{id}"))
+                .header(&creator.0, creator.1.clone())
+                .send()
+                .await
+                .expect("http")
+                .json()
+                .await
+                .expect("the document");
+            if document
+                .pointer("/status/environments/0/change_request/number")
+                .is_some_and(|number| !number.is_null())
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the CR never recorded before the drain"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+    let response = client
+        .post(format!("{base}/api/v1/releases/{id}/cancel"))
+        .header(&creator.0, creator.1.clone())
+        .send()
+        .await
+        .expect("http");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the parked release drains: {:?}",
+        response.text().await
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let response = client
+            .delete(format!("{base}/api/v1/releases/{id}"))
+            .header(&creator.0, creator.1.clone())
+            .send()
+            .await
+            .expect("http");
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cancelled release never drained for the delete"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }

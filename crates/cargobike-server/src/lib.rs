@@ -1,5 +1,6 @@
 //! Cargobike server: axum API, auth, webhooks, extension host.
 
+pub mod approvals;
 pub mod auth;
 pub mod availability;
 pub mod config;

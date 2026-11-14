@@ -48,6 +48,12 @@ impl ReleaseRepository {
         Self { pool }
     }
 
+    /// The shared pool (the approvals store rides the same
+    /// connection pool the release rows do).
+    pub fn pool(&self) -> &sqlx::PgPool {
+        &self.pool
+    }
+
     /// Inserts when no non-terminal release for (the application, version)
     /// exists ; `Ok(Some(the existing))` names the active duplicate —
     /// the HTTP layer answers 200 with it; a fresh row answers 202.
