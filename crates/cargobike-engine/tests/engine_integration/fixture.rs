@@ -89,6 +89,33 @@ environments:
     steps: [include: deploy]
 "#;
 
+/// The approval-wait template: the release parks on the human gate
+/// (Phase 5.5's wake target).
+pub const APPROVAL_TEMPLATE: &str = r#"
+name: approval
+version: "1"
+inputs: {}
+environment_inputs:
+  repo: { type: repo }
+  edits: { type: edits }
+step_groups:
+  - name: deploy
+    steps:
+      - id: edit
+        uses: builtin/commit-files@1
+      - id: cr
+        uses: builtin/change-request@1
+        with:
+          branch: ${{ steps.edit.outputs.branch }}
+      - id: approval-gate
+        wait: approval
+        timeout: 1h
+        on_timeout: fail
+environments:
+  - name: stage
+    steps: [include: deploy]
+"#;
+
 /// The reject-policy template: the environment refuses while another
 /// release holds the lease (F-74).
 pub const REJECT_TEMPLATE: &str = r#"

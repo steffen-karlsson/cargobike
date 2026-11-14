@@ -768,12 +768,15 @@ async fn run_step(
                         "environment-pending-approval",
                         format!("the environment {} waits for an approval", environment.name),
                     )
-                    .with_data(serde_json::json!({ "environment": environment.name })),
+                    .with_data(
+                        serde_json::json!({ "environment": environment.name, "step": step_id }),
+                    ),
                     |store, release_id| {
                         let environment = environment.name.clone();
+                        let step_id = step_id.clone();
                         async move {
                             store
-                                .environment_pending_approval(release_id, &environment)
+                                .environment_pending_approval(release_id, &environment, &step_id)
                                 .await
                         }
                     },

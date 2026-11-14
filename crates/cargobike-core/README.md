@@ -13,7 +13,7 @@ What lives here:
 
 | Module | Contents |
 |---|---|
-| `model` | The `Release` document model: `metadata`/`spec`/`status` roots: `Phase`, `EnvironmentPhase`, `Actor`, `CiContext`, `WorkflowInfo`, `EnvironmentStatus`, `ChangeRequestRef`, `RepoRef` (§5) |
+| `model` | The `Release` document model: `metadata`/`spec`/`status` roots: `Phase`, `EnvironmentPhase`, `Actor`, `CiContext`, `WorkflowInfo`, `EnvironmentStatus` (incl. `pending_step` — the step a `PendingApproval` environment parks on, F-20b's approvals-409 key), `ChangeRequestRef`, `RepoRef` (§5) |
 | `error` | Release error codes (`StepFailed`, `MergeTimeout`, `ApprovalTimeout`, `ApprovalRejected`, `VersionNotVerified`, `ConcurrencyRejected`, `ChangeRequestModified`) and the typed `LibraryError` (§10.1) |
 | `version` | Version schemes `semver` / `calver` / `opaque`: validation plus the ordering supersession uses  |
 | `template` | `PipelineTemplate`: inputs, environment inputs, `step_groups`, steps, gates; source strings kept verbatim so snapshots stay faithful to the source  |

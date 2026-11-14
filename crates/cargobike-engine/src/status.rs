@@ -85,6 +85,7 @@ pub trait ReleaseStatusStore: Send + Sync {
         &self,
         release_id: Uuid,
         environment: &str,
+        step_id: &str,
     ) -> Result<(), StatusError>;
 
     /// An environment held by the concurrency policy (the queue's wait).
@@ -457,6 +458,7 @@ impl ReleaseStatusStore for SqlReleaseStatusStore {
         set_environment_record(&mut document, environment, |record| {
             record["phase"] = serde_json::Value::String("Running".to_owned());
             record["started_at"] = serde_json::Value::String(rfc3339(at));
+            record["pending_step"] = serde_json::Value::Null;
         })?;
         if document.pointer_mut("/status/phase").is_some() {
             document["status"]["phase"] = serde_json::Value::String("Running".to_owned());
@@ -468,11 +470,15 @@ impl ReleaseStatusStore for SqlReleaseStatusStore {
         &self,
         release_id: Uuid,
         environment: &str,
+        step_id: &str,
     ) -> Result<(), StatusError> {
         let mut document = self.load_document(release_id).await?;
         Self::ensure_environment(&mut document, environment)?;
         set_environment_record(&mut document, environment, |record| {
             record["phase"] = serde_json::Value::String("PendingApproval".to_owned());
+            // F-20b: the approvals endpoint's 409 keys on the step the
+            // wait parks on.
+            record["pending_step"] = serde_json::Value::String(step_id.to_owned());
         })?;
         if document.pointer_mut("/status/phase").is_some() {
             document["status"]["phase"] = serde_json::Value::String("PendingApproval".to_owned());
@@ -489,6 +495,7 @@ impl ReleaseStatusStore for SqlReleaseStatusStore {
         Self::ensure_environment(&mut document, environment)?;
         set_environment_record(&mut document, environment, |record| {
             record["phase"] = serde_json::Value::String("Waiting".to_owned());
+            record["pending_step"] = serde_json::Value::Null;
         })?;
         self.write_document(release_id, &document).await
     }
@@ -528,6 +535,7 @@ impl ReleaseStatusStore for SqlReleaseStatusStore {
         set_environment_record(&mut document, environment, |record| {
             record["phase"] = serde_json::Value::String(phase.to_string());
             record["completed_at"] = serde_json::Value::String(rfc3339(at));
+            record["pending_step"] = serde_json::Value::Null;
         })?;
         // The rollup over every environment's phase; a failed rollup
         // carries the error fact at the release's status.

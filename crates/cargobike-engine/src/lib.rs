@@ -4,6 +4,7 @@
 //!
 //! Depends on `cargobike-core` only: no axum, no api crate.
 
+pub mod approvals;
 pub mod builtin;
 pub mod cleanup;
 pub mod concurrency;
@@ -25,6 +26,7 @@ pub mod steps;
 pub mod template;
 pub mod webhook;
 
+pub use approvals::{APPROVAL_WORKFLOW, ApprovalArgs, ApprovalServices, register_approval};
 pub use cleanup::{
     CLEANUP_WORKFLOW, CleanupArgs, CleanupServices, CleanupTarget, CrSummary, register_cleanup,
 };
@@ -32,7 +34,7 @@ pub use eventlog::{EventRecord, EventSink, NoopEventSink, SqlEventLog};
 pub use expr::{ExprContext, ExprError, eval_gate, eval_param, interpolate_params};
 pub use interpreter::{
     INTERPRETER_WORKFLOW, InterpretArgs, InterpretResult, InterpreterServices,
-    environment_phase_of, register_interpreter,
+    environment_phase_of, interpret_workflow_id, register_interpreter,
 };
 pub use leases::{LeaseAttempt, LeaseRepository, LeaseTransfer};
 pub use retry::{RETRY_WORKFLOW, RetryArgs, RetryServices, register_retry, retry_workflow_id};

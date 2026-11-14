@@ -229,6 +229,11 @@ pub struct EnvironmentStatus {
     pub name: String,
     /// Environment phase.
     pub phase: EnvironmentPhase,
+    /// The step a `PendingApproval` environment parks on (F-20b: the
+    /// approvals endpoint's 409 keys on it; cleared on every other
+    /// phase transition).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_step: Option<String>,
     /// Change request opened, if any.
     pub change_request: Option<ChangeRequestRef>,
     /// When the first step started.

@@ -34,15 +34,17 @@ pub fn merge_signal_key(provider: &str, delivery_id: &str) -> String {
     format!("{provider}/delivery/{delivery_id}")
 }
 
-/// The idempotency key of an approval submission (the one submission per
-/// `(the release, environment, step, principal)`; a replayed request no-ops).
+/// The idempotency key of an approval submission (the one signal per
+/// `(the release, environment, step, decision, principal)`; a replayed
+/// request no-ops).
 pub fn approval_signal_key(
     release_id: &str,
     environment: &str,
     step_id: &str,
+    decision: &str,
     principal: &str,
 ) -> String {
-    format!("{release_id}/{environment}/{step_id}/approve/{principal}")
+    format!("{release_id}/{environment}/{step_id}/{decision}/{principal}")
 }
 
 /// The idempotency key of a lease hand-off (the queue's wake).
@@ -161,7 +163,7 @@ mod tests {
             "github/delivery/delivery-1"
         );
         assert_eq!(
-            approval_signal_key("rel-1", "production", "approval-0", "iss/sub"),
+            approval_signal_key("rel-1", "production", "approval-0", "approve", "iss/sub"),
             "rel-1/production/approval-0/approve/iss/sub"
         );
         assert_eq!(

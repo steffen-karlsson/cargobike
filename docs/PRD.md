@@ -881,6 +881,8 @@ pub enum EnvironmentPhase {
 pub struct EnvironmentStatus {
     pub name: String,
     pub phase: EnvironmentPhase,
+    pub pending_step: Option<String>,     // the step the PendingApproval phase parks on
+                                         // (F-20b: the approvals endpoint's 409 keys on it)
     pub change_request: Option<ChangeRequestRef>,
     pub started_at: Option<OffsetDateTime>,
     pub completed_at: Option<OffsetDateTime>,

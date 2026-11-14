@@ -28,6 +28,8 @@ const OUTCAP_APP: &str = "out-cap-probe";
 const REJECT_APP: &str = "reject-probe";
 /// The queue-wake E2E's app name.
 const QUEUE_APP: &str = "queue-probe";
+/// The approval probe's app name (Phase 5.5's wake target).
+const APPROVAL_APP: &str = "approval-probe";
 
 /// The correlation stamp carries the sweep's join keys; the merge wait's
 /// step id is the template's auto-generated one (two declared ids
@@ -1218,6 +1220,291 @@ async fn test_a_step_output_over_the_cap_refuses_the_step() {
     assert!(
         message.contains("the cap is"),
         "the refusal names the cap: {message}"
+    );
+    instance.shutdown().await;
+}
+
+/// Wipes the approval probe's fixture rows (a panicked run's
+/// non-terminal release would refuse the next run's insert).
+async fn wipe_approval_rows(pool: &sqlx::PgPool) {
+    for statement in [
+        "DELETE FROM leases WHERE application = $1",
+        "DELETE FROM releases WHERE application = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(APPROVAL_APP)
+            .execute(pool)
+            .await
+            .expect("the approval probe's rows wipe");
+    }
+}
+
+/// Phase 5.5's engine half: the release parks on `wait: approval`
+/// (the document carries the pending step F-20b's 409 keys on), and
+/// the approval workflow's signal wakes it to Completed — the same
+/// durable path the approvals endpoint will start.
+#[tokio::test(flavor = "current_thread")]
+async fn test_approval_signal_wakes_the_parked_wait() {
+    let _the_db = fixture::db_lock().await;
+    let Some(database_url) = fixture::fixture_database_url().await else {
+        return;
+    };
+    let scratch = fixture::scratch_dir();
+    let schema = fixture::schema_for_test("approval");
+    let pool = fixture::fixture_pool(&database_url).await;
+    wipe_approval_rows(&pool).await;
+
+    let credentials: Arc<dyn cargobike_core::registry::CredentialStore> =
+        Arc::new(cargobike_engine::mock::StubCredentials);
+    let release_id = uuid::Uuid::now_v7();
+    let snapshot = fixture::probe_snapshot(
+        &release_id.to_string(),
+        APPROVAL_APP,
+        "1.0.0",
+        fixture::APPROVAL_TEMPLATE,
+    );
+    // The production workflow id: the approval workflow's signal send
+    // addresses `cargobike/interpret/{release}` (the server's start
+    // convention), so the probe's start uses the same id.
+    let workflow_id = cargobike_engine::interpret_workflow_id(release_id);
+
+    let mut config = dbos::Config::new(APPROVAL_APP, &database_url);
+    config.schema = schema;
+    config.app_version = Some("approval-probe-1".to_owned());
+    let instance = dbos::DBOS::new(config);
+    let (services, provider) =
+        fixture::mock_services(&scratch, pool.clone(), &instance, credentials);
+    seed_release(&pool, &release_id, APPROVAL_APP, "1.0.0").await;
+
+    // The approval workflow (the decision's durable follow-through).
+    let approval = cargobike_engine::register_approval(
+        &instance,
+        Arc::new(cargobike_engine::ApprovalServices {
+            events: Arc::clone(&services.events),
+        }),
+    )
+    .expect("the approval workflow registers");
+    let interpreter = cargobike_engine::register_interpreter(&instance, services)
+        .expect("the interpreter registers");
+    instance.launch().await.expect("the instance launches");
+
+    let interpreter_handle = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs { snapshot },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow_id),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the interpreter starts");
+
+    // The release parks on the approval wait — the CR is open, the
+    // document carries the pending step.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+        if state.change_requests.len() == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the interpreter never opened the change request; state {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let parked = query_release(&pool, &release_id).await;
+    assert_eq!(
+        parked
+            .pointer("/status/environments/0/phase")
+            .and_then(serde_json::Value::as_str),
+        Some("PendingApproval"),
+        "the environment parks on the approval wait"
+    );
+    assert_eq!(
+        parked
+            .pointer("/status/environments/0/pending_step")
+            .and_then(serde_json::Value::as_str),
+        Some("approval-gate"),
+        "the pending step is the approval wait (F-20b's binding)"
+    );
+
+    // The decision: approve — the workflow sends the signal and
+    // appends the event.
+    let approval_workflow_id = format!("cargobike/approval/{release_id}/stage/approval-gate/alice");
+    approval
+        .start_with(
+            cargobike_engine::ApprovalArgs {
+                release_id,
+                environment: "stage".to_owned(),
+                step_id: "approval-gate".to_owned(),
+                decision: "approve".to_owned(),
+                principal: "https://iss.example/alice".to_owned(),
+                approver: "Alice".to_owned(),
+                actor: serde_json::json!({
+                    "issuer": "https://iss.example",
+                    "subject": "alice",
+                    "display_name": "Alice",
+                }),
+                comment: None,
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&approval_workflow_id),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the approval workflow starts");
+
+    let result = interpreter_handle
+        .result()
+        .await
+        .expect("the interpreter converges");
+    assert_eq!(
+        result
+            .environments
+            .first()
+            .expect("the stage environment resolves first")
+            .phase,
+        EnvironmentPhase::Completed,
+        "the approval signal wakes the parked wait"
+    );
+
+    // The decision's event rode the release's hash-chained log.
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM events WHERE release_id = $1 ORDER BY sequence")
+            .bind(release_id)
+            .fetch_all(&pool)
+            .await
+            .expect("the events read");
+    assert!(
+        kinds.iter().any(|kind| kind == "approval-granted"),
+        "the approval's event landed: {kinds:?}"
+    );
+    instance.shutdown().await;
+}
+
+/// The reject decision: a single reject fails the environment
+/// immediately (`ApprovalRejected`), and the pending step clears with
+/// the terminal write.
+#[tokio::test(flavor = "current_thread")]
+async fn test_reject_fails_the_environment() {
+    let _the_db = fixture::db_lock().await;
+    let Some(database_url) = fixture::fixture_database_url().await else {
+        return;
+    };
+    let scratch = fixture::scratch_dir();
+    let schema = fixture::schema_for_test("approval-reject");
+    let pool = fixture::fixture_pool(&database_url).await;
+    wipe_approval_rows(&pool).await;
+
+    let credentials: Arc<dyn cargobike_core::registry::CredentialStore> =
+        Arc::new(cargobike_engine::mock::StubCredentials);
+    let release_id = uuid::Uuid::now_v7();
+    let snapshot = fixture::probe_snapshot(
+        &release_id.to_string(),
+        APPROVAL_APP,
+        "1.1.0",
+        fixture::APPROVAL_TEMPLATE,
+    );
+    let workflow_id = cargobike_engine::interpret_workflow_id(release_id);
+
+    let mut config = dbos::Config::new(APPROVAL_APP, &database_url);
+    config.schema = schema;
+    config.app_version = Some("approval-reject-1".to_owned());
+    let instance = dbos::DBOS::new(config);
+    let (services, provider) =
+        fixture::mock_services(&scratch, pool.clone(), &instance, credentials);
+    seed_release(&pool, &release_id, APPROVAL_APP, "1.1.0").await;
+
+    let approval = cargobike_engine::register_approval(
+        &instance,
+        Arc::new(cargobike_engine::ApprovalServices {
+            events: Arc::clone(&services.events),
+        }),
+    )
+    .expect("the approval workflow registers");
+    let interpreter = cargobike_engine::register_interpreter(&instance, services)
+        .expect("the interpreter registers");
+    instance.launch().await.expect("the instance launches");
+
+    let interpreter_handle = interpreter
+        .start_with(
+            cargobike_engine::InterpretArgs { snapshot },
+            dbos::StartOptions {
+                workflow_id: Some(&workflow_id),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the interpreter starts");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let state = cargobike_engine::mock::MockState::load(&provider.state_file());
+        if state.change_requests.len() == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the interpreter never opened the change request; state {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let approval_workflow_id = format!("cargobike/approval/{release_id}/stage/approval-gate/bob");
+    approval
+        .start_with(
+            cargobike_engine::ApprovalArgs {
+                release_id,
+                environment: "stage".to_owned(),
+                step_id: "approval-gate".to_owned(),
+                decision: "reject".to_owned(),
+                principal: "https://iss.example/bob".to_owned(),
+                approver: "Bob".to_owned(),
+                actor: serde_json::json!({
+                    "issuer": "https://iss.example",
+                    "subject": "bob",
+                    "display_name": "Bob",
+                }),
+                comment: Some("not this one".to_owned()),
+            },
+            dbos::StartOptions {
+                workflow_id: Some(&approval_workflow_id),
+                ..dbos::StartOptions::default()
+            },
+        )
+        .await
+        .expect("the approval workflow starts");
+
+    let result = interpreter_handle
+        .result()
+        .await
+        .expect("the interpreter converges");
+    assert_eq!(
+        result
+            .environments
+            .first()
+            .expect("the stage environment resolves first")
+            .phase,
+        EnvironmentPhase::Failed,
+        "a single reject fails the environment immediately"
+    );
+    assert_eq!(
+        result
+            .environments
+            .first()
+            .and_then(|environment| environment.error.as_ref().map(|error| error.code.clone())),
+        Some("ApprovalRejected".to_owned()),
+        "the failure carries the F-8 vocabulary code"
+    );
+    let terminal = query_release(&pool, &release_id).await;
+    assert_eq!(
+        terminal
+            .pointer("/status/environments/0/pending_step")
+            .and_then(serde_json::Value::as_str),
+        None,
+        "the terminal write clears the pending step"
     );
     instance.shutdown().await;
 }
