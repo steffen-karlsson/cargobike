@@ -758,3 +758,172 @@ async fn test_watch_client_failures_exit_ten_eleven_twelve() {
     let (code, _) = run_watch(&server.uri(), id, None, None).await;
     assert_eq!(code, 12, "an unknown release is an invalid response (12)");
 }
+
+/// The approval document: one parked environment whose `pending_step`
+/// is the approval gate (F-20b's binding, the CLI's default read).
+fn approval_document(id: &str) -> serde_json::Value {
+    let mut document = release_document(id);
+    document["status"]["environments"] = serde_json::json!([{
+        "name": "preview",
+        "phase": "PendingApproval",
+        "pending_step": "approval-gate",
+        "change_request": serde_json::Value::Null,
+        "started_at": "2026-01-01T00:00:00.000000Z",
+        "completed_at": serde_json::Value::Null,
+    }]);
+    document
+}
+
+/// `release approve` without `--step` reads the release's pending step
+/// and posts exactly that binding — the wiremock matcher on the POST
+/// body is the whole proof (a miss 404s the approve and fails the
+/// test). One approval below the threshold prints the recorded count.
+#[tokio::test]
+async fn test_approve_defaults_the_pending_step_and_posts_the_decision() {
+    let id = "0192f0d0-0000-7000-8000-00000000000a";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}")))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(approval_document(id))
+        })
+        .mount(&server)
+        .await;
+    // The matcher IS the proof: the POST must carry the pending step
+    // the GET returned, the environment, and the default decision.
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/releases/{id}/approvals")))
+        .and(body_partial_json(serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "approve",
+        })))
+        .respond_with(|_: &Request| {
+            ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "accepted": false,
+                "decision": "approve",
+                "approvals": 1,
+                "required": 2,
+            }))
+        })
+        .mount(&server)
+        .await;
+    let output = Command::cargo_bin("cargobike")
+        .expect("the binary")
+        .env("CARGOBIKE_URL", server.uri())
+        .args(["release", "approve", id, "--environment", "preview"])
+        .output()
+        .expect("runs");
+    assert!(
+        output.status.success(),
+        "the approve succeeds: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("recorded (1/2 approvals)"),
+        "the below-threshold shape prints: {text}"
+    );
+}
+
+/// The fired threshold prints the advance; an explicit `--step` skips
+/// the release read (the GET mock expects zero hits).
+#[tokio::test]
+async fn test_approve_with_an_explicit_step_fires_and_skips_the_read() {
+    let id = "0192f0d0-0000-7000-8000-00000000000b";
+    let server = MockServer::start().await;
+    let read = Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}")))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(approval_document(id))
+        })
+        .expect(0)
+        .mount_as_scoped(&server)
+        .await;
+    let _ = read;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/releases/{id}/approvals")))
+        .and(body_partial_json(serde_json::json!({
+            "environment": "preview",
+            "step_id": "approval-gate",
+            "decision": "reject",
+            "comment": "not this one",
+        })))
+        .respond_with(|_: &Request| {
+            ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "accepted": true,
+                "decision": "reject",
+                "approvals": 1,
+                "required": 1,
+            }))
+        })
+        .mount(&server)
+        .await;
+    let output = Command::cargo_bin("cargobike")
+        .expect("the binary")
+        .env("CARGOBIKE_URL", server.uri())
+        .args([
+            "release",
+            "approve",
+            id,
+            "--environment",
+            "preview",
+            "--step",
+            "approval-gate",
+            "--decision",
+            "reject",
+            "--comment",
+            "not this one",
+        ])
+        .output()
+        .expect("runs");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("reject accepted; the release will advance"),
+        "the fired shape prints: {text}"
+    );
+}
+
+/// The server's 409 problem document surfaces verbatim on stderr with
+/// exit 1 (the CLI's error vocabulary).
+#[tokio::test]
+async fn test_approve_surfaces_the_state_conflict() {
+    let id = "0192f0d0-0000-7000-8000-00000000000c";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/releases/{id}")))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(approval_document(id))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/releases/{id}/approvals")))
+        .respond_with(|_: &Request| {
+            ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "type": "https://cargobike.dev/errors/state-conflict",
+                "title": "Conflict",
+                "status": 409,
+                "detail": "The environment `preview` is not awaiting an approval at the step `approval-gate`; submissions are accepted only while the step is pending.",
+                "instance": "",
+                "code": "StateConflict",
+            }))
+        })
+        .mount(&server)
+        .await;
+    let output = Command::cargo_bin("cargobike")
+        .expect("the binary")
+        .env("CARGOBIKE_URL", server.uri())
+        .args(["release", "approve", id, "--environment", "preview"])
+        .output()
+        .expect("runs");
+    // The client's refused-request vocabulary: exit 12 (the same code
+    // every verb's 4xx-problem path uses).
+    assert_eq!(output.status.code(), Some(12));
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        text.contains("only while the step is pending"),
+        "the problem detail surfaces: {text}"
+    );
+}

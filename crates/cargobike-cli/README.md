@@ -19,16 +19,16 @@ Components:
 | `ci` | GitHub Actions auto-detection: `GITHUB_REPOSITORY`/`GITHUB_SHA`/`GITHUB_RUN_ID` context struct, the OIDC request environment, the audience resolution (`--audience` > `CARGOBIKE_AUDIENCE` > `cargobike`), and the ID-token exchange (`ACTIONS_ID_TOKEN_REQUEST_URL?audience=…` with the request token as bearer) |
 | `application list` (main) | `GET /api/v1/applications`: the registered applications with their F-10 availability — table `name  template  available|unavailable: reason`, or the whole body as JSON/YAML |
 | `render` | Output rendering: table rows (`metadata.id`, `spec.application`, `spec.version`, `status.phase`) or full documents as JSON/YAML |
-| `main` | clap wiring: global flags with env fallbacks, `context list/use`, the release verbs, `create --wait` riding the SSE watch |
+| `main` | clap wiring: global flags with env fallbacks, `context list/use`, the release verbs, `create --wait` riding the SSE watch, `release approve` (F-59: `--environment` required, `--step` defaults to the release's current `pending_step` read back from the document, `--decision approve|reject`, `--comment`; below the threshold prints the recorded count, the fire prints the advance, a refusal surfaces the problem detail) |
 | `watch` | The SSE watch (US-4/F-102): `release watch [--until <env>] [--timeout <cap>]` and `create --wait` stream the event log via `reqwest-eventsource` (a broken stream reconnects with `Last-Event-ID` automatically), `indicatif` progress on a TTY / plain event lines in CI, and US-4's exit matrix decides the code — 0 completed (a Skipped `--until` environment counts, with a message), 1 failed, 2 canceled/superseded, 3 the `--timeout` expiry, 10/11/12 the client failures |
 
 ## Status
 
 Phase 4 scope (4.5/4.6 complete; 4.9's CLI-half tests exist). The OIDC
 exchange, the `-o` honouring, the auth/CA overrides, `--since`, and
-`release retry` (`--new` included) landed (audit §5's ticked items).
-Pending (audit TODO §5): `cargobike validate` (4.8),
-`release approve`.
+`release retry` (`--new` included) and `release approve` (F-59)
+landed (audit §5's ticked items). Pending (audit TODO §5):
+`cargobike validate` (4.8).
 
 ## Usage
 
@@ -56,6 +56,10 @@ cargobike release list --since 24h          # updated at-or-after; RFC 3339 also
                                              # (list walks the cursor: --limit is the
                                              #  page size, not the listing's cap)
 cargobike release get 0192f0d0-...
+cargobike release approve 0192f0d0-... --environment preview
+                                              # the pending step read from the
+                                              #  document; --step/--decision/--comment
+                                              #  override (approve|reject)
 cargobike release cancel 0192f0d0-...
 cargobike release retry 0192f0d0-...          # fork from the last failure (same ID)
 cargobike release retry 0192f0d0-... --new    # a fresh row carrying retried_from

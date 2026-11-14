@@ -262,7 +262,12 @@
   the threshold crosses. The E2E drives both-required machine
   approvers, the 403s, the 409s, the threshold, the reject's
   `ApprovalRejected`, and the self-approval refusal. The CLI verb
-  (`release approve`) remains (4.6/4.9) — the next item's scope.
+  (`release approve <id> --environment <env>`, F-59/4.6) landed with
+  it: `--step` defaults to the document's `pending_step`,
+  `--decision approve|reject` (default approve), `--comment`; the
+  below-threshold response prints the recorded count, the fire prints
+  the advance, and refusals surface the problem detail (wiremock
+  suite, matcher-as-proof).
 - [x] `release list --since` present: an RFC 3339 stamp passes through; a
   humantime duration (`24h`) converts to now-minus (query encoding is a
   small private helper; the server's refusal surfaces unknown inputs).

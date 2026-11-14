@@ -155,6 +155,27 @@ enum ReleaseCommand {
         /// The release ID (UUIDv7).
         id: Uuid,
     },
+    /// Submits an approval decision (F-59): the environment's parked
+    /// `wait: approval` step. Without `--step`, the release's current
+    /// pending step is read and used (the natural UX; a missing pending
+    /// step is the 409 to show).
+    Approve {
+        /// The release ID (UUIDv7).
+        id: Uuid,
+        /// The environment whose approval step is parked.
+        #[arg(long)]
+        environment: String,
+        /// The parked step's ID (default: the release's current
+        /// pending step).
+        #[arg(long)]
+        step: Option<String>,
+        /// The decision (default `approve`).
+        #[arg(long, default_value = "approve")]
+        decision: String,
+        /// An optional comment.
+        #[arg(long)]
+        comment: Option<String>,
+    },
     /// Retries a failed release: the fork re-runs from the last
     /// failure (same release ID, a new attempt appended); `--new`
     /// copies it into a fresh row with `retried_from` instead.
@@ -564,6 +585,82 @@ async fn release_verb(
                 .await
                 .map_err(call_failure)?;
             println!("cancel accepted; the drain will run inline");
+            Ok(0)
+        }
+        ReleaseCommand::Approve {
+            id,
+            environment,
+            step,
+            decision,
+            comment,
+        } => {
+            // The step defaults to the release's CURRENT pending step
+            // (F-20b's binding read back); a release without one is
+            // the server's 409 to surface verbatim.
+            let step_id = match step {
+                Some(step) => step,
+                None => {
+                    let document = client
+                        .get_json(&format!("{url}/{id}"))
+                        .await
+                        .map_err(call_failure)?;
+                    document
+                        .pointer("/status/environments")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|environments| {
+                            environments.iter().find(|record| {
+                                record.get("name").and_then(serde_json::Value::as_str)
+                                    == Some(environment.as_str())
+                            })
+                        })
+                        .and_then(|record| {
+                            record
+                                .get("pending_step")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .ok_or((
+                            1,
+                            format!(
+                                "the environment `{environment}` of the release {id} \
+is not awaiting an approval"
+                            ),
+                        ))?
+                }
+            };
+            let outcome = client
+                .post_json(
+                    &format!("{url}/{id}/approvals"),
+                    serde_json::json!({
+                        "environment": environment,
+                        "step_id": step_id,
+                        "decision": decision,
+                        "comment": comment,
+                    }),
+                )
+                .await
+                .map_err(call_failure)?;
+            // The endpoint's threshold shape: `{accepted, decision,
+            // approvals, required}` — one approval below the threshold
+            // records but does not fire; the fire is the workflow's
+            // wake.
+            let accepted = outcome
+                .get("accepted")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let approvals = outcome
+                .get("approvals")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let required = outcome
+                .get("required")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            if accepted {
+                println!("{decision} accepted; the release will advance");
+            } else {
+                println!("{decision} recorded ({approvals}/{required} approvals)");
+            }
             Ok(0)
         }
         ReleaseCommand::Delete { id } => {
