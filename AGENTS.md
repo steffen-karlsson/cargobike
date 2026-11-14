@@ -148,6 +148,8 @@ Crate-specific additions are in each crate's AGENTS.md (e.g.
 ## Environment notes
 
 - Rust 1.85+, edition 2024. Local scripts: `scripts/spike-postgres.sh`
- (Postgres 17 on port 54329 for tests/spikes).
+ (Postgres 17 on port 54329 for tests/spikes — hosted in podman; every
+ `start` removes the previous `cb-spike-postgres` container first so
+ stale instances never accumulate on a machine).
 - `Makefile` mirrors PRD §15.1 (`build`, `test`, `lint`, `fmt`, `coverage`,
  `audit`, `ci`, `clean`).

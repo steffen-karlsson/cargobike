@@ -47,9 +47,10 @@ make build # the workspace
 make lint # fmt-check + clippy (-D warnings)
 make test # all crates; DB-backed tests need a database, see below
 
-# A local Postgres for integration/crash tests:
-scripts/spike-postgres.sh start # trust auth on 127.0.0.1:54329
-export CARGOBIKE_TEST_DATABASE_URL=postgres://localhost:54329/postgres
+# A local Postgres for integration/crash tests (one podman container,
+# stale instances removed on every start):
+scripts/spike-postgres.sh start # prints the URL it serves on 127.0.0.1:54329
+export CARGOBIKE_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54329/postgres
 ```
 
 Run the server and CLI against it:

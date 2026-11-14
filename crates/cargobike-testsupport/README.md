@@ -12,7 +12,8 @@ container:
 - `CARGOBIKE_TEST_DATABASE_URL` (CI provides one) always wins.
 - Else **one throwaway Postgres 17 container per test process**
   (`testcontainers` + `testcontainers-modules`, `postgres:17-alpine` —
-  version parity with `scripts/spike-postgres.sh`). The handle is
+  image parity with `scripts/spike-postgres.sh`, which hosts the same
+  image in podman). The handle is
   deliberately leaked so the container lives for the process's whole
   run; the machine's teardown reaps it.
 - Else (no Docker on the machine) the tests **skip with the reason
