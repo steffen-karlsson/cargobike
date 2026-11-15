@@ -74,6 +74,11 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
  reload test's log file).
 - OIDC roundtrips mint an RS256 token locally (no network). Keep the JWKS
  fixture self-contained; never test against live issuers.
+- Event-ordering: an interpreter step already in flight when a cancel
+ lands may record its outcome AFTER the canceled event (commit order,
+ not logical order) — assert the cancel's PRESENCE plus the hash chain
+ verifying, never that the canceled event is the LAST one (that race is
+ real and CI-flaky otherwise).
 - New endpoints: cover the grant-negative path (403 with the right `code`),
  the 409/404 vocabulary, and the If-Match behaviour when the route is
  state-changing.

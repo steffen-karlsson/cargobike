@@ -522,10 +522,16 @@ async fn test_authed_release_lifecycle() {
         "the created event carries the verified caller: {}",
         items[0]["actor"]
     );
-    assert_eq!(
-        items.last().unwrap()["kind"],
-        "canceled",
-        "the arc closes with the API's cancel: {events}"
+    // The cancel is the arc's close. An interpreter step already in
+    // flight when the cancel landed may still record its outcome
+    // AFTER the canceled event — the durable model records the step's
+    // recorded outcome, not an abort — so the CR-open straggler behind
+    // the cancel is commit order, not a broken arc. (Seen flaky in CI:
+    // the race is real; the arc's close is the cancel's PRESENCE plus
+    // the chain re-verifying over whatever straggled.)
+    assert!(
+        items.iter().any(|item| item["kind"] == "canceled"),
+        "the arc records the API's cancel: {events}"
     );
     verify_event_chain(&id, items);
     // The cursor pages: `after` the first sequence hands the rest.
