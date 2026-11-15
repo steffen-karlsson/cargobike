@@ -86,6 +86,11 @@ enum Command {
         /// propagation refuses mixed types on one flag name).
         #[arg(long)]
         config: Option<String>,
+        /// F-10's strict half: verify every declared `source.path`
+        /// against its provider's own truth — needs provider
+        /// credentials and the network; fail-on-error.
+        #[arg(long)]
+        resolve: bool,
     },
 }
 
@@ -217,11 +222,14 @@ fn real_main() -> i32 {
     let cli = Cli::parse();
     // The offline validate needs no server context — it runs before
     // the CLI's own context config load (a fresh machine validates).
-    if let Command::Validate { config } = &cli.command {
+    if let Command::Validate { config, resolve } = &cli.command {
         let path = config
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| validate::default_config_path(None));
+        if *resolve {
+            return run_validate_resolve(&path);
+        }
         return run_validate(&path);
     }
     let path = config::config_path(cli.config.clone(), home_dir());
@@ -263,26 +271,58 @@ fn real_main() -> i32 {
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 fn run_validate(config_path: &Path) -> i32 {
     match validate::run(config_path) {
-        Ok(validated) => {
-            println!(
-                "validate: ok ({} application{}, {} template{})",
-                validated.applications,
-                if validated.applications == 1 { "" } else { "s" },
-                validated.templates,
-                if validated.templates == 1 { "" } else { "s" },
-            );
-            0
-        }
-        Err(failures) => {
-            let count = failures.len();
-            for failure in failures {
-                let report = diagnostic(&failure);
-                eprintln!("{report:?}");
-            }
-            eprintln!("validate: {count} failure(s)");
-            1
-        }
+        Ok(validated) => print_validated(&validated),
+        Err(failures) => print_failures(failures),
     }
+}
+
+/// `--resolve` (F-10's strict half): the offline pass plus the
+/// provider-verifying checks — the one validate mode that needs a
+/// runtime (the provider calls are async).
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn run_validate_resolve(config_path: &Path) -> i32 {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("validate: the runtime refused: {error}");
+            return 1;
+        }
+    };
+    runtime.block_on(async {
+        match validate::run_resolve(config_path).await {
+            Ok(validated) => print_validated(&validated),
+            Err(failures) => print_failures(failures),
+        }
+    })
+}
+
+/// The counted success line.
+#[allow(clippy::print_stdout)]
+fn print_validated(validated: &validate::Validated) -> i32 {
+    println!(
+        "validate: ok ({} application{}, {} template{})",
+        validated.applications,
+        if validated.applications == 1 { "" } else { "s" },
+        validated.templates,
+        if validated.templates == 1 { "" } else { "s" },
+    );
+    0
+}
+
+/// Every failure as a miette diagnostic (the source span when the
+/// failure is a parse error); exit 1.
+#[allow(clippy::print_stderr)]
+fn print_failures(failures: Vec<validate::ValidationFailure>) -> i32 {
+    let count = failures.len();
+    for failure in failures {
+        let report = diagnostic(&failure);
+        eprintln!("{report:?}");
+    }
+    eprintln!("validate: {count} failure(s)");
+    1
 }
 
 /// One failure to a miette report: the parse failures carry the

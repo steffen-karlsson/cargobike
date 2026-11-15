@@ -927,3 +927,116 @@ async fn test_approve_surfaces_the_state_conflict() {
         "the problem detail surfaces: {text}"
     );
 }
+
+/// `validate --resolve`'s binary contract (F-10's strict half): the
+/// flag drives the provider-verifying pass through the real binary —
+/// a matching declared path exits 0, a mismatching one exits 1 with
+/// both paths named. The GitHub API is wiremock (the same shape the
+/// unit tests use; this test pins the FLAG wiring and the exit
+/// vocabulary).
+const RESOLVE_APP_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGBAOJhaQLA8WUeB4B8
+jZ4VPJ7M8Ud38MO0ahBy+bXXXq4bMxPRLaxo+0dnHyX38niBuTAQiEcYXfJ2BeLI
+QWB9XdKAjRaczsweLTBLDv7EjjBA9914v4ZuM2kwf5E2GjNvOm/1DHzgLsMo7XC/
+DAmq8D35sIBvpv0WZA3d4BpDC80TAgMBAAECgYBrI+EYPYrB6aFxTQGVZMWo/qPe
+yEQ5y2Q7Xr8SMdkMm7Dj2yc7pv/t/j8+sAegwvyLY/erdjvYacVFXLOcYBkLiExj
+lgTMId8peZ05enFI/K0wx371+g9Np6y774jaVCP28i2EuXWwRPxsSOD2ayfPK4d8
+8xyCCmyVzN1t+JdaiQJBAPx+Lj+WrY6aO6EXvgyNvTmsCj2hIyDdrT7iJP+DMVPr
+uZlWYgJSIJv8WFjBgEb0qvmv/AZIQvPD2TVFUEFaxI8CQQDlhmDrkrV++2SkO2sD
+PBX6ehtxmB2NH8qYEa9thvTLNFdw/k7F+QNK/6CnnanzJY6qAt+w14ZNuHo9kAcf
+txk9AkBAW+Vr/ftVSwkCAexGhOaDyc9+cBFlMjwTuE8X9hffvUk8xaEL2GVJfWQD
+k6cf7wOZy3rhGxA91GEMTBOt5PYPAkAKCZBffPD29qN2Eysg3xXO+FwO4aoZK9S+
+Rbe4QHigEk/onxZuze747qjl650tBu1wPePuZd53s6OU4aGOH4G5AkEAgxZQMDMp
+FoRUpOE4m7H0NdP8lvCiaa9ZsYHtvH20mRpXfSIvxdQG4S27TliCgs/59bZ1DfYr
+knRiQmITBUx3Jg==
+-----END PRIVATE KEY-----";
+
+/// The strict config with the `declared` path over the wiremock API.
+#[allow(clippy::expect_used)]
+fn resolve_config(scratch: &Path, api: &str, declared: &str) -> std::path::PathBuf {
+    std::fs::create_dir_all(scratch.join("templates")).expect("templates dir");
+    std::fs::write(
+        scratch.join("templates").join("service.yaml"),
+        "name: service\nversion: \"1\"\ninputs: {}\nenvironments:\n  - name: production\n    steps:\n      - uses: builtin/commit-files@1\n",
+    )
+    .expect("template");
+    let yaml = format!(
+        "server: {{}}\ndatabase: {{ url: postgres://x }}\ntemplates:\n  directory: {}\nauth:\n  oidc:\n    - name: gha\n      issuer: https://issuer\n      audience: cargobike\n      claims:\n        repository_owner_id: \"1\"\n      grants: [release:create]\nproviders:\n  - name: github\n    type: github\n    api_url: \"{api}\"\n    auth:\n      app_id: \"123\"\n      installation_id: \"77\"\n      private_key: \"{}\"\napplications:\n  - name: web\n    source:\n      provider: github\n      id: \"42\"\n      path: {declared}\n    template: service@1\n    releasers:\n      - oidc: gha\n    environments:\n      production:\n        repo: {{ provider: github, id: \"42\" }}\n",
+        scratch.join("templates").display(),
+        RESOLVE_APP_KEY.replace('\n', "\\n"),
+    );
+    let path = scratch.join("cargobike.yaml");
+    std::fs::write(&path, yaml).expect("config");
+    path
+}
+
+/// The wiremock GitHub (the pinned installation's mint + the repo read).
+async fn resolve_github_api(full_name: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/77/access_tokens"))
+        .respond_with(|_: &Request| {
+            ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "token": "ghs_strict",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "permissions": {},
+            }))
+        })
+        .mount(&server)
+        .await;
+    let full_name = full_name.to_owned();
+    Mock::given(method("GET"))
+        .and(path("/repositories/42"))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42,
+                "name": "truth",
+                "full_name": full_name,
+                "default_branch": "main",
+                "url": "https://x.invalid/repo",
+            }))
+        })
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::expect_used)]
+async fn test_validate_resolve_exits_the_strict_vocabulary() {
+    let scratch = std::env::temp_dir().join(format!("cb-cli-resolve-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    // The match: exit 0.
+    let server = resolve_github_api("org/truth").await;
+    let config = resolve_config(&scratch, &server.uri(), "org/truth");
+    let output = Command::cargo_bin("cargobike")
+        .expect("the binary")
+        .args(["validate", "--resolve", "--config"])
+        .arg(&config)
+        .output()
+        .expect("runs");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the matching path passes: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The mismatch: exit 1, both paths named.
+    let server = resolve_github_api("org/truth").await;
+    let config = resolve_config(&scratch, &server.uri(), "org/wrong");
+    let output = Command::cargo_bin("cargobike")
+        .expect("the binary")
+        .args(["validate", "--resolve", "--config"])
+        .arg(&config)
+        .output()
+        .expect("runs");
+    assert_eq!(output.status.code(), Some(1), "the mismatch fails");
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        text.contains("org/wrong") && text.contains("org/truth"),
+        "the failure names both paths: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}

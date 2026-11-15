@@ -2732,7 +2732,7 @@ Keeping heavy dependencies out of the wrong crates is what makes the binary-size
 | `cargobike-api` | core, serde, utoipa, reqwest (client, behind a feature) | sqlx, dbos, wasmtime |
 | `cargobike-engine` | core, dbos, sqlx, cel, toml_edit, YAML editor, similar, async-trait, tokio-util | axum, api |
 | `cargobike-server` | core, api, engine, axum, tower-http, tower_governor, jsonwebtoken, moka, argon2, hmac/sha2, subtle, secrecy, figment, metrics, wasmtime (feature `wasm`) | — |
-| `cargobike-cli` | core, api, clap, reqwest, reqwest-eventsource, comfy-table/tabled, indicatif, miette, directories | sqlx, dbos, wasmtime, axum |
+| `cargobike-cli` | core, api, provider-github (the `validate --resolve` strict check, F-10), clap, reqwest, reqwest-eventsource, comfy-table/tabled, indicatif, miette, directories | sqlx, dbos, wasmtime, axum |
 | `cargobike-extension-sdk` | core, wit-bindgen, serde | tokio, reqwest (guests use the host `http` interface) |
 | `cargobike-provider-github` | core, octocrab, graphql_client, reqwest | extension-sdk, dbos |
 

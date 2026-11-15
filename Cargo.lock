@@ -532,6 +532,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "cargobike-core",
+ "cargobike-provider-github",
  "clap",
  "futures-util",
  "humantime",

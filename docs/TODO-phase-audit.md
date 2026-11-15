@@ -292,9 +292,18 @@
   The argon2 hash check splits honestly: the shared rule verifies
   the PHC shape (never stricter than the boot check — pinned by a
   test), the server's boot keeps the exact argon2 parse. The
-  `--resolve` mode (F-10's provider-resolving strict path check) is
-  NOT offline — it needs provider credentials and stays OPEN; the
-  server's boot check covers the mismatch fail-closed.
+  `--resolve` mode (F-10's provider-resolving strict path check)
+  landed: the offline pass plus every declared `source.path` verified
+  against its provider's own truth — the github provider built from
+  the config's credentials (the provider crate joined the CLI's deps;
+  no database, G-10 holds), probed PATH-LESS (`get_repo_path`; a
+  probe carrying the label short-circuits to itself in the provider),
+  fail-on-error: mismatch, provider error, or an unbuilt transport is
+  a validation failure (the boot's fail-closed-unavailable is the
+  twin). Tests: wiremock GitHub (the match, the mismatch naming both
+  paths, the provider error, the unbuilt transport, the
+  no-declared-path skip) plus the binary contract (exit 0/1 through
+  assert_cmd).
 - [x] `release retry <id> [--new]` landed: the server's `POST
   …/releases/{id}/retry` forks the failed attempt in place
   (`ForkFrom::LastFailure` reads the rows' error column; the attempt

@@ -52,6 +52,14 @@ cargo test -p cargobike-cli
  the lib's tests run in parallel — the bearer test's remove-then-mint window
  raced the wiremock exchange test's LIVE mock URL and minted a token in
  CI's coverage job (instrumented runs widen the window).
+- `validate --resolve` (F-10's strict half) is the ONE validate mode
+  with a runtime and network: the github provider builds from the
+  config's credentials (the CLI's provider-github dep — no database,
+  G-10 holds) and every declared `source.path` is probed PATH-LESS
+  over wiremock in the tests (the pinned installation's token mint +
+  the repo read; a probe carrying the label short-circuits to itself
+  and verifies nothing). Never widen a skip into a pass: an unbuilt
+  transport is a strict FAILURE.
 - New verbs need: happy-path render test, problem-document mapping test
  (exit 12), auth-failure test (exit 10), dead-server test (exit 11).
 

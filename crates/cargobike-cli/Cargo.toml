@@ -29,6 +29,11 @@ url = "2.5.8"
 # core: the offline validate (4.8) parses the server config and runs the
 # shared registry rules + template compiler (A.14's CLI list allows core).
 cargobike-core = { path = "../cargobike-core" }
+# provider-github: F-10's strict half — `validate --resolve` verifies every
+# declared `source.path` against the provider's own truth, and the provider
+# crate owns the GitHub auth/path logic (octocrab). No database deps: G-10
+# holds. The A.14 row names the addition.
+cargobike-provider-github = { path = "../cargobike-provider-github" }
 # miette: the validate's diagnostics (line/column source spans; A.14's
 # CLI list).
 miette = { version = "7", features = ["fancy"] }
