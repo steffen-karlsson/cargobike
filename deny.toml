@@ -53,4 +53,24 @@ ignore = [
     # practical exposure to the timing channel is limited; tracked
     # upstream and to be revisited when a patched rsa ships.
     "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5 constant-time gaps (RUSTSEC-2026-0387). The 0.5
+    # line reaches us via jsonwebtoken 10 -> p256/p384 0.13, which octocrab
+    # 0.54 (the provider's pinned API surface) also rides; the fix lives in
+    # crypto-bigint 0.7 behind the RustCrypto 2025 stack, reachable only
+    # through deliberate jsonwebtoken/octocrab major bumps. Timing side
+    # channel in ECDSA P-256/P-384 verification; revisit with the next
+    # octocrab pin bump.
+    "RUSTSEC-2026-0387",
+    # astral-tokio-tar is unmaintained (RUSTSEC-2026-0440). Pulled only by
+    # testcontainers 0.27 inside cargobike-testsupport — a test-only
+    # dependency that never ships in cargobike/cargobike-server. No safe
+    # upgrade inside the 0.27 line (its companion testcontainers-modules
+    # has not moved); drop this ignore when testcontainers drops the crate.
+    "RUSTSEC-2026-0440",
+    # unsafe-libyaml is unmaintained (RUSTSEC-2024-0449). serde_yaml_ng 0.10
+    # — the PRD's approved YAML parser (Appendix A) — builds on it and has
+    # no release off it. Migrating to a safe-Rust parser (saphyr) is a
+    # deliberate project decision, not a patch; tracked in
+    # docs/TODO-phase-audit.md.
+    "RUSTSEC-2024-0449",
 ]

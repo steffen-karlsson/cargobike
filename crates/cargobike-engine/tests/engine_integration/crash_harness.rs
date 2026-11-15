@@ -119,24 +119,14 @@ impl Drop for KillOnDrop {
 /// a previous run is exactly the `enter` refusal the flake census
 /// kept meeting (the environment terminal-refuses before any action
 /// step, so the milestone never fires). The engine's in-process tests
-/// wipe the same way (`clear_application_rows`).
+/// wipe the same way (`clear_application_rows`). The shared helper
+/// reads a not-yet-migrated schema (a fresh throwaway container) as
+/// "nothing to wipe" — the first harness run migrates it.
 #[allow(clippy::expect_used)]
 async fn wipe_app_rows(database_url: &str, app: &str) {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(database_url)
+    cargobike_testsupport::wipe_fixture_rows(database_url, &[app])
         .await
-        .expect("wipe pool");
-    sqlx::query("DELETE FROM leases WHERE application = $1")
-        .bind(app)
-        .execute(&pool)
-        .await
-        .expect("the lease wipe");
-    sqlx::query("DELETE FROM releases WHERE application = $1")
-        .bind(app)
-        .execute(&pool)
-        .await
-        .expect("the release wipe");
+        .expect("the app rows wipe");
 }
 
 /// The mock's state file (the convergence facts across the kill).

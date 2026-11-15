@@ -21,6 +21,11 @@ suites) and holds the shared test database helper.
 - The real proof is consumer-side: run a DB suite with the variable
   unset — it either provisions (Docker present) or prints the skip
   reason (no Docker).
+- The wipe helper's fresh-container path: a suite that wipes before
+  its server boot must pass BOTH ways — with the shared fixture URL
+  (pre-migrated tables) and on a throwaway container (the wipe runs
+  before any migration; `42P01` is "nothing to wipe", not a panic —
+  the CI coverage job hit exactly this).
 
 ## How to document
 

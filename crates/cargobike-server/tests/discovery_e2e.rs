@@ -40,27 +40,11 @@ environments:
 async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvider>)> {
     let url = cargobike_testsupport::database_url().await?;
     // The shared fixture DB's leftovers: this run's applications start
-    // with clean rows (the lease would outlive its release).
-    {
-        #[allow(clippy::expect_used)]
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("the fixture database connects");
-        for application in ["billing", "payment-service"] {
-            sqlx::query("DELETE FROM leases WHERE application = $1")
-                .bind(application)
-                .execute(&pool)
-                .await
-                .expect("the lease rows wipe");
-            sqlx::query("DELETE FROM releases WHERE application = $1")
-                .bind(application)
-                .execute(&pool)
-                .await
-                .expect("the release rows wipe");
-        }
-    }
+    // with clean rows (the lease would outlive its release). A
+    // not-yet-migrated throwaway container reads as "nothing to wipe".
+    cargobike_testsupport::wipe_fixture_rows(&url, &["billing", "payment-service"])
+        .await
+        .expect("the fixture rows wipe");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -93,6 +77,10 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
             "README.md",
         ],
     );
+    // The discovered edit's target needs its content envelope on the
+    // base branch (an edit on a file that never existed has no path
+    // to write into).
+    mock.seed_file("apps/billing/preview.yaml", "image:\n  tag: 0.0.0\n");
     let mut providers = cargobike_core::registry::ProviderRegistry::new();
     providers.insert(
         "github",
@@ -117,10 +105,15 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
     )
     .expect("write the test config");
 
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), Some(providers)).await
-    else {
-        eprintln!("skipping: server boot failed (the reason is above)");
-        return None;
+    let boot = cargobike_server::boot(Some(&config_path), Some(providers)).await;
+    let (router, _state) = match boot {
+        Ok(booted) => booted,
+        Err(error) => {
+            eprintln!("skipping: server boot failed ({error})");
+            let dumped = std::fs::read_to_string(&config_path).unwrap_or_default();
+            eprintln!("the config:\n{dumped}");
+            return None;
+        }
     };
     tokio::spawn(async move {
         let _ = axum::serve(
@@ -133,14 +126,42 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
 }
 
 /// The registry half of the config (a plain const — no format!
-/// escaping for the YAML's braces).
-const REGISTRY_YAML: &str = "applications:\n\
-             # The collision: an explicit entry with the discovered name `web`, NO extends.\n\
-             #  The discovered entry must skip (an error, never a silent override).\n\
-  - name: web\n    source: { provider: github, id: \"42\" }\n    template: service@1\n    versioning: { scheme: opaque, require_tag: false }\n    releasers: [{ api_key: test-key }]\n    environments: {}\n\
-             # The per-app override: payment-service pins one repository.\n\
-  - name: payment-service\n    extends: monorepo-deploy\n    source: { provider: github, id: \"345678\" }\n    environments: {}\n\n\
-             application_groups:\n  - name: monorepo-deploy\n    template: service@1\n    versioning: { scheme: opaque, require_tag: false }\n    source: { provider: github, owner_id: \"123456\" }\n    discovery:\n      repo: { provider: github, id: \"789012\" }\n      match: \"apps/{application}/{environment}.yaml\"\n      interval: 10m\n    releasers: [{ api_key: test-key }]\n    environments:\n      preview:\n        edits:\n          - file: \"apps/{application}/preview.yaml\"\n            field: image.tag\n";
+/// escaping for the YAML's braces). Real newlines, never `\` line
+/// continuations: a continuation eats the next line's leading spaces,
+/// which de-indented the `- name:` entries into broken YAML — the
+/// suite's boot failed and the tests skipped vacuously.
+const REGISTRY_YAML: &str = "\
+applications:
+  # The collision: an explicit entry with the discovered name `web`, NO extends.
+  #  The discovered entry must skip (an error, never a silent override).
+  - name: web
+    source: { provider: github, id: \"42\" }
+    template: service@1
+    versioning: { scheme: opaque, require_tag: false }
+    releasers: [{ api_key: test-key }]
+    environments: {}
+  # The per-app override: payment-service pins one repository.
+  - name: payment-service
+    extends: monorepo-deploy
+    source: { provider: github, id: \"345678\" }
+    environments: {}
+
+application_groups:
+  - name: monorepo-deploy
+    template: service@1
+    versioning: { scheme: opaque, require_tag: false }
+    source: { provider: github, owner_id: \"123456\" }
+    discovery:
+      repo: { provider: github, id: \"789012\" }
+      match: \"apps/{application}/{environment}.yaml\"
+      interval: 10m
+    releasers: [{ api_key: test-key }]
+    environments:
+      preview:
+        edits:
+          - file: \"apps/{application}/preview.yaml\"
+            field: image.tag
+";
 
 /// The applications listing entry by name.
 fn named<'a>(listing: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
@@ -262,6 +283,7 @@ async fn test_discovered_app_releases_against_the_deployment_repo() {
     // file `{branch}/apps/billing/preview.yaml`): the group's
     // environment repo default pointed the release there.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut last_document = serde_json::Value::Null;
     loop {
         let state = mock.state();
         let edit_landed = state
@@ -272,14 +294,28 @@ async fn test_discovered_app_releases_against_the_deployment_repo() {
         if edit_landed && cr_open {
             break;
         }
+        if let Ok(read) = client
+            .get(format!("{base}/api/v1/releases/{release_id}"))
+            .header(auth.0, auth.1.clone())
+            .send()
+            .await
+        {
+            if let Ok(document) = read.json::<serde_json::Value>().await {
+                last_document = document;
+            }
+        }
         assert!(
             std::time::Instant::now() < deadline,
-            "the discovered app's release never reached the CR: {state:?}"
+            "the discovered app's release never reached the CR: {state:?}\nthe release document: {last_document}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    // The cleanup: cancel the stalled release and drain it.
+    // The cleanup: cancel the stalled release and drain it. The
+    // interpreter stays parked at its merge wait (the CR never
+    // merges), so the drain's observable is the CLEANUP's effect —
+    // the CR closes on the provider — not the interpreter's own
+    // document write (authed_lifecycle's cancel drains the same way).
     let cancel = client
         .post(format!("{base}/api/v1/releases/{release_id}/cancel"))
         .header(auth.0, auth.1.clone())
@@ -293,20 +329,17 @@ async fn test_discovered_app_releases_against_the_deployment_repo() {
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        let read = client
-            .get(format!("{base}/api/v1/releases/{release_id}"))
-            .header(auth.0, auth.1.clone())
-            .send()
-            .await
-            .expect("http");
-        let document: serde_json::Value = read.json().await.expect("the release body");
-        let phase = document["status"]["phase"].as_str().unwrap_or_default();
-        if phase == "Canceled" {
+        let state = mock.state();
+        let cr_closed = state
+            .change_requests
+            .values()
+            .any(|cr| cr.state == "closed");
+        if cr_closed {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the release never drained: {phase}"
+            "the cancel's cleanup never closed the CR: {state:?}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }

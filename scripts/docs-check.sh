@@ -60,16 +60,32 @@ root_review=
 docs_only=1
 
 # --- per-crate path partitions ------------------------------------------------
-# Auto mode resolved to diff listing `CHANGED` above; crate code changes need
-# a doc touch. Whitespace-only changes (a rustfmt pass, say) change no
-# documentation content and don't trigger the rule; the substantive list
-# carries the files whose diff survives whitespace-ignoring.
+# Crate code changes need a doc touch. Whitespace-only changes (a rustfmt
+# pass, say) change no documentation content and don't trigger the rule;
+# the substantive list carries the files whose diff survives
+# whitespace-ignoring.
+# Auto mode resolved to one of the three scopes above when it listed
+# `CHANGED`; the per-file passes must run against the SAME scope (an auto
+# run that kept its name would match none of the cases and inspect nothing
+# - a silent no-op gate).
+EFFMODE=$MODENAME
+case "$MODENAME" in
+    auto)
+        if [ -n "$(git diff --cached --name-only --diff-filter=ACMR)" ]; then
+            EFFMODE=cached
+        elif [ -n "$(git diff HEAD --name-only --diff-filter=ACMR)" ]; then
+            EFFMODE=tree
+        else
+            EFFMODE=commit
+        fi
+        ;;
+esac
 SUBSTANTIVE=
 for file in $CHANGED; do
     case "$file" in
         .DS_Store|Cargo.lock|target/*) continue ;;
     esac
-    case "$MODENAME" in
+    case "$EFFMODE" in
         cached) if [ -n "$(git diff --cached -w -- "$file")" ]; then SUBSTANTIVE="$SUBSTANTIVE $file"; fi ;;
         tree)   if [ -n "$(git diff HEAD -w -- "$file")" ]; then SUBSTANTIVE="$SUBSTANTIVE $file"; fi ;;
         commit) if [ -n "$(git diff "HEAD^" -w -- "$file")" ]; then SUBSTANTIVE="$SUBSTANTIVE $file"; fi ;;
@@ -87,7 +103,7 @@ done
 # Auto mode resolved to diff listing `CHANGED` above; crate code changes need
 # a doc touch. Emit violation lines when a crate changed non-doc files but
 # touched neither of its two docs.
-for crate in $(printf '%s\n' "$SUBSTANTIVE" | sed -n 's|^crates/\([^/]*\)/.*$|\1|p' | sort -u); do
+for crate in $(printf '%s\n' "$SUBSTANTIVE" | tr ' ' '\n' | sed -n 's|^crates/\([^/]*\)/.*$|\1|p' | sort -u); do
     code_changed=0
     doc_changed=0
     for file in $SUBSTANTIVE; do

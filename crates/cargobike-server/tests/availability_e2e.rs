@@ -39,23 +39,11 @@ environments:
 async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvider>, String)> {
     let url = cargobike_testsupport::database_url().await?;
     // The shared fixture DB's leftovers: this run's application starts
-    // with clean rows (the lease would outlive its release).
-    {
-        #[allow(clippy::expect_used)]
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("the fixture database connects");
-        sqlx::query("DELETE FROM leases WHERE application = 'path-service'")
-            .execute(&pool)
-            .await
-            .expect("the lease rows wipe");
-        sqlx::query("DELETE FROM releases WHERE application = 'path-service'")
-            .execute(&pool)
-            .await
-            .expect("the release rows wipe");
-    }
+    // with clean rows (the lease would outlive its release). A
+    // not-yet-migrated throwaway container reads as "nothing to wipe".
+    cargobike_testsupport::wipe_fixture_rows(&url, &["path-service"])
+        .await
+        .expect("the fixture rows wipe");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -102,10 +90,13 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
     )
     .expect("write the test config");
 
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), Some(providers)).await
-    else {
-        eprintln!("skipping: server boot failed");
-        return None;
+    let boot = cargobike_server::boot(Some(&config_path), Some(providers)).await;
+    let (router, _state) = match boot {
+        Ok(booted) => booted,
+        Err(error) => {
+            eprintln!("skipping: server boot failed ({error})");
+            return None;
+        }
     };
     tokio::spawn(async move {
         let _ = axum::serve(

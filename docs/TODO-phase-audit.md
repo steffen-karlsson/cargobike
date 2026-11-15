@@ -625,3 +625,23 @@
       the touched crates' pairs in the same commit. The item is a
       process invariant, and the invariant is now carried by the
       tooling, not by memory.
+
+## 11. Supply-chain advisories with documented ignores (deny policy)
+
+The CI deny job triaged 2026-11-15: every advisory either got the
+patch-level bump (`tokio` AsyncFd unsound → 1.54, `rustls-webpki`
+distrusted-intermediates → 0.103.17, `webpki-roots` emSign root →
+1.0.12, `ctutils` constant-time → 0.4.4, `indicatif` 0.17 → 0.18 —
+its `number_prefix` dependency is unmaintained) or a commented ignore
+in `deny.toml`. The three ignores carry revisit conditions:
+
+- [ ] `RUSTSEC-2026-0387` (`crypto-bigint` 0.5 timing): reachable only
+      through a deliberate `jsonwebtoken`/`octocrab` major bump (the
+      provider's pinned 0.54 surface rides the same line); revisit with
+      the next octocrab pin bump.
+- [ ] `RUSTSEC-2026-0440` (`astral-tokio-tar` unmaintained): test-only
+      via `testcontainers` 0.27 (`cargobike-testsupport`); drop the
+      ignore when testcontainers releases off the crate.
+- [ ] `RUSTSEC-2024-0449` (`unsafe-libyaml` unmaintained): the PRD's
+      approved YAML parser `serde_yaml_ng` builds on it; migrating to a
+      safe-Rust parser (saphyr) is a project decision, not a patch.

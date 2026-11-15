@@ -122,6 +122,17 @@ CARGOBIKE_TEST_DATABASE_URL=postgres://... cargo test -p cargobike-server
   401/404/ignored/dedupe surfaces. Delivery ids are port-tagged: a recorded
   workflow's replay would satisfy the duplicate-detection FOREVER, so each
   test run gets fresh ids.
+- `tests/availability_e2e.rs` — F-10's verified-path availability E2E.
+- `tests/discovery_e2e.rs` — §4.13a's E2E: the listing carries the discovered
+  virtual app (org source), the extends override, and the collision keeping
+  the explicit entry; a discovered app runs the full create against the
+  DISCOVERY repository (edit lands, CR opens, cancel's cleanup closes it).
+  Its config fixtures write YAML as real-newline string literals — a `\`
+  line continuation eats the next line's leading spaces, which once
+  de-indented the `- name:` entries into config that never parsed, and the
+  suite's boot-failure skip made that look green (every `test_server` boot
+  failure prints its reason now; grep the suite output for `skipping:` —
+  an E2E that never booted is a vacuous pass).
 - Config unit tests cover the secret shapes, the interpolation fail-fast,
   and the `${VAR:-default}` default syntax.
 

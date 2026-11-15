@@ -117,10 +117,13 @@ async fn test_server_with(
     // remove here could starve a later boot's materialise step).
     unsafe { std::env::set_var("CB_WEBHOOK_SECRET_TEST", WEBHOOK_SECRET) };
 
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), Some(providers)).await
-    else {
-        eprintln!("skipping: the server boot failed");
-        return None;
+    let boot = cargobike_server::boot(Some(&config_path), Some(providers)).await;
+    let (router, _state) = match boot {
+        Ok(booted) => booted,
+        Err(error) => {
+            eprintln!("skipping: the server boot failed ({error})");
+            return None;
+        }
     };
     tokio::spawn(async move {
         let _ = axum::serve(

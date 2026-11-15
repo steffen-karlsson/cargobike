@@ -16,7 +16,7 @@ humantime.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls", "json"] }
 reqwest-eventsource = "0.6"
 futures-util = "0.3"
-indicatif = "0.17"
+indicatif = "0.18"
 time.workspace = true
 secrecy.workspace = true
 serde.workspace = true

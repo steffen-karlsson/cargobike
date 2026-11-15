@@ -40,15 +40,11 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
     let url = cargobike_testsupport::database_url().await?;
     // The shared fixture DB's leftovers: lease rows outlive their
     // releases (a supersede guard cannot read a deleted holder's
-    // version), so this run's applications start with clean rows.
-    {
-        #[allow(clippy::expect_used)]
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("the fixture database connects");
-        for application in [
+    // version), so this run's applications start with clean rows. A
+    // not-yet-migrated throwaway container reads as "nothing to wipe".
+    cargobike_testsupport::wipe_fixture_rows(
+        &url,
+        &[
             "my-service",
             "keyed-service",
             "paused-service",
@@ -56,19 +52,10 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
             "bare-service",
             "approval-service",
             "self-approval-service",
-        ] {
-            sqlx::query("DELETE FROM leases WHERE application = $1")
-                .bind(application)
-                .execute(&pool)
-                .await
-                .expect("the lease rows wipe");
-            sqlx::query("DELETE FROM releases WHERE application = $1")
-                .bind(application)
-                .execute(&pool)
-                .await
-                .expect("the release rows wipe");
-        }
-    }
+        ],
+    )
+    .await
+    .expect("the fixture rows wipe");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");

@@ -243,6 +243,16 @@ impl MockProvider {
         state.save(&path);
     }
 
+    /// Seeds a file on the base branch: the deployment files a
+    /// discovered application's edit steps target (the tree listing
+    /// is names only — an edit needs the file's content envelope).
+    pub fn seed_file(&self, path: &str, contents: &str) {
+        let state_path = self.state_file();
+        let mut state = MockState::load(&state_path);
+        state.files.insert(base_key(path), contents.to_owned());
+        state.save(&state_path);
+    }
+
     /// Scripts the NEXT path lookup for one repo to fail (the F-10
     /// fail-closed posture's erroring-lookup case).
     pub fn fail_next_path_lookup_for(&self, repo_id: &str) {

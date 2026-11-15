@@ -54,6 +54,52 @@ pub async fn database_url() -> Option<String> {
         .clone()
 }
 
+/// Wipes the fixture database's leftover rows for the given
+/// applications. Lease rows can outlive their releases (a supersede
+/// guard cannot read a deleted holder's version), so a previous run
+/// against the *same* database would otherwise block re-inserts.
+///
+/// A table that does not exist yet (SQLSTATE `42P01`, undefined table)
+/// is not an error: a fresh throwaway container — the coverage job's
+/// path, where every test process provisions its own — has no schema
+/// until the server boot that follows runs the migrations, and there
+/// is nothing to wipe.
+///
+/// `Err` = a real database failure (connection, permissions); callers
+/// skip or fail on it as they do for [`database_url`].
+pub async fn wipe_fixture_rows(url: &str, applications: &[&str]) -> Result<(), sqlx::Error> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(url)
+        .await?;
+    for application in applications {
+        // The two statements stay literal: sqlx 0.9's `SqlSafeStr`
+        // refuses dynamic SQL strings, and a fixture wipe has nothing
+        // dynamic beyond the bind parameter.
+        for statement in [
+            "DELETE FROM leases WHERE application = $1",
+            "DELETE FROM releases WHERE application = $1",
+        ] {
+            wipe_one(&pool, statement, application).await?;
+        }
+    }
+    Ok(())
+}
+
+/// One statement's wipe; `42P01` (the schema has not been migrated
+/// yet) reads as "nothing to wipe" — never as a failure.
+async fn wipe_one(
+    pool: &sqlx::PgPool,
+    statement: &'static str,
+    application: &str,
+) -> Result<(), sqlx::Error> {
+    match sqlx::query(statement).bind(application).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("42P01") => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Starts the throwaway Postgres 17 container (the spike script's
 /// version parity: the same major the fixture DB runs). The container
 /// lives for the process's lifetime — the suite's end tears it down.

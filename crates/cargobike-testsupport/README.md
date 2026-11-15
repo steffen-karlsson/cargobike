@@ -20,16 +20,18 @@ container:
   printed** — a skip is never silent, and a reviewer reads the output.
 
 Consumers: the engine's `tests/engine_integration/` fixture and
-`tests/leases_behaviour.rs`, and the server's five DB-backed suites
+`tests/leases_behaviour.rs`, and the server's DB-backed suites
 (`authed_lifecycle`, `oidc_roundtrip`, `retry_endpoint`, `sighup_reload`,
-`webhook_receiver`), all via `[dev-dependencies]` — nothing depends on
-this crate in a production graph.
+`webhook_receiver`, `availability_e2e`, `discovery_e2e`), all via
+`[dev-dependencies]` — nothing depends on this crate in a production
+graph.
 
 ## Module map
 
 | Module | Scope |
 |---|---|
 | `lib` | `database_url()` — the env-wins-else-container-else-skip helper (one async cell per process; the container work runs on the blocking pool — a nested runtime cannot start on a runtime thread) |
+| `lib` | `wipe_fixture_rows(url, applications)` — the shared fixture-DB row wipe (lease rows outlive their releases); a not-yet-migrated schema (a fresh throwaway container, SQLSTATE `42P01`) reads as "nothing to wipe", never an error — the boot that follows runs the migrations |
 
 ## Status
 
@@ -44,6 +46,11 @@ printed skip, as before the wiring.
 let Some(url) = cargobike_testsupport::database_url().await else {
     return; // the helper already printed why
 };
+// The shared-fixture leftovers wiped (a fresh throwaway container
+// reads as "nothing to wipe"):
+cargobike_testsupport::wipe_fixture_rows(&url, &["my-service"])
+    .await
+    .expect("the fixture rows wipe");
 ```
 
 ## Tests

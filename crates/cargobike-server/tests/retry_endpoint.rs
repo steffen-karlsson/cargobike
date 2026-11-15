@@ -79,10 +79,13 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
     )
     .expect("write the test config");
 
-    let Ok((router, _state)) = cargobike_server::boot(Some(&config_path), Some(providers)).await
-    else {
-        eprintln!("skipping: the server boot failed");
-        return None;
+    let boot = cargobike_server::boot(Some(&config_path), Some(providers)).await;
+    let (router, _state) = match boot {
+        Ok(booted) => booted,
+        Err(error) => {
+            eprintln!("skipping: the server boot failed ({error})");
+            return None;
+        }
     };
     tokio::spawn(async move {
         let _ = axum::serve(
