@@ -20,6 +20,9 @@ tracing = { workspace = true }
 secrecy = { workspace = true }
 toml = "1.1.6"
 serde_yaml_ng = "0.10"
+# humantime: the template compiler (moved from the engine for 4.8/US-13 —
+# the CLI's offline validate shares it) parses the §2a duration strings.
+humantime = { workspace = true }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"

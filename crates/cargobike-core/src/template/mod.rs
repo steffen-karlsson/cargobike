@@ -4,6 +4,17 @@
 //! snapshot stores the template verbatim , validation and evaluation
 //! happen in the engine, and a rename in the engine never rewrites the
 //! recorded form.
+//!
+//! The offline compiler lives in [`compile`] (moved from the engine so
+//! the CLI's `validate` shares it, 4.8/US-13); the registry-aware
+//! `compile_with` stays with the engine's step registry.
+
+pub mod compile;
+
+pub use compile::{
+    CompiledTemplate, ResolvedEnvironment, ResolvedStep, StepBody, TemplateError, compile,
+    parse_and_validate, resolve,
+};
 
 use std::collections::BTreeMap;
 
@@ -226,7 +237,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     /// The documented template, verbatim.
-    const SERVICE_TEMPLATE: &str = include_str!("../../../templates/service.yaml");
+    const SERVICE_TEMPLATE: &str = include_str!("../../../../templates/service.yaml");
 
     #[test]
     fn test_service_template_parses_and_matches_f32_test_promise() {

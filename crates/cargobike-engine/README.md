@@ -22,7 +22,7 @@ What lives here (PRD §16 Phase 3 tasks mapped to modules):
 
 | Module | Contents | Task |
 |---|---|---|
-| `template` | YAML template compiler: structure validation, `include:` expansion, auto/declared step IDs, wait-rule bounds, scheme-specific gate checks  | 3.1 |
+| `template` | The registry-aware compile half (`compile_with`: every `uses:` must resolve in the installed steps) plus re-exports — the structural compiler lives in `cargobike-core::template::compile` (shared with the CLI's offline `validate`, 4.8/US-13) | 3.1 |
 | `expr` | CEL runtime for `when:` gates and `${{ ... }}` parameters; pure functions only; length/depth limits (the config's `engine.cel.max_expression_length` wires through the context's `Limits`; `max_cost` stands for the depth bound — cel 0.14 has no runtime-cost API, documented per boot)  | 3.2 |
 | `steps` | Versioned `StepRegistry` (`name@version`, versions side by side); registration refuses the reserved surface (`wait`-shaped control names and the `builtin/` namespace — a sidecar cannot shade them; the engine's own install goes through `register_built_in`) | 3.3 |
 | `builtin` | The four action steps: `commit-files@1` (fused edit+commit per the idempotency strategy table), `change-request@1` (find-by-head first, then the F-65 fail-closed gate: the base branch must require reviews when the registry's `require_branch_protection` stands — default — and a provider without the capability is a refusal, not a skip; the registry's R11 `change_request` block replaces the template's title/body, appends its labels and forces the draft flag), `http-call@1`, `set-labels@1` | 3.5–3.8 |
