@@ -1009,3 +1009,111 @@ async fn test_batched_lookups_ride_one_graphql_request() {
         "the failed batch fell back to the REST truth"
     );
 }
+
+/// §4.13a's discovery scan's provider half: `list_tree` walks the
+/// recursive git tree and returns the BLOB paths only (directories and
+/// submodules are not matchable files).
+#[tokio::test]
+async fn test_list_tree_returns_the_blob_paths() {
+    let server = wiremock::MockServer::start().await;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, ResponseTemplate};
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repositories/{REPO_ID}/git/trees/main")))
+        .and(query_param("recursive", "1"))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "tree-sha",
+                "url": "https://x.invalid/tree",
+                "truncated": false,
+                "tree": [
+                    { "path": "apps", "mode": "040000", "type": "tree", "sha": "d1", "url": "https://x.invalid/d1" },
+                    { "path": "apps/web/preview.yaml", "mode": "100644", "type": "blob", "size": 12, "sha": "b1", "url": "https://x.invalid/b1" },
+                    { "path": "apps/web/prod.yaml", "mode": "100644", "type": "blob", "size": 8, "sha": "b2", "url": "https://x.invalid/b2" },
+                    { "path": "vendor/lib", "mode": "160000", "type": "commit", "sha": "c1", "url": "https://x.invalid/c1" },
+                ],
+            }))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repositories/{REPO_ID}")))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42, "name": "my-service", "full_name": REPO_PATH,
+                "default_branch": "main", "private": false,
+                "url": "https://x.invalid/r", "html_url": "https://x.invalid/h",
+                "owner": { "login": "my-org", "id": 7, "type": "Organization" },
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let builder = octocrab::Octocrab::builder().personal_token(TOKEN.to_owned());
+    let builder = builder
+        .base_uri(server.uri())
+        .expect("the mocked base uri sets");
+    let provider = GithubProvider::from_octocrab(builder.build().expect("the test client builds"));
+    let repo = RepoRef::new("github", REPO_ID);
+    let paths = provider
+        .list_tree(&repo, "main")
+        .await
+        .expect("the tree lists");
+    assert_eq!(
+        paths,
+        vec![
+            "apps/web/preview.yaml".to_owned(),
+            "apps/web/prod.yaml".to_owned()
+        ],
+        "only blob paths return"
+    );
+}
+
+/// A truncated tree refuses — an under-discovery must never look like
+/// a clean scan.
+#[tokio::test]
+async fn test_list_tree_refuses_a_truncated_listing() {
+    let server = wiremock::MockServer::start().await;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repositories/{REPO_ID}/git/trees/main")))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "tree-sha",
+                "url": "https://x.invalid/tree",
+                "truncated": true,
+                "tree": [],
+            }))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repositories/{REPO_ID}")))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42, "name": "my-service", "full_name": REPO_PATH,
+                "default_branch": "main", "private": false,
+                "url": "https://x.invalid/r", "html_url": "https://x.invalid/h",
+                "owner": { "login": "my-org", "id": 7, "type": "Organization" },
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let builder = octocrab::Octocrab::builder().personal_token(TOKEN.to_owned());
+    let builder = builder
+        .base_uri(server.uri())
+        .expect("the mocked base uri sets");
+    let provider = GithubProvider::from_octocrab(builder.build().expect("the test client builds"));
+    let repo = RepoRef::new("github", REPO_ID);
+    let failure = provider.list_tree(&repo, "main").await;
+    assert!(
+        failure
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("truncated")),
+        "the truncated listing refuses: {failure:?}"
+    );
+}

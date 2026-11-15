@@ -831,6 +831,29 @@ impl Provider for GithubProvider {
             .map(|pull| change_request_shape(&pull)))
     }
 
+    async fn list_tree(&self, repo: &CoreRepoRef, git_ref: &str) -> ProviderResult<Vec<String>> {
+        let github = self.client_for(repo).await?;
+        let tree = Self::repo_by_id(&github, repo)?
+            .get_tree(git_ref)
+            .recursive(true)
+            .send()
+            .await
+            .map_err(request_failure)?;
+        // GitHub truncates huge trees; an incomplete listing would
+        // silently under-discover — refuse instead (§4.13a).
+        if tree.truncated {
+            return Err(ProviderError::Request(format!(
+                "the tree of `{git_ref}` is truncated; the discovery scan refuses a partial listing"
+            )));
+        }
+        Ok(tree
+            .tree
+            .into_iter()
+            .filter(|entry| entry.r#type == "blob")
+            .map(|entry| entry.path)
+            .collect())
+    }
+
     async fn default_branch(&self, repo: &CoreRepoRef) -> ProviderResult<String> {
         let github = self.client_for(repo).await?;
         let repository = Self::repo_by_id(&github, repo)?

@@ -48,7 +48,7 @@ GitHub App's settings — nothing broader is needed:
 | Permission | Level | The calls it covers |
 |---|---|---|
 | Metadata | Read-only (mandatory) | repo lookups, `owner_name` |
-| Contents | Read & write | `create_branch` (`git refs`), `commit_files`, `read_file`, `create_tag`, `tag_sha` (git refs/tags) |
+| Contents | Read & write | `create_branch` (`git refs`), `commit_files`, `read_file`, `create_tag`, `tag_sha` (git refs/tags), `list_tree` (the recursive git-trees listing §4.13a's discovery scans match against — a truncated tree refuses, never a silent under-discovery) |
 | Pull requests | Read & write | `create_change_request`, find-by-head, get, list |
 | Issues | Read & write | `add_labels` (labels ride the issues API), `comment` |
 | Commit statuses | Read & write | `set_commit_status` (`builtin/wait-for-check`) |

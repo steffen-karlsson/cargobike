@@ -296,6 +296,15 @@ pub trait Provider: Send + Sync {
         Err(ProviderError::Unsupported)
     }
 
+    /// Lists every file path in the repository at `git_ref`,
+    /// recursively (§4.13a's discovery scan matches patterns against
+    /// the paths). A TRUNCATED listing is an error, not a silent
+    /// subset — an under-discovery must never look like a clean scan.
+    async fn list_tree(&self, repo: &RepoRef, git_ref: &str) -> ProviderResult<Vec<String>> {
+        let _ = (repo, git_ref);
+        Err(ProviderError::Unsupported)
+    }
+
     /// The repository's default branch (the branch creation base;).
     async fn default_branch(&self, repo: &RepoRef) -> ProviderResult<String>;
 
