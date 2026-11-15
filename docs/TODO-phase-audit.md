@@ -30,9 +30,15 @@
     (`GithubProvider::new_with_api_url`; the App's identity + a pinned
     `installation_id`; extension-served providers log and skip until the
     transport lands). The credentials resolve from the config's `secrets:`
-    section. The HTTP seam is a first-cut egress guard (resolved-IP
-    checks, redirects refused) — the full PRD's SSRF set (proxy, redirect
-    re-check, allow-lists) is with 5.7.
+    section. The HTTP seam runs the full F-117 SSRF set: the built-in
+    deny ranges (v4 loopback/link-local/RFC1918, v6 loopback/ULA) are
+    never removable — the `deny` list only EXTENDS, the `allow` list
+    is the one exception path — every resolved address is checked (a
+    name with one refused record is refused whole), the connect is
+    PINNED to the checked addresses (the rebinding defence), every
+    redirect hop re-passes the same gate (limit 5), the environment's
+    proxies are never consulted, and the config's explicit proxy is the
+    only one (`tests/egress_guard.rs`).
   - [x] The leader-election fence (F-131/F-136): `leader` elects on
     `pg_try_advisory_lock` over ONE dedicated held-for-life
     connection (never pooled; `leader_election.database_url` defaults

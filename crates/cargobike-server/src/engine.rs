@@ -211,115 +211,326 @@ impl cargobike_core::registry::CredentialStore for ConfigCredentials {
     }
 }
 
-/// The egress-guarded HTTP seam (the first cut): the request's host is
-/// resolved and every address checked against the network's egress
-/// rules before the call; redirects are not followed (the proxy and the
-/// redirect re-check are the remaining work; the PRD's SSRF
-/// requirements land with them).
-pub struct EgressHttpService {
-    client: reqwest::Client,
-    egress: crate::config::EgressSection,
+/// One CIDR entry: an address plus a prefix length, the deny/allow
+/// lists' unit (F-117).
+#[derive(Clone, Copy, Debug)]
+struct Cidr {
+    network: std::net::IpAddr,
+    bits: u32,
 }
 
+impl Cidr {
+    /// Parses `a.b.c.d/nn`, an IPv6 `..../nn`, or a bare address
+    /// (the full /32 or /128); a malformed entry parses to `None` and
+    /// the boot refuses the config naming it.
+    fn parse(text: &str) -> Option<Self> {
+        let (address, bits) = match text.split_once('/') {
+            Some((address, bits)) => (address, bits.parse::<u32>().ok()?),
+            None => (text, u32::MAX),
+        };
+        let network: std::net::IpAddr = address.parse().ok()?;
+        match network {
+            std::net::IpAddr::V4(_) if bits <= 32 => {}
+            std::net::IpAddr::V6(_) if bits == u32::MAX || bits <= 128 => {}
+            _ => return None,
+        }
+        Some(Self { network, bits })
+    }
+
+    /// The masked containment (an address family mismatch is false).
+    fn contains(&self, address: &std::net::IpAddr) -> bool {
+        match (self.network, *address) {
+            (std::net::IpAddr::V4(network), std::net::IpAddr::V4(address)) => {
+                let bits = self.bits.min(32);
+                let mask = if bits == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - bits)
+                };
+                (u32::from(address) & mask) == (u32::from(network) & mask)
+            }
+            (std::net::IpAddr::V6(network), std::net::IpAddr::V6(address)) => {
+                let bits = self.bits.min(128);
+                let mask = if bits == 0 {
+                    0
+                } else {
+                    u128::MAX << (128 - bits)
+                };
+                (u128::from(address) & mask) == (u128::from(network) & mask)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The parsed egress policy (F-117): the configured deny ADDITIONS and
+/// allow exceptions over the BUILT-IN ranges. The built-ins (the
+/// loopback/link-local/RFC1918/ULA grouping the PRD requires) are
+/// never removable by config — the deny list only extends, and the
+/// allow list is the one exception path (the administrator's explicit
+/// escape hatch onto the private net).
+#[derive(Clone, Debug, Default)]
+struct EgressPolicy {
+    deny: Vec<Cidr>,
+    allow: Vec<Cidr>,
+}
+
+impl EgressPolicy {
+    /// Parses the config's lists, refusing a malformed entry by name
+    /// (fail-closed: a policy that cannot be read is not a policy).
+    fn parse(section: &crate::config::EgressSection) -> Result<Self, String> {
+        let deny = section
+            .deny
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| {
+                Cidr::parse(entry)
+                    .ok_or_else(|| format!("the egress deny entry `{entry}` is not a CIDR"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let allow = section
+            .allow
+            .iter()
+            .map(|entry| {
+                Cidr::parse(entry)
+                    .ok_or_else(|| format!("the egress allow entry `{entry}` is not a CIDR"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { deny, allow })
+    }
+
+    /// One address against the whole policy: the allow exceptions win
+    /// first, then the built-in ranges, then the configured additions.
+    fn refuses(&self, address: &std::net::IpAddr) -> bool {
+        if self.allow.iter().any(|cidr| cidr.contains(address)) {
+            return false;
+        }
+        egress_builtin_refuses(address) || self.deny.iter().any(|cidr| cidr.contains(address))
+    }
+}
+
+/// The built-in deny ranges (F-117): IPv4 loopback, link-local, and
+/// RFC 1918; IPv6 loopback and unique-local. The global-scope and
+/// multicast ranges stay reachable (a provider's endpoints live
+/// there); the deny list extends when they must not.
+fn egress_builtin_refuses(address: &std::net::IpAddr) -> bool {
+    matches!(
+        address,
+        std::net::IpAddr::V4(ip) if ip.is_loopback() || ip.is_link_local() || ip.is_private()
+    ) || matches!(
+        address,
+        std::net::IpAddr::V6(ip) if ip.is_loopback() || ip.is_unique_local()
+    )
+}
+
+/// The pinned resolver: whatever name the client asks for, it gets the
+/// addresses the egress check approved — the check and the connect
+/// share ONE resolution, so a name that flips its records between the
+/// two (the DNS-rebinding attack, F-117) connects nowhere the policy
+/// has not already seen.
+struct Pinned(Vec<std::net::SocketAddr>);
+
+impl reqwest::dns::Resolve for Pinned {
+    fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let addrs = self.0.clone();
+        Box::pin(async move { Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs) })
+    }
+}
+
+/// The egress-guarded HTTP seam (F-117's full set): every hop — the
+/// first request and each redirect — resolves its host, checks EVERY
+/// resolved address against the policy (a name with one refused record
+/// is refused: mixed records are the rebinding attack's shape),
+/// connects through a resolver pinned to the checked addresses, and
+/// re-checks on every redirect. The proxy is the config's explicit one
+/// or none at all — the environment's `HTTP(S)_PROXY`/`NO_PROXY` are
+/// never consulted, and the deny-list applies to the requested host
+/// before any proxying.
+pub struct EgressHttpService {
+    policy: EgressPolicy,
+    proxy: Option<String>,
+}
+
+/// The redirect chain's bound (each hop pays a fresh egress check;
+/// a loop that never lands is an error, not a hang).
+const EGRESS_REDIRECT_LIMIT: usize = 5;
+
 impl EgressHttpService {
-    /// Builds the service with the config's egress rules (the rules are
-    /// a boot-time snapshot; a reload restarts the hosting).
+    /// Builds the service with the config's egress rules (the rules
+    /// are a boot-time snapshot; a reload restarts the hosting). A
+    /// malformed deny/allow entry refuses the boot naming it.
     pub fn new(config: &Config) -> Result<Self, String> {
-        // Redirects are refuted for now: each hop's egress check is the
-        // full policy work.
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("cargobike-server/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|failure| format!("the outbound client refused to build: {failure}"))?;
         Ok(Self {
-            client,
-            egress: config.network.egress.clone(),
+            policy: EgressPolicy::parse(&config.network.egress)?,
+            proxy: config.network.egress.proxy.clone(),
         })
     }
 
-    async fn egress_refuses(&self, url: &str) -> Result<(), HttpError> {
-        let parsed = url::Url::parse(url)
-            .map_err(|failure| HttpError::Other(format!("the url refused to parse: {failure}")))?;
-        let Some(host) = parsed.host_str() else {
-            return Err(HttpError::Forbidden("the url carries no host".to_owned()));
+    /// Resolves the hop's host and checks every address against the
+    /// policy; the returned addresses are the ONLY ones the connect
+    /// may use (the pinning is F-117's rebinding defence).
+    async fn resolve_and_check(
+        &self,
+        url: &url::Url,
+    ) -> Result<Vec<std::net::SocketAddr>, HttpError> {
+        // The host form (a bracketed IPv6 literal parses here, not as
+        // a name with brackets).
+        enum HopHost {
+            Literal(std::net::IpAddr),
+            Name(String),
+        }
+        let host = match url.host() {
+            Some(url::Host::Domain(name)) => HopHost::Name(name.to_owned()),
+            Some(url::Host::Ipv4(address)) => HopHost::Literal(std::net::IpAddr::V4(address)),
+            Some(url::Host::Ipv6(address)) => HopHost::Literal(std::net::IpAddr::V6(address)),
+            None => {
+                return Err(HttpError::Forbidden("the url carries no host".to_owned()));
+            }
         };
-        // The resolved addresses decide (the literal host's own check
-        // rides the resolution: both a name and an IP land here).
-        let resolved: Vec<std::net::IpAddr> = match host.parse::<std::net::IpAddr>() {
-            Ok(address) => vec![address],
-            Err(_) => tokio::net::lookup_host(format!("{host}:80"))
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| HttpError::Other("the url's scheme carries no port".to_owned()))?;
+        let resolved: Vec<std::net::SocketAddr> = match host {
+            HopHost::Literal(address) => vec![std::net::SocketAddr::new(address, port)],
+            HopHost::Name(name) => tokio::net::lookup_host((name.as_str(), port))
                 .await
                 .map_err(|failure| {
                     HttpError::Connect(format!("the host's resolution failed: {failure}"))
                 })?
-                .map(|socket| socket.ip())
                 .collect(),
         };
-        for address in &resolved {
-            if egress_address_refuses(address, &self.egress) {
+        if resolved.is_empty() {
+            return Err(HttpError::Connect(
+                "the host resolved to no address".to_owned(),
+            ));
+        }
+        for socket in &resolved {
+            if self.policy.refuses(&socket.ip()) {
                 return Err(HttpError::Forbidden(format!(
-                    "blocked by the egress rules: {address}"
+                    "blocked by the egress rules: {}",
+                    socket.ip()
                 )));
             }
         }
-        Ok(())
+        Ok(resolved)
     }
-}
 
-/// Whether one resolved address is refused by the egress rules (the
-/// built-in deny ranges plus the config's).
-fn egress_address_refuses(
-    address: &std::net::IpAddr,
-    rules: &crate::config::EgressSection,
-) -> bool {
-    let _ = rules;
-    // The built-in ranges first (the loopback/link-local/RFC1918/ULA
-    // grouping the PRD requires); allowlist exceptions refine later.
-    matches!(
-        address,
-        std::net::IpAddr::V4(ip) if ip.is_loopback() || ip.is_link_local() || ip.is_private()
-    ) || matches!(address, std::net::IpAddr::V6(ip) if ip.is_loopback() || ip.is_unique_local())
+    /// The per-hop client: redirects off (the loop above owns them),
+    /// the environment's proxies suppressed (the config's proxy is
+    /// the only one, F-117), and the resolver pinned to the checked
+    /// addresses. Built per hop: the pin is per resolution.
+    fn pinned_client(
+        &self,
+        addrs: Vec<std::net::SocketAddr>,
+    ) -> Result<reqwest::Client, HttpError> {
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("cargobike-server/", env!("CARGO_PKG_VERSION")))
+            // F-117: the environment's proxies are never consulted —
+            // the config's proxy is the only one.
+            .no_proxy();
+        match &self.proxy {
+            Some(proxy) => {
+                // Through a proxy the connection's addressing belongs
+                // to the proxy (the admin's own escape hatch); the
+                // deny-list applied to the REQUESTED host above is the
+                // policy, and no pin is meaningful here — the client
+                // would resolve the proxy with the target's pinned
+                // addresses.
+                let proxy = reqwest::Proxy::all(proxy).map_err(|failure| {
+                    HttpError::Other(format!("the configured egress proxy is invalid: {failure}"))
+                })?;
+                builder = builder.proxy(proxy);
+            }
+            None => {
+                builder = builder.dns_resolver(std::sync::Arc::new(Pinned(addrs)));
+            }
+        }
+        builder.build().map_err(|failure| {
+            HttpError::Other(format!("the outbound client refused to build: {failure}"))
+        })
+    }
 }
 
 #[async_trait]
 impl cargobike_core::step::HttpService for EgressHttpService {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
-        self.egress_refuses(&request.url).await?;
-        let method = <reqwest::Method as std::str::FromStr>::from_str(&request.method)
-            .map_err(|failure| HttpError::Other(failure.to_string()))?;
-        let mut built = self.client.request(method, &request.url);
-        for (name, value) in &request.headers {
-            built = built.header(name.as_str(), value.as_str());
+        let mut url = url::Url::parse(&request.url)
+            .map_err(|failure| HttpError::Other(format!("the url refused to parse: {failure}")))?;
+        let mut method = request.method.clone();
+        let mut body = request.body.clone();
+        for _hop in 0..EGRESS_REDIRECT_LIMIT {
+            let pinned = self.resolve_and_check(&url).await?;
+            let client = self.pinned_client(pinned)?;
+            let parsed_method = <reqwest::Method as std::str::FromStr>::from_str(&method)
+                .map_err(|failure| HttpError::Other(failure.to_string()))?;
+            let mut built = client.request(parsed_method, url.clone());
+            for (name, value) in &request.headers {
+                built = built.header(name.as_str(), value.as_str());
+            }
+            if let Some(body) = &body {
+                built = built.body(body.clone());
+            }
+            let response = built
+                .send()
+                .await
+                .map_err(|failure| HttpError::Connect(failure.to_string()))?;
+            let status = response.status();
+            // F-117's redirect re-check: every hop passes the same
+            // gate. A 3xx without a Location is the step's answer (the
+            // response is returned, not an error).
+            let redirected = if status.is_redirection() {
+                response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .map(|location| {
+                        url.join(location)
+                            .map_err(|failure| HttpError::Other(failure.to_string()))
+                    })
+            } else {
+                None
+            };
+            match redirected {
+                Some(Ok(next)) => {
+                    url = next;
+                    // 303's semantics: the follow-up is a GET with no
+                    // body (RFC 9110; the others keep the method).
+                    if status.as_u16() == 303 {
+                        method = "GET".to_owned();
+                        body = None;
+                    }
+                }
+                Some(Err(failure)) => return Err(failure),
+                None => {
+                    let status = status.as_u16();
+                    let headers = response
+                        .headers()
+                        .iter()
+                        .map(|(name, value)| {
+                            (
+                                name.as_str().to_owned(),
+                                value.to_str().unwrap_or_default().to_owned(),
+                            )
+                        })
+                        .collect();
+                    let body = response
+                        .bytes()
+                        .await
+                        .map_err(|failure| HttpError::Connect(failure.to_string()))?
+                        .to_vec();
+                    return Ok(HttpResponse {
+                        status,
+                        headers,
+                        body,
+                    });
+                }
+            }
         }
-        if let Some(body) = &request.body {
-            built = built.body(body.clone());
-        }
-        let response = built
-            .send()
-            .await
-            .map_err(|failure| HttpError::Connect(failure.to_string()))?;
-        let status = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| {
-                (
-                    name.as_str().to_owned(),
-                    value.to_str().unwrap_or_default().to_owned(),
-                )
-            })
-            .collect();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|failure| HttpError::Connect(failure.to_string()))?
-            .to_vec();
-        Ok(HttpResponse {
-            status,
-            headers,
-            body,
-        })
+        Err(HttpError::Other(
+            "the redirect chain exceeded the limit".to_owned(),
+        ))
     }
 }
 

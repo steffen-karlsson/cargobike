@@ -52,6 +52,11 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
 - Integration tests boot the *real* server in-process on an ephemeral port
  (`tests/authed_lifecycle.rs`); prefer that over handler unit tests so the
  middleware stack and problem documents stay exercised.
+- Egress tests (`tests/egress_guard.rs`) need NO database: they build
+  `EgressHttpService` from a temp config and drive raw TCP listeners.
+  Config paths are per-call (the binary's tests race on a shared one),
+  and YAML in Rust strings uses raw `\n` — never line continuations
+  (a continuation eats the next line's leading spaces).
 - Restart-recovery tests (`tests/restart_recovery.rs`) emulate the
  dead process with `engine.instance.shutdown()`: DBOS's control-signal
  semantics leave every interrupted workflow row PENDING — the same
