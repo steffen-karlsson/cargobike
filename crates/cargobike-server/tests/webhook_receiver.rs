@@ -678,9 +678,20 @@ async fn test_out_of_allowlist_deliveries_are_acknowledged_and_ignored() {
             .json::<serde_json::Value>()
             .await
             .expect("the release's document");
+        // The CR records, OR the release is TERMINAL without one: the
+        // suite's tests contend for the (tag-service, preview) lease
+        // in parallel, and a lower version's create is REJECTED (not
+        // superseded — `ConcurrencyRejected`, phase Failed) while a
+        // sibling test's higher version holds it. Terminal without a
+        // CR is still drainable: the delete is the fixture hygiene.
+        let terminal = document
+            .pointer("/status/phase")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|phase| matches!(phase, "Failed" | "Superseded" | "Canceled"));
         if document
             .pointer("/status/environments/0/change_request/number")
             .is_some_and(|number| !number.is_null())
+            || terminal
         {
             break;
         }

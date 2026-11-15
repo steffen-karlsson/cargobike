@@ -79,6 +79,11 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
  reload test's log file).
 - OIDC roundtrips mint an RS256 token locally (no network). Keep the JWKS
  fixture self-contained; never test against live issuers.
+- The webhook suite's tests contend for (tag-service, preview) in
+  parallel BY DESIGN (the moot-cancel convention): a LOWER version's
+  create is rejected outright (`ConcurrencyRejected`, phase Failed)
+  while a sibling's higher version holds the lease — a drain's wait
+  breaks on TERMINAL, not only on the recorded CR.
 - Mock-state lookups are run-specific: the scratch (and its state.json)
   persists across runs, so a find-by-title can be shadowed by an
   earlier run's leftover CR — key on the release document's CR NUMBER
