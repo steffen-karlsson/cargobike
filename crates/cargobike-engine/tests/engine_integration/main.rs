@@ -1313,21 +1313,33 @@ async fn test_approval_signal_wakes_the_parked_wait() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let parked = query_release(&pool, &release_id).await;
-    assert_eq!(
-        parked
+    // The park is POLLED, not assumed: the CR-open observable above and
+    // the status step's PendingApproval write are separate commits — a
+    // slow runner can read the document between them (seen flaky in
+    // CI's test job; the CR is open, the phase still Running).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let parked = query_release(&pool, &release_id).await;
+        let parked_on_approval = parked
             .pointer("/status/environments/0/phase")
-            .and_then(serde_json::Value::as_str),
-        Some("PendingApproval"),
-        "the environment parks on the approval wait"
-    );
-    assert_eq!(
-        parked
-            .pointer("/status/environments/0/pending_step")
-            .and_then(serde_json::Value::as_str),
-        Some("approval-gate"),
-        "the pending step is the approval wait (F-20b's binding)"
-    );
+            .and_then(serde_json::Value::as_str)
+            == Some("PendingApproval");
+        if parked_on_approval {
+            assert_eq!(
+                parked
+                    .pointer("/status/environments/0/pending_step")
+                    .and_then(serde_json::Value::as_str),
+                Some("approval-gate"),
+                "the pending step is the approval wait (F-20b's binding)"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the environment never parked on the approval wait; document {parked}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 
     // The decision: approve — the workflow sends the signal and
     // appends the event.

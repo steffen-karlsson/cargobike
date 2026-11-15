@@ -48,6 +48,11 @@ project-wide rules live in the root [`AGENTS.md`](../../AGENTS.md).
  webhook receiver's end-to-end lives with the server
  (`crates/cargobike-server/tests/webhook_receiver.rs`) because the
  receiver is server-hosted.
+- Phase observables are POLLED, never assumed off a related observable:
+ the mock's CR-open and the status step's phase write are separate
+ commits — a slow runner reads the document between them (the approval
+ park assert went red in CI exactly there). Poll the phase itself with
+ a deadline.
 - Crash hooks are feature-gated: `--features crash-hooks` compiles
  `mock`, `crash::milestone_maybe` and the harness bin. Without the feature
  they are inert — production builds take none of that path.
