@@ -1,105 +1,37 @@
-//! Registry and trust validation at load (,
-//! ).
+//! Registry validation's I/O halves: the template-directory loader and
+//! the boot-time wrapper over the pure rules in
+//! `cargobike-core::validation` (F-80, F-96's wiring, F-99a, F-147).
 //!
-//! Pure checks over the loaded config: boot refuses a semantically broken
-//! registry instead of starting half-authorised. Template files are read
-//! from `templates.directory` (the file name is free, the parsed
-//! `name`/`version` must match the registry's `name@version` reference).
+//! The server's boot reads `templates.directory` and parses each
+//! template (the file name is free; the parsed `name`/`version` must
+//! match the registry's `name@version` reference), then runs the
+//! shared rules. Boot additionally parses every API-key hash with
+//! argon2 itself — the exact "a hash `hash-api-key` produces" check
+//! the offline (argon2-free) shape rule approximates.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use cargobike_core::template::{PipelineTemplate, WaitKind};
+use cargobike_core::config::Config;
+use cargobike_core::template::PipelineTemplate;
+use cargobike_core::validation::TemplateMap;
 
-/// A semantic validation failure; boot refuses to start.
-#[derive(Debug, thiserror::Error)]
-pub enum ValidationError {
-    /// The referenced principal does not exist.
-    #[error("validation failed: {context}: {problem}")]
-    Reference {
-        /// Where the failure happened.
-        context: String,
-        /// What is wrong.
-        problem: String,
-    },
-    /// A rule that the config alone must satisfy.
-    #[error("validation failed: {0}")]
-    Rule(String),
+pub use cargobike_core::validation::{ValidationError, check_placeholders};
+
+/// Validates the whole config (the semantic layer): loads the template
+/// directory, runs the shared pure rules, and parses the API-key
+/// hashes with argon2 (the boot-exact producer check).
+pub fn validate(config: &Config) -> Result<(), ValidationError> {
+    let templates = load_templates(&Arc::new(config.clone()))?;
+    cargobike_core::validation::validate(config, &templates)?;
+    check_api_key_hashes(config)
 }
 
-impl From<serde_yaml_ng::Error> for ValidationError {
-    fn from(error: serde_yaml_ng::Error) -> Self {
-        ValidationError::Rule(format!("failed to parse template: {error}"))
-    }
-}
-
-/// Validates the whole config (the semantic layer). Template files load from
-/// `templates.directory` (a missing directory with no applications is not
-/// an error; with applications it is).
-pub fn validate(config: &crate::config::Config) -> Result<(), ValidationError> {
-    check_oidc_entries(config)?;
-    check_api_keys(config)?;
-    check_releaser_references(config)?;
-    check_apply_policy_invariants(config)?;
-    check_versioning(config)?;
-    check_environment_placeholders(config)?;
-    check_group_references(config)
-}
-
-/// F-147's validation half for the per-environment format strings:
-/// `commit_message` and `change_request.{title,body}` accept exactly
-/// the documented placeholders; unknown ones are boot errors, not
-/// values passed through for the provisioner to trip on later.
-fn check_environment_placeholders(config: &crate::config::Config) -> Result<(), ValidationError> {
-    const ALLOWED: [&str; 5] = [
-        "{application}",
-        "{environment}",
-        "{version}",
-        "{release_id}",
-        "{release_url}",
-    ];
-    for app in &config.applications {
-        for (name, entry) in &app.environments {
-            let context = format!("application `{}` environment `{name}`", app.name);
-            if let Some(message) = entry.commit_message.as_deref() {
-                check_placeholders(&context, "commit_message", message, &ALLOWED)?;
-            }
-            if let Some(overrides) = &entry.change_request {
-                if let Some(title) = overrides.title.as_deref() {
-                    check_placeholders(&context, "change_request.title", title, &ALLOWED)?;
-                }
-                if let Some(body) = overrides.body.as_deref() {
-                    check_placeholders(&context, "change_request.body", body, &ALLOWED)?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// claim constraints are mandatory unless `allow_unconstrained`.
-fn check_oidc_entries(config: &crate::config::Config) -> Result<(), ValidationError> {
-    for entry in &config.auth.oidc {
-        if entry.claims.is_empty() && !entry.allow_unconstrained {
-            return Err(ValidationError::Rule(format!(
-                "the OIDC trust entry `{}` has no claim constraint; set claims or allow_unconstrained: true",
-                entry.name
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// a named API key must be unique and present a hash.
-fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError> {
-    let mut named: std::collections::HashSet<&str> = std::collections::HashSet::new();
+/// Every API-key hash parses as a real argon2 PHC string — the exact
+/// shape `cargobike-server hash-api-key` produces (the shared shape
+/// rule already refuses the obvious garbage offline).
+fn check_api_key_hashes(config: &Config) -> Result<(), ValidationError> {
     for entry in &config.auth.api_keys {
-        if !named.insert(&entry.name) {
-            return Err(ValidationError::Rule(format!(
-                "the API key `{}` is declared twice (rotation means two DIFFERENT names that are both active)",
-                entry.name
-            )));
-        }
         if argon2::password_hash::PasswordHash::new(&entry.hash).is_err() {
             return Err(ValidationError::Rule(format!(
                 "the API key `{}` carries a hash that `cargobike-server hash-api-key` does not produce",
@@ -110,156 +42,8 @@ fn check_api_keys(config: &crate::config::Config) -> Result<(), ValidationError>
     Ok(())
 }
 
-/// `releasers` selectors reference existing entries and those
-/// entries must grant `release:create`.
-fn check_releaser_references(config: &crate::config::Config) -> Result<(), ValidationError> {
-    let oidc_names: BTreeMap<&str, &crate::config::OidcEntry> = config
-        .auth
-        .oidc
-        .iter()
-        .map(|entry| (entry.name.as_str(), entry))
-        .collect();
-    let api_key_names: BTreeMap<&str, &crate::config::ApiKeyEntry> = config
-        .auth
-        .api_keys
-        .iter()
-        .map(|entry| (entry.name.as_str(), entry))
-        .collect();
-    for app in &config.applications {
-        let context = format!("application `{}`", app.name);
-        for selector in &app.releasers {
-            match selector {
-                crate::config::PrincipalSelector::Oidc { oidc } => {
-                    let entry = oidc_names.get(oidc.as_str()).ok_or_else(|| {
-                        ValidationError::Reference {
-                            context: context.clone(),
-                            problem: format!(
-                                "the releaser references unknown OIDC trust entry `{oidc}`"
-                            ),
-                        }
-                    })?;
-                    if !entry
-                        .grants
-                        .iter()
-                        .any(|g| g == "*" || g == "release:create")
-                    {
-                        return Err(ValidationError::Reference {
-                            context: context.clone(),
-                            problem: format!(
-                                "the releaser references `{oidc}`, which does not grant `release:create`"
-                            ),
-                        });
-                    }
-                    // (the b): a releaser's `ref` glob must be able to match tag_format.
-                    if let (Some(tag_format), Some(ref_claim)) = (
-                        app.versioning.tag_format.as_deref(),
-                        entry.claims.get("ref").and_then(serde_json::Value::as_str),
-                    ) {
-                        if !ref_may_match_tag(ref_claim, tag_format) {
-                            return Err(ValidationError::Reference {
-                                context: context.clone(),
-                                problem: format!(
-                                    "the releaser claim `ref: {ref_claim}` can never match the tag format `{tag_format}`"
-                                ),
-                            });
-                        }
-                    }
-                }
-                crate::config::PrincipalSelector::ApiKey { api_key } => {
-                    api_key_names.get(api_key.as_str()).ok_or_else(|| {
-                        ValidationError::Reference {
-                            context: context.clone(),
-                            problem: format!("the releaser references unknown API key `{api_key}`"),
-                        }
-                    })?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// A `ref` claim glob can plausibly match the tag format ((the b)): the
-/// claim glob's literal prefix must cover the COMPOSED tag ref's literal
-/// prefix — a real tag lives at `refs/tags/{tag_format}`, so
-/// `refs/tags/v*` covers `v{version}`; `release-*` does not.
-fn ref_may_match_tag(claim_glob: &str, tag_format: &str) -> bool {
-    // The claim glob's literal prefix is everything before its first
-    // wildcard or escape; the tag's real ref is `refs/tags/<format>`
-    // ((the b)'s composed form), so the claim prefix must cover it.
-    if claim_glob == "~ALL" {
-        return true;
-    }
-    let claim_prefix = claim_glob.split(['*', '?', '[', '\\']).next().unwrap_or("");
-    let tag_ref_prefix = format!("refs/tags/{}", tag_format.split('{').next().unwrap_or(""));
-    tag_ref_prefix.starts_with(claim_prefix)
-}
-
-/// every environment with an `approval` block must have a template
-/// `wait: approval` step; : `api_key` approvers refuse unless
-/// `allow_machine_approvers: true`; selectors must exist and grant the
-/// right request.
-fn check_apply_policy_invariants(config: &crate::config::Config) -> Result<(), ValidationError> {
-    let templates = load_templates(&Arc::new(config.clone()))?;
-    let repositories = &config.applications;
-    for app in repositories {
-        for (env_name, env) in &app.environments {
-            let Some(policy) = &env.approval else {
-                continue;
-            };
-            let template_name_version = &app.template;
-            let template =
-                template_for_name_version(&templates, template_name_version, app, env_name)?;
-            if !template_has_approval_step(template, env_name) {
-                return Err(ValidationError::Reference {
-                    context: format!("application `{}` environment `{env_name}`", app.name),
-                    problem: "the registry declares an `approval` block but the template has no `wait: approval` step for this environment".to_owned(),
-                });
-            }
-            for selector in &policy.approvers {
-                if let crate::config::PrincipalSelector::ApiKey { api_key } = selector {
-                    if !policy.allow_machine_approvers {
-                        return Err(ValidationError::Reference {
-                            context: format!("application `{}` environment `{env_name}`", app.name),
-                            problem: format!(
-                                "an approver references the API key `{api_key}`; machine approvers need `allow_machine_approvers: true`"
-                            ),
-                        });
-                    }
-                }
-                if let crate::config::PrincipalSelector::Oidc { oidc } = selector {
-                    let grants = config
-                        .auth
-                        .oidc
-                        .iter()
-                        .find(|entry| entry.name == *oidc)
-                        .ok_or_else(|| ValidationError::Reference {
-                            context: format!("application `{}` environment `{env_name}`", app.name),
-                            problem: format!(
-                                "the approver references unknown OIDC trust entry `{oidc}`"
-                            ),
-                        })?
-                        .grants
-                        .clone();
-                    if !grants.iter().any(|g| g == "*" || g == "release:approve") {
-                        return Err(ValidationError::Reference {
-                            context: format!("application `{}` environment `{env_name}`", app.name),
-                            problem: format!(
-                                "the approver references `{oidc}`, which does not grant `release:approve`"
-                            ),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Every parsed template in the directory (the deduped by name@version).
-pub fn load_templates(
-    config: &Arc<crate::config::Config>,
-) -> Result<BTreeMap<(String, String), PipelineTemplate>, ValidationError> {
+/// Every parsed template in the directory (deduped by name@version).
+pub fn load_templates(config: &Arc<Config>) -> Result<TemplateMap, ValidationError> {
     let directory = &config.templates.directory;
     let mut map = BTreeMap::new();
     let Ok(entries) = std::fs::read_dir(directory) else {
@@ -286,168 +70,12 @@ pub fn load_templates(
     Ok(map)
 }
 
-/// Resolves the app's template (the `name@version` reference).
-fn template_for_name_version<'a>(
-    templates: &'a BTreeMap<(String, String), PipelineTemplate>,
-    reference: &str,
-    app: &crate::config::ApplicationEntry,
-    env_name: &str,
-) -> Result<&'a PipelineTemplate, ValidationError> {
-    let (name, version) = reference
-        .split_once('@')
-        .ok_or_else(|| ValidationError::Reference {
-            context: format!(
-                "application `{app}`, environment `{env_name}`",
-                app = app.name
-            ),
-            problem: format!("the template reference `{reference}` is not `name@version`"),
-        })?;
-    templates
-        .get(&(name.to_owned(), version.to_owned()))
-        .ok_or_else(|| ValidationError::Reference {
-            context: format!("application `{}` environment `{env_name}`", app.name),
-            problem: format!("the template `{name}@{version}` is not in the templates directory"),
-        })
-}
-
-/// Whether the template environment's steps contain a `wait: approval`
-/// control step (the invariant).
-fn template_has_approval_step(template: &PipelineTemplate, environment: &str) -> bool {
-    template
-        .environments
-        .iter()
-        .filter(|spec| spec.name == environment)
-        .flat_map(|spec| &spec.steps)
-        .any(|step| step.wait == Some(WaitKind::Approval))
-}
-
-/// versioning scheme is one of the kebab values and the
-/// format strings use their documented placeholders.
-fn check_versioning(config: &crate::config::Config) -> Result<(), ValidationError> {
-    for app in &config.applications {
-        let scheme_ok = ["semver", "calver", "opaque"]
-            .iter()
-            .any(|allowed| *allowed == app.versioning.scheme);
-        if !scheme_ok {
-            return Err(ValidationError::Rule(format!(
-                "the application `{}` declares unknown versioning scheme `{}` (semver, calver, opaque)",
-                app.name, app.versioning.scheme
-            )));
-        }
-        if let Some(tag_format) = app.versioning.tag_format.as_deref() {
-            check_placeholders(
-                &format!("application `{}`", app.name),
-                "versioning.tag_format",
-                tag_format,
-                &["{version}"],
-            )?;
-        }
-    }
-    check_placeholders(
-        "engine",
-        "engine.branch_format",
-        &config.engine.branch_format,
-        &["{application}", "{environment}", "{release_id}"],
-    )
-}
-
-/// The placeholder check: unknown placeholders are errors (the not
-/// passed through); `{{`/`}}` are literal-brace escapes.
-pub fn check_placeholders(
-    context: &str,
-    field: &str,
-    value: &str,
-    allowed: &[&str],
-) -> Result<(), ValidationError> {
-    let mut rest = value.as_bytes();
-    while let Some(open) = find_brace(rest) {
-        rest = &rest[open + 1..];
-        let Some(close) = rest.iter().position(|b| *b == b'}') else {
-            break;
-        };
-        let token = std::str::from_utf8(&rest[..close]).unwrap_or("");
-        if token.starts_with('{') || token.is_empty() || token.chars().all(|c| c == '{' || c == '}')
-        {
-            rest = &rest[1..]; // literal brace escape pair
-            continue;
-        }
-        let placeholder = format!("{{{token}}}");
-        if !allowed.contains(&placeholder.as_str()) {
-            return Err(ValidationError::Rule(format!(
-                "the {context} {field} placeholder `{placeholder}` is not documented (allowed: {allowed:?})"
-            )));
-        }
-        rest = &rest[close + 1..];
-    }
-    Ok(())
-}
-
-fn find_brace(rest: &[u8]) -> Option<usize> {
-    rest.iter().position(|c| *c == b'{')
-}
-
-/// `extends` names an existing group.
-fn check_group_references(config: &crate::config::Config) -> Result<(), ValidationError> {
-    let groups: std::collections::HashSet<&str> = config
-        .application_groups
-        .iter()
-        .map(|g| g.name.as_str())
-        .collect();
-    for app in &config.applications {
-        if let Some(group) = &app.extends {
-            if !groups.contains(group.as_str()) {
-                return Err(ValidationError::Reference {
-                    context: format!("application `{}`", app.name),
-                    problem: format!("`extends` names the unknown group `{group}`"),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_ref_may_match_tag_composes_the_refs_tags_prefix() {
-        use super::*;
-
-        // The documented canonical pair: the agree case.
-        assert!(ref_may_match_tag("refs/tags/v*", "v{version}"));
-        assert!(ref_may_match_tag("refs/tags/**", "v{version}"));
-        // The (the b)'s documented misconfiguration: the prefixes
-        // cannot fit (`release-` never covers `refs/tags/v`).
-        assert!(!ref_may_match_tag("refs/tags/release-*", "v{version}"));
-        assert!(!ref_may_match_tag("refs/tags/v*", "release-{version}"));
-        // `~ALL` covers everything.
-        assert!(ref_may_match_tag("~ALL", "v{version}"));
-    }
-
-    use super::*;
-    use serde_yaml_ng::from_str;
-
-    fn config(yaml: &str) -> Arc<crate::config::Config> {
-        Arc::new(from_str(yaml).expect("config"))
-    }
-
-    #[test]
-    fn test_unconstrained_oidc_entries_are_refused() {
-        let config = config(
-            "server: {}\ndatabase: { url: postgres://x }\nauth:\n  oidc:\n    - name: open\n      issuer: https://issuer\n      audience: cargobike\n      grants: [release:create]\n",
-        );
-        assert!(check_oidc_entries(&config).is_err());
-    }
-
-    #[test]
-    fn test_releaser_without_release_create_grant_is_refused() {
-        let config = config(
-            "server: {}\ndatabase: { url: postgres://x }\nauth:\n  oidc:\n    - name: gha\n      issuer: https://issuer\n      audience: cargobike\n      claims:\n        repository_owner_id: \"1\"\n      grants: [release:read]\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    releasers:\n      - oidc: gha\n    environments: {}\n",
-        );
-        assert!(check_releaser_references(&config).is_err());
-    }
-
-    #[test]
     fn test_api_key_approvers_refuse_machines_by_default() {
+        use serde_yaml_ng::from_str;
+
         // The template invariant first requires a wait-approval
         // step, so the refusal needs a REAL template at a temp
         // directory; validate walks the whole surface.
@@ -460,8 +88,8 @@ mod tests {
         )
         .expect("the template");
         let yaml = "server: {}\ndatabase: { url: postgres://x }\ntemplates:\n  directory: TEMP\nauth:\n  api_keys:\n    - name: key\n      hash: \"$argon2id$v=19$m=32768,t=3,p=4$ZGVw\"\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    releasers:\n      - api_key: key\n    environments:\n      production:\n        approval:\n          required: 1\n          approvers:\n            - api_key: key\n".replace("TEMP", directory.to_str().expect("temp path"));
-        let config = config(&yaml);
-        let failure = validate(&config);
+        let config: crate::config::Config = from_str(&yaml).expect("config");
+        let failure = super::validate(&config);
         assert!(
             failure
                 .as_ref()
@@ -472,18 +100,21 @@ mod tests {
         let _ = std::fs::remove_dir(&directory);
     }
 
+    /// The boot-exact argon2 layer: a PHC-shaped string whose
+    /// parameters argon2 cannot parse (the overflow) refuses at boot
+    /// even though the offline shape rule passes it.
     #[test]
-    fn test_tag_format_placeholder_violation_is_refused() {
-        let config = config(
-            "server: {}\ndatabase: { url: postgres://x }\nauth: {}\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    versioning: { scheme: semver, tag_format: \"v{release}\" }\n    environments: {}\n",
-        );
-        assert!(check_versioning(&config).is_err());
-    }
+    fn test_boot_refuses_hashes_argon2_cannot_parse() {
+        use serde_yaml_ng::from_str;
 
-    #[test]
-    fn test_branch_format_documented_placeholders_pass() {
-        let yaml = "server: {}\ndatabase: { url: postgres://x }\nauth: {}\napplications: []\n";
-        let config = config(yaml);
-        check_versioning(&config).expect("documented defaults pass");
+        let yaml = "server: {}\ndatabase: { url: postgres://x }\nauth:\n  api_keys:\n    - name: key\n      hash: \"$argon2id$v=19$m=99999999999999999999,t=3,p=4$c2FsdA$ZGlnZXN0\"\n";
+        let config: crate::config::Config = from_str(yaml).expect("config");
+        let failure = super::validate(&config);
+        assert!(
+            failure
+                .as_ref()
+                .is_err_and(|value| value.to_string().contains("hash-api-key")),
+            "the unparseable-parameter hash refuses at boot: {failure:?}"
+        );
     }
 }

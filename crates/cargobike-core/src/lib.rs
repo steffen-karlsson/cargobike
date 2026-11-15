@@ -18,6 +18,7 @@ pub mod provider;
 pub mod registry;
 pub mod step;
 pub mod template;
+pub mod validation;
 pub mod version;
 pub mod webhook;
 
