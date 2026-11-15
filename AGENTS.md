@@ -65,23 +65,23 @@ behaviour rule.
 - Before any commit, run the four gates:
 
 ```bash
-make lint # fmt --check + clippy -D warnings
+make lint # fmt --check + clippy -D warnings + cargo-deny (the supply chain)
 make test # all tests
 make build # workspace compiles
 make docs-check # crate README/AGENTS currency for the changes at hand
 ```
 
 If any fails, fix before committing; never commit failing code (PRD §20.2).
-CI additionally runs cargo-deny, the wasm32-wasip2 build of `cargobike-core`
-(the wasm build check), and the four-platform build matrix
+CI additionally runs the wasm32-wasip2 build of `cargobike-core`
+(the wasm build check) and the four-platform build matrix
 (`.github/workflows/ci.yml`); on pull requests the CI also runs the
 coverage (`cargo llvm-cov`) and security-audit (`cargo audit`) reports as
 concise comments on the PR.
 The first three gates are also the pre-commit hook's (`make hooks`
 installs it; git's `hooksPath` points at `.githooks`): a commit whose
-staged changes fail fmt, clippy, or the documentation currency is
-refused outright. Bypassing with `--no-verify` counts as a review
-failure.
+staged changes fail fmt, clippy, cargo-deny, or the documentation
+currency is refused outright. Bypassing with `--no-verify` counts as a
+review failure.
 
 ## How to document
 

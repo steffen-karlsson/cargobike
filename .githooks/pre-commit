@@ -1,10 +1,12 @@
 #!/bin/sh
-# The pre-commit gate: lint, clippy and the documentation currency are
-# HARD gates — a commit with a failing one of these is refused. Full tests
-# run in CI and via `make test` (they need a database, which a commit
-# should not).
+# The pre-commit gate: fmt, clippy, the supply-chain policy (cargo-deny)
+# and the documentation currency are HARD gates — a commit with a failing
+# one of these is refused. Full tests run in CI and via `make test` (they
+# need a database, which a commit should not).
 #
 # Install: `make hooks` (sets git's hooksPath to .githooks).
+# cargo-deny itself: `cargo install cargo-deny --locked` (the advisory DB
+# fetches on the first `cargo deny check`).
 # Bypassing with --no-verify is a review-events failure per AGENTS.md.
 
 set -u
@@ -25,6 +27,12 @@ if [ -n "$(git diff --cached -w --name-only --diff-filter=ACMR)" ]; then
     step "cargo clippy --all-targets -- -D warnings"
     if ! cargo clippy --all-targets -- -D warnings; then
         printf 'pre-commit: FAIL clippy; fix the lints and re-stage\n'
+        fail=1
+    fi
+
+    step "cargo deny check"
+    if ! cargo deny check; then
+        printf 'pre-commit: FAIL cargo-deny (advisories/bans/licences); fix the tree or the policy in deny.toml, or `cargo install cargo-deny --locked` if the binary is missing\n'
         fail=1
     fi
 
