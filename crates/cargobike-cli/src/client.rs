@@ -233,7 +233,17 @@ mod tests {
     use crate::config::{AuthConfig, OutputFormat, Resolved};
 
     #[tokio::test(flavor = "current_thread")]
+    // The std guard holds across awaits ON PURPOSE (current-thread
+    // runtime; the serialisation is the point — see the lock's doc).
+    #[allow(clippy::await_holding_lock)]
     async fn test_bearer_for_each_auth_shape() {
+        // The env-mutating Actions tests serialise on one lock: the
+        // env is process-global and the lib's tests run in parallel
+        // (the remove-then-mint window otherwise races the wiremock
+        // exchange test's LIVE mock URL — seen red in CI).
+        let _env = crate::ci::ACTIONS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // None: no bearer; github-actions without the Actions env
         // refuses (the exchange needs the runtime environment).
         assert!(bearer_for(&AuthConfig::None).await.unwrap().is_none());

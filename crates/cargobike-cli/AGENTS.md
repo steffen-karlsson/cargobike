@@ -47,7 +47,11 @@ cargo test -p cargobike-cli
  clean up — no global ambient state across tests. Tests must not DEPEND on
  ambient env either: GitHub's runners export variables like
  `XDG_CONFIG_HOME`, so env-reading logic under test controls and restores
- the variable itself (see the config-path test).
+ the variable itself (see the config-path test). Tests mutating the SAME
+ env pair serialise on `ci::ACTIONS_ENV_LOCK`: the env is process-global and
+ the lib's tests run in parallel — the bearer test's remove-then-mint window
+ raced the wiremock exchange test's LIVE mock URL and minted a token in
+ CI's coverage job (instrumented runs widen the window).
 - New verbs need: happy-path render test, problem-document mapping test
  (exit 12), auth-failure test (exit 10), dead-server test (exit 11).
 

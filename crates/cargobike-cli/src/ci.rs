@@ -58,6 +58,14 @@ pub fn oidc_request_environment() -> Option<(String, String)> {
     Some((url, token))
 }
 
+/// Serialises the tests that mutate the Actions OIDC env pair: the
+/// env is process-global and the lib's tests run in parallel — the
+/// bearer test's remove-then-mint window can otherwise hit the
+/// wiremock exchange test's LIVE mock URL and mint a token (seen red
+/// in CI's coverage job, where instrumented runs widen the window).
+#[cfg(test)]
+pub(crate) static ACTIONS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Whether auth type `github-actions` is usable right now.
 pub fn actions_detected() -> bool {
     oidc_request_environment().is_some()
@@ -128,6 +136,9 @@ mod tests {
 
     #[test]
     fn test_actions_detection_reads_both_oidc_variables() {
+        let _env = ACTIONS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             env::set_var(
                 "ACTIONS_ID_TOKEN_REQUEST_URL",
@@ -181,12 +192,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    #[allow(clippy::unwrap_used, clippy::print_stderr)]
+    // The std guard holds across awaits ON PURPOSE: the runtime is
+    // current-thread (the guard never crosses a thread), and blocking
+    // the other env-mutating tests for the exchange's whole body is
+    // exactly the serialisation the lock exists for.
+    #[allow(clippy::unwrap_used, clippy::print_stderr, clippy::await_holding_lock)]
     async fn test_the_actions_exchange_mints_audience_tokens() {
         use secrecy::ExposeSecret as _;
         use wiremock::matchers::{method, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        let _env = ACTIONS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe { std::env::remove_var("ACTIONS_ID_TOKEN_REQUEST_URL") };
         unsafe { std::env::remove_var("ACTIONS_ID_TOKEN_REQUEST_TOKEN") };
         let auth = actions_token("cargobike");
