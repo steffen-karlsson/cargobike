@@ -53,8 +53,18 @@
     enqueue the leader runs; the child-process leader fenced by a real
     terminate with the standby promoting and running a create),
     serialised across processes by a session advisory suite lock.
-  - [ ] Recovery: the app-version filter is set (the binary's version),
-    but the recovery of pending workflows off a restart is untested here.
+  - [x] Recovery: the app-version filter is set (the binary's
+    version) and the restart recovery is now E2E-tested
+    (`tests/restart_recovery.rs`): a release parked at its merge wait
+    when the executor dies (the boot's `instance.shutdown()` — DBOS's
+    control-signal semantics leave interrupted rows PENDING, the same
+    state a SIGKILL leaves; the real-kill half is the engine crash
+    harness's), a fresh server boot over the same deployment schema
+    recovers it (the row's `recovery_attempts` proves the adoption),
+    replays the recorded steps, re-parks at the durable recv, and the
+    merge event delivered to the NEW boot completes the release — with
+    the convergence assertion (one branch, one commit, one CR) proving
+    the recovery re-acted nothing.
 
 ## 1. Release status is now written (PRD §4.1/§5.3, F-38)
 

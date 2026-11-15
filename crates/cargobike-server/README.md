@@ -40,7 +40,12 @@ decisions per principal per step of the current attempt (migration
 `cargobike.approval.v1` workflow once the threshold crosses (or
 immediately on a reject). Application-group discovery (§4.13a) runs
 the boot scan + the periodic rescan over `list_tree` (F-93's
-org-wide `owner_id` authorization included). Leader election (F-131/F-136, default ON) runs
+org-wide `owner_id` authorization included). Restart recovery is E2E-tested
+(`tests/restart_recovery.rs`): a release parked at its merge wait
+survives the executor's death — a fresh boot over the same deployment
+schema recovers the pending workflow (steps replay, nothing re-acts),
+re-parks at the durable recv, and the merge event delivered to the new
+boot completes it. Leader election (F-131/F-136, default ON) runs
 the full fence: the boot elects before launching the executor, the
 standby serves reads + webhook enqueues only, a lock loss stops the
 executor and exits the process, and the standby promotes on its next

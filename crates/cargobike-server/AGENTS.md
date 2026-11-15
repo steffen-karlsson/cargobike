@@ -52,6 +52,13 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
 - Integration tests boot the *real* server in-process on an ephemeral port
  (`tests/authed_lifecycle.rs`); prefer that over handler unit tests so the
  middleware stack and problem documents stay exercised.
+- Restart-recovery tests (`tests/restart_recovery.rs`) emulate the
+ dead process with `engine.instance.shutdown()`: DBOS's control-signal
+ semantics leave every interrupted workflow row PENDING — the same
+ state a SIGKILL leaves (that half is the engine crash harness's).
+ Both boots must share the deployment's `dbos_schema` (the recovery
+ adopts the other boot's rows) and the close event must carry the
+ ORIGINAL boot's environment repo id (the CR correlation keys on it).
 - Election tests: the two E2E binaries (`leader_election.rs`,
  `leader_failover.rs`) contend on the REAL lock id and serialise via a
  session advisory suite lock — any new election E2E joins that lock,
