@@ -5,6 +5,7 @@ pub mod auth;
 pub mod availability;
 pub mod config;
 pub mod db;
+pub mod discovery;
 pub mod engine;
 pub mod http;
 pub mod release;

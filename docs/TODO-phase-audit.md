@@ -459,12 +459,32 @@
   (the stub template lacked `environments`), and the single-key JWKS
   heuristic now answers only kid-less headers so a declared unknown
   `kid` reaches the rotation refetch.
-- [ ] Application groups (§4.13a, the planned 2.7a): discovery scan, virtual
-  app materialisation, `{application}` placeholder resolution in edits/match,
-  `extends` merge (maps deep, lists replace, `source` whole), ownership
-  (`owner_id`) authorization in `authorize_create`, periodic rescan +
-  SIGHUP rescan, name-collision error, discovered-name validation + skip
-  logging, per-env custom `match`. Config shapes parse; nothing consumes them.
+- [x] Application groups (§4.13a, the planned 2.7a) landed — the shared
+  machinery lives in `cargobike-core::groups` (the CLI's validate shares
+  the resolution; a deliberate PRD-table deviation, written in the
+  commit): `MatchPattern` (placeholders capture INSIDE segments —
+  `apps/{application}/{environment}.yaml`), `discover` (per-env
+  `match` replaces the global pattern; skips carry reasons),
+  `materialise` (`{application}` resolved in `edits[].file`; the env's
+  `repo` defaults to the DISCOVERY repository), the `extends` merge
+  (maps deep, lists replace, `source` whole; the env bools do not
+  inherit — serde cannot distinguish unset, documented), `resolve`
+  (raw entries → the resolved registry; explicit apps must declare
+  `source`/`template`). The server's `discovery.rs` runs the boot scan
+  + the periodic rescan (each group on its own interval; every config
+  change — a SIGHUP reload — triggers an immediate rescan) over
+  `list_tree` (the truncated-tree refusal), the registry REBUILDS
+  from the explicit applications each pass (deleted files remove
+  apps), the `extends` override wins (logged), a same-name collision
+  without `extends` skips the discovered entry with the error logged
+  (never a silent override), and F-93's `owner_id` authorization
+  lives in `authorize_create` (any repo in the org via the
+  `repository_owner_id` claim; a foreign org refuses — the unit
+  matrix + the E2E: the discovered `billing` releases against the
+  deployment repository end to end). The group's org-wide `source`
+  needs no `id` (en-route config fix: `DiscoveryEntry.match` never
+  carried its serde rename — the documented shape only parsed with a
+  `match_` key).
 - [x] `Idempotency-Key` header acceptance on create (F-109 second
   half): the key precedes everything — a retried create with the same
   key converges on the first attempt's release with 200 (whatever the

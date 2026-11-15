@@ -1157,15 +1157,24 @@ pub async fn boot(
         .refresh(&config, &engine.services.providers)
         .await;
     availability.spawn_background_sweep(config_rx.clone(), engine.services.providers.clone());
+    let engine = Arc::new(engine);
     let state = Arc::new(AppState {
         config: config_rx,
         ready: AtomicBool::new(false),
         releases: ReleaseRepository::new(pool.clone()),
         auth,
         config_path: config_path.map(|path| path.to_path_buf()),
-        engine: Arc::new(engine),
+        engine: Arc::clone(&engine),
         availability,
     });
+    // §4.13a: the group discovery's startup scan (best-effort — an
+    // unavailable deployment repo logs and the explicit registry
+    // stands), then the periodic/rescan task (the config channel's
+    // every change — a SIGHUP reload — triggers an immediate rescan).
+    if let Some(fresh) = crate::discovery::rescan(&config, &engine.services.providers).await {
+        let _ = config_tx.send(fresh);
+    }
+    crate::discovery::spawn_discovery(Arc::clone(&state), config_tx.clone());
     spawn_sighup_reload(Arc::clone(&state), config_tx);
     elect_leader(&pool, config.leader_election.enabled, &state.ready)
         .await

@@ -186,6 +186,7 @@ mod tests {
             display_name: subject.to_owned(),
             grants: vec![],
             repository_id: None,
+            repository_owner_id: None,
             sha_claim: None,
             ci: None,
             bootstrap: false,

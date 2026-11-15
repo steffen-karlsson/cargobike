@@ -296,7 +296,7 @@ pub fn materialise(
         .map(|(name, entry)| {
             (
                 name.clone(),
-                resolve_environment_placeholders(entry, application),
+                resolve_environment_placeholders(entry, application, &group.discovery.repo),
             )
         })
         .collect();
@@ -316,12 +316,19 @@ pub fn materialise(
     }
 }
 
-/// Resolves `{application}` inside one environment's `edits[].file`.
+/// Resolves `{application}` inside one environment's `edits[].file`,
+/// and defaults the environment's `repo` to the group's DISCOVERY
+/// repository: a group's edits target the deployment repository the
+/// discovery scanned (an environment may still pin its own repo).
 fn resolve_environment_placeholders(
     entry: &EnvironmentEntry,
     application: &str,
+    discovery_repo: &crate::config::HashMapEntrySource,
 ) -> EnvironmentEntry {
     let mut resolved = entry.clone();
+    if resolved.repo.is_none() {
+        resolved.repo = Some(discovery_repo.clone());
+    }
     if let Some(edits) = &mut resolved.edits {
         for edit in edits {
             edit.file = edit.file.replace("{application}", application);
@@ -548,6 +555,12 @@ mod tests {
         let preview = app.environments.get("preview").expect("preview");
         let edit = preview.edits.as_ref().expect("edits")[0].clone();
         assert_eq!(edit.file, "apps/web/preview.yaml");
+        // The environment's repo defaults to the DISCOVERY repository
+        // — a group's edits target the deployment repo it scans.
+        assert_eq!(
+            preview.repo.as_ref().expect("the defaulted repo").id,
+            Some("789012".to_owned())
+        );
     }
 
     /// The extends merge: the override's `source` replaces whole, the

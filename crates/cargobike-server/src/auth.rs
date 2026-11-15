@@ -68,6 +68,11 @@ pub struct AuthedCaller {
     pub grants: Vec<String>,
     /// `repository_id` claim when the token carried one .
     pub repository_id: Option<String>,
+    /// `repository_owner_id` claim when the token carried one (F-93:
+    /// a group-discovered application's org-wide source authorises any
+    /// repository IN that org — the owner id is the claim that says
+    /// which org the run belongs to).
+    pub repository_owner_id: Option<String>,
     /// The token's `sha` claim — the commit the OIDC token was minted
     /// for (F-95: the version policy verifies the tag against the
     /// provider's object; the claim is the asserted target).
@@ -478,6 +483,7 @@ impl AuthState {
                 display_name: key.description.clone().unwrap_or_else(|| key.name.clone()),
                 grants: key.grants.clone(),
                 repository_id: None,
+                repository_owner_id: None,
                 sha_claim: None,
                 ci: None,
                 bootstrap: false,
@@ -495,6 +501,7 @@ impl AuthState {
                     display_name: "bootstrap".to_owned(),
                     grants: vec!["*".to_owned()],
                     repository_id: None,
+                    repository_owner_id: None,
                     sha_claim: None,
                     ci: None,
                     bootstrap: true,
@@ -591,6 +598,10 @@ impl AuthState {
                     .get("repository_id")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
+                repository_owner_id: claims
+                    .get("repository_owner_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 sha_claim: claims
                     .get("sha")
                     .and_then(serde_json::Value::as_str)
@@ -634,6 +645,17 @@ pub fn authorize_create<'a>(
     if let Some(claimed) = &caller.repository_id {
         match app.source.id.as_deref() {
             Some(source_id) if claimed == source_id => {}
+            // F-93: an org-wide source (a group's, or an override that
+            // kept it) authorises any repository IN the org — the
+            // token's `repository_owner_id` is the claim that names
+            // the run's org; anything else refuses.
+            None => match (
+                app.source.owner_id.as_deref(),
+                caller.repository_owner_id.as_deref(),
+            ) {
+                (Some(owner), Some(claimed_owner)) if owner == claimed_owner => {}
+                _ => return Err(AuthError::ForbiddenResource),
+            },
             _ => return Err(AuthError::ForbiddenResource),
         }
     }
@@ -725,6 +747,58 @@ mod tests {
     fn test_missing_claim_never_matches() {
         let expected = expected(&[("roles", json!("release-managers"))]);
         assert!(claim_match(&expected, &json!({})).is_none());
+    }
+
+    /// F-93's authorization matrix over the resolved registry: a
+    /// pinned `source.id` matches the repository-id claim exactly; an
+    /// org-wide source (a group's `owner_id`) matches the run's
+    /// `repository_owner_id` claim — any repository IN the org can
+    /// release, anything else refuses.
+    #[test]
+    fn test_create_authorization_matches_id_or_org() {
+        let mut config: crate::config::Config = serde_yaml_ng::from_str(
+            "server: {}\ndatabase: { url: postgres://x }\nauth: {}\napplications:\n  - name: pinned\n    source: { provider: github, id: \"42\" }\n    template: service@1\n    releasers: [{ oidc: gha }]\n    environments: {}\n  - name: org-wide\n    extends: monorepo\n    environments: {}\napplication_groups:\n  - name: monorepo\n    template: service@1\n    source: { provider: github, owner_id: \"123456\" }\n    releasers: [{ oidc: gha }]\n    discovery:\n      repo: { provider: github, id: \"789\" }\n      match: \"apps/{application}/{environment}.yaml\"\n    environments: {}\n",
+        )
+        .expect("the config");
+        cargobike_core::groups::resolve(&mut config).expect("the registry resolves");
+        let caller = |repository_id: Option<&str>, owner_id: Option<&str>| AuthedCaller {
+            origin: "gha".to_owned(),
+            issuer: "https://token.actions.githubusercontent.com".to_owned(),
+            subject: "repo:org/service:ref".to_owned(),
+            display_name: "gha".to_owned(),
+            grants: vec!["release:create".to_owned()],
+            repository_id: repository_id.map(str::to_owned),
+            repository_owner_id: owner_id.map(str::to_owned),
+            sha_claim: None,
+            ci: None,
+            bootstrap: false,
+        };
+        // The pinned app: the repository id must equal the source id.
+        assert!(
+            authorize_create(&config, &caller(Some("42"), Some("123456")), "pinned").is_ok(),
+            "the pinned source matches its repository id"
+        );
+        assert!(
+            authorize_create(&config, &caller(Some("43"), Some("123456")), "pinned").is_err(),
+            "a foreign repository id refuses the pinned app"
+        );
+        // The org-wide app (the group's owner_id source): any repo in
+        // the org authorises; the repository id is not the match key.
+        assert!(
+            authorize_create(&config, &caller(Some("999"), Some("123456")), "org-wide").is_ok(),
+            "any repository in the org releases the org-wide app"
+        );
+        assert!(
+            authorize_create(&config, &caller(Some("999"), Some("999")), "org-wide").is_err(),
+            "a foreign org refuses the org-wide app"
+        );
+        assert!(
+            authorize_create(&config, &caller(Some("999"), None), "org-wide").is_err(),
+            "a run without the owner claim refuses the org-wide app"
+        );
+        // A caller without a repository id (an api key) has no
+        // resource claim to check — the releasers gate alone decides.
+        assert!(authorize_create(&config, &caller(None, None), "pinned").is_ok());
     }
 
     #[test]

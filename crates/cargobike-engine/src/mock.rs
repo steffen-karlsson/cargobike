@@ -80,6 +80,11 @@ pub struct MockState {
     /// F-10 fail-closed posture needs an erroring lookup to script).
     #[serde(default)]
     pub fail_path_lookup_for: Option<String>,
+    /// Scripted tree listings, keyed `{repo_id}@{ref}` → the paths
+    /// (§4.13a's discovery scan reads them; an absent key refuses —
+    /// an unscripted tree must never look like an empty repository).
+    #[serde(default)]
+    pub trees: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// A change request compact enough for the state file.
@@ -217,6 +222,24 @@ impl MockProvider {
         state
             .repo_paths
             .insert(repo_id.to_owned(), repo_path.to_owned());
+        state.save(&path);
+    }
+
+    /// Reads the current state (the tests watch the provider's truth
+    /// converge).
+    pub fn state(&self) -> MockState {
+        MockState::load(&self.state_file())
+    }
+
+    /// Scripts the repository's tree listing at one ref (§4.13a's
+    /// discovery scan reads it back).
+    pub fn seed_tree(&self, repo_id: &str, git_ref: &str, paths: &[&str]) {
+        let path = self.state_file();
+        let mut state = MockState::load(&path);
+        state.trees.insert(
+            format!("{repo_id}@{git_ref}"),
+            paths.iter().map(|p| (*p).to_owned()).collect(),
+        );
         state.save(&path);
     }
 
@@ -597,6 +620,23 @@ impl Provider for MockProvider {
 
     async fn default_branch(&self, _repo: &RepoRef) -> ProviderResult<String> {
         Ok(BASE_BRANCH.to_owned())
+    }
+
+    /// The scripted tree listing (§4.13a); an unscripted `{repo}@{ref}`
+    /// REFUSES — an empty listing would silently under-discover.
+    async fn list_tree(&self, repo: &RepoRef, git_ref: &str) -> ProviderResult<Vec<String>> {
+        let path = self.state_file();
+        let state = MockState::load(&path);
+        state
+            .trees
+            .get(&format!("{}@{git_ref}", repo.id))
+            .cloned()
+            .ok_or_else(|| {
+                ProviderError::Request(format!(
+                    "the mock has no tree scripted for `{}`@`{git_ref}`",
+                    repo.id
+                ))
+            })
     }
 
     async fn set_commit_status(
