@@ -505,13 +505,7 @@ fn format_rfc3339(at: sqlx::types::time::OffsetDateTime) -> String {
 pub(crate) fn version_scheme_of(
     app: &crate::config::ApplicationEntry,
 ) -> cargobike_core::version::VersionScheme {
-    match app.versioning.scheme.as_str() {
-        "semver" => cargobike_core::version::VersionScheme::Semver,
-        "calver" => cargobike_core::version::VersionScheme::Calver {
-            calver_format: app.versioning.calver_format.clone(),
-        },
-        _ => cargobike_core::version::VersionScheme::Opaque,
-    }
+    cargobike_core::version::VersionScheme::of(&app.versioning)
 }
 
 /// The create core (the HTTP handler and the webhook's tag-push creator

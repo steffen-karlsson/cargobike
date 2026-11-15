@@ -2,12 +2,13 @@
 //! plus the release lifecycle (theirs commands). No database
 //! dependencies; the server's API is the only peer.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cargobike_cli::ci;
 use cargobike_cli::client::{CallError, Client};
 use cargobike_cli::config::{self, OutputFormat};
 use cargobike_cli::render;
+use cargobike_cli::validate;
 use cargobike_cli::watch;
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
@@ -74,6 +75,17 @@ enum Command {
     Application {
         #[command(subcommand)]
         command: ApplicationCommand,
+    },
+    /// Validates config and template YAML offline (US-13/F-30): the
+    /// shared registry rules plus the template compiler, over the
+    /// local files — no server, no provider.
+    Validate {
+        /// The server config file (defaults: `CARGOBIKE_SERVER_CONFIG`,
+        /// then `./cargobike.yaml`, then `/etc/cargobike/config.yaml`).
+        /// A String like the global `--config` (clap's global
+        /// propagation refuses mixed types on one flag name).
+        #[arg(long)]
+        config: Option<String>,
     },
 }
 
@@ -203,6 +215,15 @@ fn main() {
 #[allow(clippy::print_stderr)] // the CLI contract: errors on stderr
 fn real_main() -> i32 {
     let cli = Cli::parse();
+    // The offline validate needs no server context — it runs before
+    // the CLI's own context config load (a fresh machine validates).
+    if let Command::Validate { config } = &cli.command {
+        let path = config
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| validate::default_config_path(None));
+        return run_validate(&path);
+    }
     let path = config::config_path(cli.config.clone(), home_dir());
     let config = match config::load(&path) {
         Ok(config) => config,
@@ -233,7 +254,69 @@ fn real_main() -> i32 {
                 code
             }
         },
+        Command::Validate { .. } => run_validate(&PathBuf::from("/etc/cargobike/config.yaml")),
     }
+}
+
+/// The validate verb: every failure renders as a miette diagnostic
+/// (the source span when the failure is a parse error); exit 1.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+fn run_validate(config_path: &Path) -> i32 {
+    match validate::run(config_path) {
+        Ok(validated) => {
+            println!(
+                "validate: ok ({} application{}, {} template{})",
+                validated.applications,
+                if validated.applications == 1 { "" } else { "s" },
+                validated.templates,
+                if validated.templates == 1 { "" } else { "s" },
+            );
+            0
+        }
+        Err(failures) => {
+            let count = failures.len();
+            for failure in failures {
+                let report = diagnostic(&failure);
+                eprintln!("{report:?}");
+            }
+            eprintln!("validate: {count} failure(s)");
+            1
+        }
+    }
+}
+
+/// One failure to a miette report: the parse failures carry the
+/// file's span; the rule failures name their file plainly.
+fn diagnostic(failure: &validate::ValidationFailure) -> miette::Report {
+    let source = miette::NamedSource::new(
+        failure.source.display().to_string(),
+        std::fs::read_to_string(&failure.source).unwrap_or_default(),
+    );
+    match failure.span {
+        Some((line, column)) => miette::miette!(
+            labels = [miette::LabeledSpan::underline(line_span_offset(
+                &source, line, column,
+            ))],
+            "{}",
+            failure.message
+        )
+        .with_source_code(source),
+        None => miette::miette!("{}", failure.message).with_source_code(source),
+    }
+}
+
+/// The byte offset of a (line, column) pair inside the source —
+/// miette labels are byte offsets, the YAML markers are line/column.
+fn line_span_offset(source: &miette::NamedSource<String>, line: usize, column: usize) -> usize {
+    let text = source.inner();
+    let mut offset = 0usize;
+    for (index, current) in text.lines().enumerate() {
+        if index + 1 == line {
+            return offset + (column.saturating_sub(1)).min(current.len());
+        }
+        offset += current.len() + 1;
+    }
+    offset
 }
 
 /// The release verb: resolve the target, then run it under tokio (the

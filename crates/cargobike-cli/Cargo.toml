@@ -26,9 +26,16 @@ thiserror.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url = "2.5.8"
+# core: the offline validate (4.8) parses the server config and runs the
+# shared registry rules + template compiler (A.14's CLI list allows core).
+cargobike-core = { path = "../cargobike-core" }
+# miette: the validate's diagnostics (line/column source spans; A.14's
+# CLI list).
+miette = { version = "7", features = ["fancy"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+predicates = "3"
 pretty_assertions.workspace = true
 wiremock = "0.6.5"
 

@@ -52,6 +52,7 @@ pub fn validate(config: &Config, templates: &TemplateMap) -> Result<(), Validati
     check_apply_policy_invariants(config, templates)?;
     check_versioning(config)?;
     check_environment_placeholders(config)?;
+    check_input_references(config, templates)?;
     check_group_references(config)
 }
 
@@ -404,6 +405,117 @@ pub fn check_placeholders(
 
 fn find_brace(rest: &[u8]) -> Option<usize> {
     rest.iter().position(|c| *c == b'{')
+}
+
+/// Every `inputs.<name>` / `env.inputs.<name>` a gate or a `${{ ... }}`
+/// parameter references must be a DECLARED input — the template's
+/// `inputs` (create-supplied) or `environment_inputs` (registry's
+/// per-environment values), the application's generic `inputs`, or the
+/// registry environment's own `inputs` (US-13's "gate referencing
+/// non-existent input" offline half). The scan is textual over the
+/// expression spans; the runtime evaluation stays the truth.
+fn check_input_references(config: &Config, templates: &TemplateMap) -> Result<(), ValidationError> {
+    for app in &config.applications {
+        for (env_name, env) in &app.environments {
+            let context = format!("application `{}` environment `{env_name}`", app.name);
+            // The declared names this environment's expressions may touch.
+            let template = template_for_name_version(templates, &app.template, app, env_name)?;
+            let mut declared: Vec<&str> = template.inputs.keys().map(String::as_str).collect();
+            declared.extend(template.environment_inputs.keys().map(String::as_str));
+            declared.extend(
+                app.inputs
+                    .as_ref()
+                    .map(|map| map.keys())
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            );
+            declared.extend(
+                env.inputs
+                    .as_ref()
+                    .map(|map| map.keys())
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            );
+            // The template's environment spec (the steps that run for
+            // this registry environment); an unlisted environment has
+            // only the registry's facts.
+            if let Some(spec) = template
+                .environments
+                .iter()
+                .find(|spec| spec.name == *env_name)
+            {
+                for step in &spec.steps {
+                    if let Some(when) = &step.when {
+                        check_input_tokens(&context, "a gate", when, &declared)?;
+                    }
+                    check_input_tokens_json(&context, &step.with, &declared)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walks a `with:` JSON value's strings, checking each `${{ ... }}`
+/// span's `inputs.<name>` references.
+fn check_input_tokens_json(
+    context: &str,
+    value: &serde_json::Value,
+    declared: &[&str],
+) -> Result<(), ValidationError> {
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.starts_with("${{") && trimmed.ends_with("}}") {
+                check_input_tokens(context, "a parameter", trimmed, declared)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                check_input_tokens_json(context, item, declared)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                let _ = key;
+                check_input_tokens_json(context, item, declared)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The textual `inputs.<ident>` scan over one expression (gates are
+/// wholly CEL; parameters are the `${{ ... }}` span).
+fn check_input_tokens(
+    context: &str,
+    kind: &str,
+    expression: &str,
+    declared: &[&str],
+) -> Result<(), ValidationError> {
+    let mut rest = expression;
+    while let Some(at) = rest.find("inputs.") {
+        let after = &rest[at + "inputs.".len()..];
+        let ident: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !ident.is_empty() && !declared.contains(&ident.as_str()) {
+            return Err(ValidationError::Reference {
+                context: context.to_owned(),
+                problem: format!(
+                    "{kind} references the input `{ident}`, which no `inputs`/`environment_inputs` block declares"
+                ),
+            });
+        }
+        rest = after;
+    }
+    Ok(())
 }
 
 /// `extends` names an existing group.

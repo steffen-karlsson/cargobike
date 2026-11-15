@@ -240,9 +240,27 @@
   through every exit code; wiremock's `set_body_string` stamps its
   own `text/plain` mime over any header, so the SSE lane answers via
   `set_body_raw(bytes, "text/event-stream")`.
-- [ ] **`cargobike validate` (4.8, US-13) missing** — offline config/template
-  validation reusing server `validation.rs` + engine `compile_with`, with
-  `miette` diagnostics; no `--resolve` mode yet.
+- [x] **`cargobike validate` (4.8, US-13) landed** — the offline verb
+  over the SHARED code (three groundwork commits moved the pieces to
+  core so the CLI — which must not depend on engine/server, A.14 —
+  runs the same rules): the template compiler
+  (`core::template::compile`, F-30/F-27a), the config value types
+  (`core::config`), and the pure registry rules (`core::validation`,
+  F-80/F-99a/F-147). The verb parses the server config + the
+  `templates.directory` YAML, collects EVERY failure in one pass,
+  and renders miette diagnostics (parse failures carry the file's
+  line/column span). The acceptance matrix is wired: valid → pass
+  with counts; unconstrained OIDC trust → fail; a gate/`${{ }}`
+  parameter referencing a non-existent input → fail (a new shared
+  rule: the offline `inputs.<name>` reference check, run by the
+  server's boot too); `step_groups` compile and resolve (the
+  compiler's include expansion rides the per-application compile).
+  The argon2 hash check splits honestly: the shared rule verifies
+  the PHC shape (never stricter than the boot check — pinned by a
+  test), the server's boot keeps the exact argon2 parse. The
+  `--resolve` mode (F-10's provider-resolving strict path check) is
+  NOT offline — it needs provider credentials and stays OPEN; the
+  server's boot check covers the mismatch fail-closed.
 - [x] `release retry <id> [--new]` landed: the server's `POST
   …/releases/{id}/retry` forks the failed attempt in place
   (`ForkFrom::LastFailure` reads the rows' error column; the attempt

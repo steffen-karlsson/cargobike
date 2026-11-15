@@ -40,6 +40,20 @@ pub enum VersionScheme {
 /// The default CalVer layout (the suggests `YYYY.MM.MICRO`).
 pub const DEFAULT_CALVER_FORMAT: &str = "YYYY.MM.MICRO";
 
+impl VersionScheme {
+    /// The registry's `versioning` block to the scheme (shared by the
+    /// server's provision and the CLI's offline `validate`, 4.8).
+    pub fn of(versioning: &crate::config::VersioningEntry) -> Self {
+        match versioning.scheme.as_str() {
+            "semver" => VersionScheme::Semver,
+            "calver" => VersionScheme::Calver {
+                calver_format: versioning.calver_format.clone(),
+            },
+            _ => VersionScheme::Opaque,
+        }
+    }
+}
+
 /// Version validation errors .
 #[derive(Debug, thiserror::Error)]
 pub enum VersionError {

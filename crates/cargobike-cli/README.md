@@ -20,6 +20,7 @@ Components:
 | `application list` (main) | `GET /api/v1/applications`: the registered applications with their F-10 availability — table `name  template  available|unavailable: reason`, or the whole body as JSON/YAML |
 | `render` | Output rendering: table rows (`metadata.id`, `spec.application`, `spec.version`, `status.phase`) or full documents as JSON/YAML |
 | `main` | clap wiring: global flags with env fallbacks, `context list/use`, the release verbs, `create --wait` riding the SSE watch, `release approve` (F-59: `--environment` required, `--step` defaults to the release's current `pending_step` read back from the document, `--decision approve|reject`, `--comment`; below the threshold prints the recorded count, the fire prints the advance, a refusal surfaces the problem detail) |
+| `validate` | The offline verb (4.8, US-13): `cargobike validate [--config <path>]` parses the SERVER config + the `templates.directory` YAML, runs the shared rules + the per-application template compile (F-27a rides inside), and renders every failure as a miette diagnostic (the parse failures with line/column spans); exit 0 counts the surface, exit 1 lists the failures |
 | `watch` | The SSE watch (US-4/F-102): `release watch [--until <env>] [--timeout <cap>]` and `create --wait` stream the event log via `reqwest-eventsource` (a broken stream reconnects with `Last-Event-ID` automatically), `indicatif` progress on a TTY / plain event lines in CI, and US-4's exit matrix decides the code — 0 completed (a Skipped `--until` environment counts, with a message), 1 failed, 2 canceled/superseded, 3 the `--timeout` expiry, 10/11/12 the client failures |
 
 ## Status
@@ -27,8 +28,15 @@ Components:
 Phase 4 scope (4.5/4.6 complete; 4.9's CLI-half tests exist). The OIDC
 exchange, the `-o` honouring, the auth/CA overrides, `--since`, and
 `release retry` (`--new` included) and `release approve` (F-59)
-landed (audit §5's ticked items). Pending (audit TODO §5):
-`cargobike validate` (4.8).
+landed (audit §5's ticked items). `cargobike validate` (4.8, US-13)
+landed: the OFFLINE check — the shared registry rules
+(`cargobike-core::validation`) and the template compiler
+(`cargobike-core::template::compile`) over the local config +
+templates directory, every failure collected in one pass and rendered
+as miette diagnostics (parse failures carry the file's line/column).
+The strict `--resolve` mode (F-10's provider-resolving path check) is
+NOT offline and stays open (the server's boot check covers it
+fail-closed).
 
 ## Usage
 
@@ -52,6 +60,10 @@ cargobike release watch <id> --until preview --timeout 30m     # streams the eve
                                              # terminal phase ends it (Skipped = exit 0), the
                                              # CLI-side --timeout ends it with exit 3
 cargobike release list -a my-service --phase PendingApproval --limit 50
+cargobike validate                           # the offline check: the registry rules +
+                                             #  every application's template compile
+                                             #  (--config defaults: CARGOBIKE_SERVER_CONFIG,
+                                             #   ./cargobike.yaml, /etc/cargobike/config.yaml)
 cargobike release list --since 24h          # updated at-or-after; RFC 3339 also fine
                                              # (list walks the cursor: --limit is the
                                              #  page size, not the listing's cap)
