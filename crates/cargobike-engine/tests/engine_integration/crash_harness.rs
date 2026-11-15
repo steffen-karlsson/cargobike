@@ -121,9 +121,13 @@ impl Drop for KillOnDrop {
 /// step, so the milestone never fires). The engine's in-process tests
 /// wipe the same way (`clear_application_rows`). The shared helper
 /// reads a not-yet-migrated schema (a fresh throwaway container) as
-/// "nothing to wipe" — the first harness run migrates it.
+/// "nothing to wipe" — but the harness children need the ROW schema,
+/// so the wipe first applies the Cargobike migrations (the in-process
+/// tests' `fixture_pool` does it for them; the crash tests may run
+/// before any of those on a fresh database).
 #[allow(clippy::expect_used)]
 async fn wipe_app_rows(database_url: &str, app: &str) {
+    let _pool = crate::fixture::fixture_pool(database_url).await;
     cargobike_testsupport::wipe_fixture_rows(database_url, &[app])
         .await
         .expect("the app rows wipe");
