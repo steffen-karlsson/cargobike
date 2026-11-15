@@ -79,6 +79,10 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
  reload test's log file).
 - OIDC roundtrips mint an RS256 token locally (no network). Keep the JWKS
  fixture self-contained; never test against live issuers.
+- Mock-state lookups are run-specific: the scratch (and its state.json)
+  persists across runs, so a find-by-title can be shadowed by an
+  earlier run's leftover CR — key on the release document's CR NUMBER
+  (see the keyed-CR lookup in `authed_lifecycle.rs`).
 - Event-ordering: an interpreter step already in flight when a cancel
  lands may record its outcome AFTER the canceled event (commit order,
  not logical order) — assert the cancel's PRESENCE plus the hash chain

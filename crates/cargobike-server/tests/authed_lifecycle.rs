@@ -398,7 +398,7 @@ async fn test_authed_release_lifecycle() {
         base: &str,
         auth_header: &(&'static str, String),
         id: &str,
-    ) {
+    ) -> serde_json::Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             let document = client
@@ -414,7 +414,7 @@ async fn test_authed_release_lifecycle() {
                 .pointer("/status/environments/0/change_request/number")
                 .is_some_and(|number| !number.is_null())
             {
-                return;
+                return document;
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -467,16 +467,23 @@ async fn test_authed_release_lifecycle() {
     // own merge wait (a real open CR on the mock's seeded path), so
     // the cancel is deterministic — and draining it now means the
     // cleanup wait below sees BOTH releases' change requests close.
-    wait_for_cr_recorded(&client, &base, &auth_header, &keyed_id).await;
+    let keyed_document = wait_for_cr_recorded(&client, &base, &auth_header, &keyed_id).await;
     // R11/F-143/F-147: the registry's change_request overrides shaped
     // the keyed CR — the title's `{version}` placeholder resolved at
-    // provision, the label appended, the draft flag on.
+    // provision, the label appended, the draft flag on. The lookup is
+    // BY THE DOCUMENT'S CR NUMBER: the mock's scratch persists across
+    // runs, and a leftover keyed CR from an earlier run shadowed a
+    // find-by-title (seen red once in CI-shaped reruns).
     {
+        let keyed_number = keyed_document
+            .pointer("/status/environments/0/change_request/number")
+            .and_then(serde_json::Value::as_u64)
+            .expect("the keyed release's CR number");
         let state = cargobike_engine::mock::MockState::load(&mock.state_file());
         let keyed_cr = state
             .change_requests
             .values()
-            .find(|summary| summary.title.starts_with("The keyed release"))
+            .find(|summary| summary.number == keyed_number)
             .expect("the keyed CR carries the registry's title");
         assert_eq!(
             keyed_cr.title,
