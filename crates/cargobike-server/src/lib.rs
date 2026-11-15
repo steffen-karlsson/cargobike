@@ -8,6 +8,7 @@ pub mod db;
 pub mod discovery;
 pub mod engine;
 pub mod http;
+pub mod leader;
 pub mod release;
 pub mod validation;
 
