@@ -10,6 +10,7 @@
 
 #![deny(clippy::all)]
 
+pub mod config;
 pub mod edits;
 pub mod error;
 pub mod model;
