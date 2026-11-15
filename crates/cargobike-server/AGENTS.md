@@ -28,10 +28,20 @@ Crate-specific how-to; project-wide rules in the root
  create authorization is `authorize_create` (grant + `releasers` reference +
  `repository_id` claim — /). Never widen trust: the deny-by-default
  posture is the crate's invariant .
-- Leader election (2.8/): `elect_leader` currently takes the advisory
- lock at boot and sets the readiness flag; the lock-loss fence and standby
- webhook-serving land with the executor wiring — flag the gap rather than
- pretending readiness.
+- Leader election (2.8/, F-131/F-136): `leader::spawn` elects on ONE
+ dedicated held-for-life connection (never pooled); the boot elects
+ BEFORE the executor launches (`EngineHosting::activate` is the
+ leader's alone), a standby answers `ready` 503 and the standby
+ problem on mutations, enqueues verified webhooks by name onto the
+ leader's schema, and a `Lost` verdict stops the executor and exits
+ the process. Never route the election through a pooled connection or
+ a transaction-pooled PgBouncer URL, and never let a standby activate
+ — two active executors are the one unrecoverable state.
+ Election-test isolation: guard-level tests elect on their own lock id
+ (`spawn_with`); the two E2E binaries share the production id and
+ serialise with a session advisory suite lock. In-process suites that
+ don't test election set `leader_election.enabled: false` (the default
+ is ON).
 
 ## How to test
 
@@ -42,6 +52,15 @@ CARGOBIKE_TEST_DATABASE_URL=... cargo test -p cargobike-server
 - Integration tests boot the *real* server in-process on an ephemeral port
  (`tests/authed_lifecycle.rs`); prefer that over handler unit tests so the
  middleware stack and problem documents stay exercised.
+- Election tests: the two E2E binaries (`leader_election.rs`,
+ `leader_failover.rs`) contend on the REAL lock id and serialise via a
+ session advisory suite lock — any new election E2E joins that lock,
+ never elects on the production id in parallel. The failover E2E
+ spawns the `cargobike-server` binary (`CARGO_BIN_EXE_cargobike-server`)
+ and reads the lock holder out of `pg_locks` — no test seam in the
+ guard. Every OTHER in-process suite sets `leader_election.enabled:
+ false` (the default is ON and the shared fixture database has one
+ lock).
 - No hardcoded machine paths in tests: scratch/log locations come from the
  platform temp dir (`std::env::temp_dir()`); GitHub's runners are linux
  hosts and a mac-first absolute path crashes the suite there (seen with the

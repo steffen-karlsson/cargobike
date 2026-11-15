@@ -147,6 +147,11 @@ database:
   url: "{url}"
   dbos_schema: "cbtest-{port}"
 
+# The in-process fixture stays single-replica (the default is ON per
+# F-136; production elects, the suites must not contend on one lock).
+leader_election:
+  enabled: false
+
 templates:
   directory: {templates}
 

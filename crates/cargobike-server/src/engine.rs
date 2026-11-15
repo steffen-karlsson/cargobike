@@ -26,6 +26,18 @@ const DBOS_APP_NAME: &str = "cargobike";
 /// The engine's schema (the DBOS system tables' namespace).
 const DBOS_SCHEMA: &str = "dbos";
 
+/// The DBOS schema the config resolves to — the instance's own, the
+/// boot's standby-enqueue lane's, one expression so they cannot
+/// disagree (a client naming the wrong schema reads an empty
+/// database, not an error).
+pub fn dbos_schema(config: &Config) -> String {
+    if config.database.dbos_schema.is_empty() {
+        DBOS_SCHEMA.to_owned()
+    } else {
+        config.database.dbos_schema.clone()
+    }
+}
+
 /// The engine's hosting; held in the server state.
 pub struct EngineHosting {
     /// The DBOS instance (cancel/fork/management needs it).
@@ -60,11 +72,126 @@ pub struct EngineHosting {
     /// The per-provider materialised webhook secrets (the receiver's
     /// verification input; the two-secret rotation is the list).
     pub webhook_secrets: std::collections::BTreeMap<String, Vec<secrecy::SecretString>>,
+    /// The reconciler workflow's registration (the loop's start is
+    /// `activate`'s — only a leader runs the sweep).
+    pub reconciler: dbos::WorkflowRef<
+        cargobike_engine::reconciler::ReconcileArgs,
+        (),
+        cargobike_engine::InterpreterError,
+    >,
+    /// The reconciler loop's arguments (interval, batch size) —
+    /// resolved once at host time, used at activation time.
+    pub reconciler_args: cargobike_engine::reconciler::ReconcileArgs,
+    /// F-131's activation latch: the executor launches at most once
+    /// (a promotion race would double the reconciler loop otherwise).
+    activated: std::sync::atomic::AtomicBool,
+}
+
+impl EngineHosting {
+    /// F-131: the executor's launch — the recovery, the dequeue loop
+    /// and the reconciler start — is the LEADER's alone. `host` builds
+    /// everything un-launched; the boot activates when the election is
+    /// won (immediately, when election is disabled).
+    pub async fn activate(&self) -> Result<(), crate::config::ConfigError> {
+        if self
+            .activated
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+        self.instance.launch().await.map_err(|failure| {
+            crate::config::ConfigError::Parse(format!("the DBOS launch failed: {failure}"))
+        })?;
+        // The reconciler loop runs for the instance's life.
+        let reconciled = self
+            .reconciler
+            .clone()
+            .start_with(self.reconciler_args.clone(), dbos::StartOptions::default())
+            .await
+            .map_err(|failure| {
+                crate::config::ConfigError::Parse(format!(
+                    "the reconciler loop refused to start: {failure}"
+                ))
+            })?;
+        let _ = reconciled;
+        Ok(())
+    }
 }
 
 /// A factory over the config's providers (the tests install a mock
 /// provider registry here; production builds the GitHub provider).
 pub type ProviderOverride = Option<ProviderRegistry>;
+
+/// F-131's standby webhook lane: the `dbos::Client` enqueue. A
+/// standby does not launch the executor, but it still receives
+/// deliveries (rolling updates must not lose tag-push triggers) — it
+/// verifies (the provider's HMAC, no DBOS), and enqueues the webhook
+/// workflow BY NAME onto the internal queue; the leader's executor
+/// claims the row and runs it.
+///
+/// The client connects lazily and is RETAINED: `Client::connect`
+/// verifies (never migrates) the DBOS schema, so a database no leader
+/// has ever launched refuses there — the delivery answers 503 and
+/// GitHub's redelivery retries it.
+pub struct StandbyEnqueue {
+    /// The DBOS system database's URL (the instance's own).
+    url: secrecy::SecretString,
+    /// The DBOS schema the leader's executor reads (the client must
+    /// name the application's own — a wrong schema reads as an empty
+    /// database, not an error).
+    schema: String,
+    /// The lazily-connected client (one per process; reused).
+    client: tokio::sync::OnceCell<dbos::Client>,
+}
+
+impl StandbyEnqueue {
+    /// The lane over the DBOS system database's URL and schema (the
+    /// same pair the instance's own config carries).
+    pub fn new(url: secrecy::SecretString, schema: String) -> Self {
+        Self {
+            url,
+            schema,
+            client: tokio::sync::OnceCell::const_new(),
+        }
+    }
+
+    /// Enqueues the webhook workflow by name under the receiver's
+    /// deterministic id (`cargobike/webhook/<provider>/<delivery>` —
+    /// the redelivery dedupe keeps working across the leader/standby
+    /// split, whichever replica takes the delivery).
+    pub async fn enqueue_webhook(
+        &self,
+        args: &cargobike_engine::WebhookArgs,
+        workflow_id: &str,
+    ) -> Result<(), String> {
+        let url = self.url.expose_secret();
+        let client = self
+            .client
+            .get_or_try_init(|| async {
+                let mut config = dbos::ClientConfig::new(url);
+                // The claim's scope: the row must read as the
+                // leader's application's work (an unnamed client
+                // writes an unclaimed row instead — that works, but
+                // naming ours is the deliberate, checked claim).
+                config.app_name = Some(DBOS_APP_NAME.to_owned());
+                config.schema = self.schema.clone();
+                dbos::Client::connect(config).await
+            })
+            .await
+            .map_err(|failure| failure.to_string())?;
+        let mut options = dbos::EnqueueOptions::new(dbos::sysdb::INTERNAL_QUEUE);
+        options.workflow_id = Some(workflow_id);
+        client
+            .enqueue_with::<cargobike_engine::WebhookArgs, (), cargobike_engine::InterpreterError>(
+                cargobike_engine::WEBHOOK_WORKFLOW,
+                args.clone(),
+                options,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|failure| failure.to_string())
+    }
+}
 
 /// The named secrets' credential store (the config's `secrets:` map).
 struct ConfigCredentials {
@@ -310,11 +437,7 @@ pub async fn host(
     // The config's DBOS schema (the boot's own namespace; tests point
     // each boot at a fresh one so a previous suite's abandoned
     // workflow rows are never adopted by this boot's recovery).
-    dbos_config.schema = if config.database.dbos_schema.is_empty() {
-        DBOS_SCHEMA.to_owned()
-    } else {
-        config.database.dbos_schema.clone()
-    };
+    dbos_config.schema = dbos_schema(config);
     dbos_config.app_version = Some(env!("CARGO_PKG_VERSION").to_owned());
     let instance = dbos::DBOS::new(dbos_config);
 
@@ -425,11 +548,9 @@ pub async fn host(
             "the approval workflow refused to register: {failure}"
         ))
     })?;
-    instance.launch().await.map_err(|failure| {
-        crate::config::ConfigError::Parse(format!("the DBOS launch failed: {failure}"))
-    })?;
 
-    // The reconciler loop runs for the instance's life.
+    // The reconciler loop's arguments resolve here (the loop itself is
+    // `activate`'s — F-131: only a leader starts the sweep).
     let interval = humantime::parse_duration(&config.reconciler.interval).map_err(|failure| {
         crate::config::ConfigError::Parse(format!(
             "the reconciler interval refused to parse: {failure}"
@@ -439,15 +560,6 @@ pub async fn host(
         interval,
         batch_size: config.reconciler.batch_size,
     };
-    let reconciled = reconciler
-        .start_with(reconciler_args, dbos::StartOptions::default())
-        .await
-        .map_err(|failure| {
-            crate::config::ConfigError::Parse(format!(
-                "the reconciler loop refused to start: {failure}"
-            ))
-        })?;
-    let _ = reconciled;
 
     Ok(EngineHosting {
         instance: Arc::new(instance),
@@ -459,6 +571,9 @@ pub async fn host(
         retry,
         approval,
         webhook_secrets,
+        reconciler,
+        reconciler_args,
+        activated: std::sync::atomic::AtomicBool::new(false),
     })
 }
 

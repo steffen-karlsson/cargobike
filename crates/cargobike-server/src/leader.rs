@@ -101,6 +101,22 @@ pub fn spawn_with_intervals(
     ping: Duration,
     retry: Duration,
 ) -> LeaderGuard {
+    spawn_with(database_url, enabled, ping, retry, LOCK_ID)
+}
+
+/// The tests' isolation variant: every suite sharing one fixture
+/// database elects on its OWN lock id (the unit tests here, the E2E
+/// binaries, and any other guard-level test run in PARALLEL —
+/// contending on the production id would make each other's verdicts
+/// nondeterministic). The boot always uses [`spawn`] (the one real
+/// LOCK_ID — replicas of one deployment must contend).
+pub fn spawn_with(
+    database_url: SecretString,
+    enabled: bool,
+    ping: Duration,
+    retry: Duration,
+    lock_id: i64,
+) -> LeaderGuard {
     let (role_tx, role_rx) = watch::channel(Role::Electing);
     let backend_pid = std::sync::Arc::new(std::sync::Mutex::new(None));
     let pid_slot = Arc::clone(&backend_pid);
@@ -123,7 +139,7 @@ pub fn spawn_with_intervals(
                 }
             };
             let held: bool = match sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-                .bind::<i64>(LOCK_ID)
+                .bind::<i64>(lock_id)
                 .fetch_one(&mut connection)
                 .await
             {
@@ -199,6 +215,10 @@ mod tests {
 
     use super::*;
 
+    /// The unit tests' own lock id — the E2E binaries and any parallel
+    /// suite elect on theirs (fixture-database isolation).
+    const TEST_LOCK_ID: i64 = 0x0063_7465_7374_3031;
+
     /// The fixture database URL (the testsupport container/URL; these
     /// tests ride the same self-sufficiency as every DB-backed suite).
     async fn database_url() -> Option<String> {
@@ -212,11 +232,12 @@ mod tests {
         let Some(url) = database_url().await else {
             return;
         };
-        let first = spawn_with_intervals(
+        let first = spawn_with(
             secrecy::SecretString::from(url.clone()),
             true,
             Duration::from_millis(200),
             Duration::from_millis(200),
+            TEST_LOCK_ID,
         );
         let mut first_roles = first.roles();
         first_roles
@@ -226,11 +247,12 @@ mod tests {
         assert_eq!(*first_roles.borrow(), Role::Leader);
         let pid = first.backend_pid().expect("the leader's backend pid");
 
-        let second = spawn_with_intervals(
+        let second = spawn_with(
             secrecy::SecretString::from(url.clone()),
             true,
             Duration::from_millis(200),
             Duration::from_millis(200),
+            TEST_LOCK_ID,
         );
         let mut second_roles = second.roles();
         second_roles

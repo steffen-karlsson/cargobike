@@ -82,6 +82,7 @@ async fn test_server() -> Option<(String, Arc<cargobike_engine::mock::MockProvid
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: http://127.0.0.1:{port}\n\n\
              database:\n  url: \"{url}\"\n  dbos_schema: \"cbavail-{port}\"\n\n\
+             leader_election:\n  enabled: false\n\n\
              templates:\n  directory: {templates_display}\n\n\
              reconciler:\n  verified_path_interval: 1s\n\n\
              auth:\n  api_keys:\n    - name: test-key\n      hash: \"{hash}\"\n      grants: [release:create, release:read, release:cancel, release:delete]\n\n\

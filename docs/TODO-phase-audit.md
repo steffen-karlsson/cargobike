@@ -33,8 +33,26 @@
     section. The HTTP seam is a first-cut egress guard (resolved-IP
     checks, redirects refused) — the full PRD's SSRF set (proxy, redirect
     re-check, allow-lists) is with 5.7.
-  - [ ] The leader-election fence: no lock-loss watchdog yet; the
-    standby's webhook-serving path needs the receiver (Phase 5).
+  - [x] The leader-election fence (F-131/F-136): `leader` elects on
+    `pg_try_advisory_lock` over ONE dedicated held-for-life
+    connection (never pooled; `leader_election.database_url` defaults
+    to `database.url` and must bypass PgBouncer transaction pooling),
+    with a ping watchdog reporting `Lost` the moment the connection
+    dies — the boot's fence stops the executor and exits the process
+    (two active executors are the one unrecoverable state). The
+    standby launches NO DBOS executor, reports `ready` 503, refuses
+    mutations with the standby problem (reads still serve), and —
+    the rolling-update promise — verifies webhook deliveries and
+    enqueues them by name (`dbos::Client` onto the internal queue, the
+    same schema the leader's executor polls) so a tag push landing
+    during a replica swap is never lost. On lock loss the standby
+    promotes on its next retry and activates its executor. Tests:
+    guard-level (contention, a real `pg_terminate_backend` fence,
+    promotion, the disabled immediate win — on a test-isolated lock id)
+    plus two E2E binaries (the standby surfaces with the webhook
+    enqueue the leader runs; the child-process leader fenced by a real
+    terminate with the standby promoting and running a create),
+    serialised across processes by a session advisory suite lock.
   - [ ] Recovery: the app-version filter is set (the binary's version),
     but the recovery of pending workflows off a restart is untested here.
 

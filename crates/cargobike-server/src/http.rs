@@ -39,6 +39,10 @@ pub struct AppState {
     /// F-10 verified-path availability: the application → reason map
     /// of labels that do not check out against the provider.
     pub availability: Arc<crate::availability::Availability>,
+    /// F-131's standby webhook lane: the `dbos::Client` enqueue (a
+    /// standby verifies deliveries and enqueues by name; the leader's
+    /// executor claims the row).
+    pub standby_enqueue: Arc<crate::engine::StandbyEnqueue>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -71,6 +75,10 @@ pub fn api_router(state: Arc<AppState>) -> Router<()> {
         .route("/api/v1/releases/{id}/retry", post(retry_release))
         .route("/api/v1/whoami", get(whoami))
         .route("/api/v1/applications", get(list_applications))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            require_leader,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
             crate::auth::require_auth,
@@ -1076,6 +1084,31 @@ async fn startup() -> impl axum::response::IntoResponse {
     StatusCode::OK
 }
 
+/// F-131's standby half: the mutating endpoints refuse 503 unless
+/// this replica leads (the executor is not running; a create/cancel/
+/// retry/approval/delete has nothing to act on). Reads and the
+/// webhook lane are exempt — the standby's whole job is to keep
+/// serving them so a rolling update loses nothing. `ready` covers
+/// both "a standby" and "a leader still activating"; either way the
+/// replica cannot mutate yet, and the answer says so in the problem's
+/// detail.
+async fn require_leader(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !state.ready.load(Ordering::Acquire) && request.method() != axum::http::Method::GET {
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            errors::STATE_CONFLICT,
+            "standby",
+            "This replica does not hold the leader-election lock; mutations are served by the active replica.",
+        )
+        .into_response();
+    }
+    next.run(request).await
+}
+
 /// Issuer + audience hints only (the safe auto-discovery).
 async fn clientconfig(
     State(state): State<Arc<AppState>>,
@@ -1098,30 +1131,15 @@ async fn clientconfig(
     ))
 }
 
-/// Advisory-lock attempt for minimal leader election (the minimal v1: a standby
-/// still serves webhooks; the exit-on-lock-loss fence lands with the executor).
-pub async fn elect_leader(
-    pool: &sqlx::PgPool,
-    enabled: bool,
-    lock: &AtomicBool,
-) -> Result<(), sqlx::Error> {
-    if !enabled {
-        lock.store(true, Ordering::Release);
-        return Ok(());
-    }
-    let held: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-        .bind::<i64>(LOCK_ID)
-        .fetch_one(pool)
-        .await?;
-    lock.store(held, Ordering::Release);
-    Ok(())
-}
-
-/// The Cargobike leader-election lock key.
-pub const LOCK_ID: i64 = 0x0063_6172_676f_626b; // 'cargobk'
-
 /// Boots the config with the startup warnings, the leader
-/// gate and the router ready to serve.
+/// election gate (F-131) and the router ready to serve.
+///
+/// The election runs BEFORE the executor: a standby never launches
+/// DBOS (`ready` stays false — 503 on `/ready` and on every mutating
+/// endpoint; reads and the webhook lane still serve). The guard's
+/// later transitions (a standby promoting on the leader's death; a
+/// leader fencing on lock loss — stop the executor, exit the process)
+/// run on the role watch.
 pub async fn boot(
     config_path: Option<&std::path::Path>,
     provider_override: crate::engine::ProviderOverride,
@@ -1158,6 +1176,31 @@ pub async fn boot(
         .await;
     availability.spawn_background_sweep(config_rx.clone(), engine.services.providers.clone());
     let engine = Arc::new(engine);
+    // F-131/F-136: the election rides ONE dedicated connection on its
+    // own URL (defaulting to `database.url`; must bypass PgBouncer
+    // transaction pooling — session advisory locks do not survive it).
+    let election_url = match &config.leader_election.database_url {
+        Some(url) => crate::config::materialise(url, &config.secrets)?,
+        None => crate::config::materialise(&config.database.url, &config.secrets)?,
+    };
+    let guard = crate::leader::spawn(election_url, config.leader_election.enabled);
+    let mut roles = guard.roles();
+    let first_ref = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        roles.wait_for(|role| !matches!(role, crate::leader::Role::Electing)),
+    )
+    .await
+    .map_err(|_| {
+        crate::config::ConfigError::Parse(
+            "the leader election never resolved (the dedicated database is unreachable)".to_owned(),
+        )
+    })?
+    .map_err(|_| crate::config::ConfigError::Parse("the role watch closed".to_owned()))?;
+    // Copied out of the watch's guard (and the guard dropped) before
+    // `roles` moves into the transitions task — the guard borrows the
+    // receiver for as long as it lives.
+    let first = *first_ref;
+    drop(first_ref);
     let state = Arc::new(AppState {
         config: config_rx,
         ready: AtomicBool::new(false),
@@ -1166,7 +1209,68 @@ pub async fn boot(
         config_path: config_path.map(|path| path.to_path_buf()),
         engine: Arc::clone(&engine),
         availability,
+        standby_enqueue: Arc::new(crate::engine::StandbyEnqueue::new(
+            crate::config::materialise(&config.database.url, &config.secrets)?,
+            crate::engine::dbos_schema(&config),
+        )),
     });
+    // The first verdict decides the executor: a leader activates now
+    // (a standby's promotion — the leader dying and its session
+    // releasing the lock — lands on the watch task below).
+    match first {
+        crate::leader::Role::Leader => {
+            engine.activate().await?;
+            state.ready.store(true, Ordering::Release);
+        }
+        crate::leader::Role::Standby => {
+            tracing::info!("booting as a standby: the executor stays unlaunched (F-131)")
+        }
+        crate::leader::Role::Lost | crate::leader::Role::Electing => {
+            return Err(crate::config::ConfigError::Parse(
+                "the leader election produced no verdict".to_owned(),
+            ));
+        }
+    }
+    // The role transitions' reactor: the standby's promotion (activate
+    // + ready), and the fence — a leader's lock connection died, so
+    // the executor stops and the process exits (two active executors
+    // are the one unrecoverable state; F-131's simplest reliable
+    // option).
+    {
+        let engine = Arc::clone(&engine);
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            while roles.changed().await.is_ok() {
+                // The role COPIED out of the watch's guard before any
+                // await (the guard is not Send; a match arm's activate
+                // would otherwise hold it across the await).
+                let role = *roles.borrow_and_update();
+                match role {
+                    crate::leader::Role::Leader => {
+                        if let Err(failure) = engine.activate().await {
+                            tracing::error!(%failure, "the promotion's activation failed: exiting");
+                            std::process::exit(1);
+                        }
+                        state.ready.store(true, Ordering::Release);
+                        tracing::info!(
+                            "promoted: the election lock is held, the executor is running"
+                        );
+                    }
+                    crate::leader::Role::Standby => {
+                        state.ready.store(false, Ordering::Release);
+                    }
+                    crate::leader::Role::Lost => {
+                        tracing::error!(
+                            "the election lock connection was lost: stopping the executor and exiting (F-131)"
+                        );
+                        engine.instance.shutdown().await;
+                        std::process::exit(1);
+                    }
+                    crate::leader::Role::Electing => {}
+                }
+            }
+        });
+    }
     // §4.13a: the group discovery's startup scan (best-effort — an
     // unavailable deployment repo logs and the explicit registry
     // stands), then the periodic/rescan task (the config channel's
@@ -1176,9 +1280,6 @@ pub async fn boot(
     }
     crate::discovery::spawn_discovery(Arc::clone(&state), config_tx.clone());
     spawn_sighup_reload(Arc::clone(&state), config_tx);
-    elect_leader(&pool, config.leader_election.enabled, &state.ready)
-        .await
-        .map_err(|e| crate::config::ConfigError::Parse(format!("leader election failed: {e}")))?;
     Ok((api_router(Arc::clone(&state)), state))
 }
 
@@ -1378,18 +1479,33 @@ async fn receive_webhook(
         event,
     };
     let workflow_id = format!("cargobike/webhook/{provider_name}/{}", args.delivery_id);
-    if let Err(failure) = state
-        .engine
-        .webhook
-        .start_with(
-            args,
-            dbos::StartOptions {
-                workflow_id: Some(workflow_id.as_str()),
-                ..dbos::StartOptions::default()
-            },
-        )
-        .await
-    {
+    // F-131: the leader starts the workflow in-process (the typed
+    // registration); a standby — the executor unlaunched — enqueues it
+    // by name via the dbos client, and the leader's executor claims
+    // the row. The deterministic id is the dedupe either way, so a
+    // redelivery lands on whichever replica holds the lock next and
+    // still converges on one run.
+    let started = if state.engine.instance.is_launched() {
+        state
+            .engine
+            .webhook
+            .start_with(
+                args,
+                dbos::StartOptions {
+                    workflow_id: Some(workflow_id.as_str()),
+                    ..dbos::StartOptions::default()
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(|failure| failure.to_string())
+    } else {
+        state
+            .standby_enqueue
+            .enqueue_webhook(&args, &workflow_id)
+            .await
+    };
+    if let Err(failure) = started {
         tracing::error!(%failure, "the webhook workflow refused to start");
         return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,

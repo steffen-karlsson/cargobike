@@ -157,6 +157,7 @@ environments:
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
              database:\n  url: \"{fix_url}\"\n  dbos_schema: \"cbtest-{port}\"\n\n\
+             leader_election:\n  enabled: false\n\n\
              templates:\n  directory: {}\n\n\
              auth:\n  oidc:\n    - name: test-oidc\n      issuer: \"{actions_issuer}\"\n      audience: cargobike\n      jwks_url: \"{issuer}/jwks\"\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:create, release:read, release:cancel]\n\n\
              applications:\n  - name: my-service\n    source: {{ provider: github, id: \"123456\" }}\n    template: service@1\n    versioning:\n      scheme: semver\n      tag_format: \"v{{version}}\"\n    releasers:\n      - oidc: test-oidc\n    environments:\n      preview:\n        repo: {{ provider: github, id: \"42\" }}\n        edits:\n          - file: apps/preview/manifest.yaml\n            field: image.tag\n",
@@ -491,6 +492,7 @@ async fn test_oidc_discovery_resolves_jwks_and_unknown_kid_refetches_once() {
         format!(
             "server:\n  listen: \"127.0.0.1:{port}\"\n  public_url: \"{issuer}\"\n\n\
              database:\n  url: \"{_fix_url}\"\n  dbos_schema: \"cbtest-oidc-disc-{port}\"\n\n\
+             leader_election:\n  enabled: false\n\n\
              templates:\n  directory: {}\n\n\
              auth:\n  oidc:\n    - name: gha-shape\n      issuer: \"{issuer}\"\n      audience: cargobike\n      claims:\n        repository_owner_id: \"123456\"\n      grants: [release:read]\n",
             templates_dir.display(),
