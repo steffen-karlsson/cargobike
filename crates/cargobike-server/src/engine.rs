@@ -563,7 +563,7 @@ impl cargobike_engine::TagPushCreator for ServerTagPushCreator {
         };
         for app in &config.applications {
             let matches = app.source.provider == provider
-                && app.source.id == repository_id
+                && app.source.id.as_deref() == Some(repository_id)
                 && app.triggers.iter().any(|trigger| trigger.event == "tag");
             if !matches {
                 continue;

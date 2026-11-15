@@ -13,6 +13,7 @@
 pub mod config;
 pub mod edits;
 pub mod error;
+pub mod groups;
 pub mod model;
 pub mod provider;
 pub mod registry;

@@ -1243,6 +1243,7 @@ async fn list_applications(
                 "provider": app.source.provider,
                 "repository": {
                     "id": app.source.id,
+                    "owner_id": app.source.owner_id,
                     "path": app.source.path,
                 },
                 "template": app.template,

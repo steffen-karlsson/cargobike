@@ -632,8 +632,9 @@ pub fn authorize_create<'a>(
         return Err(AuthError::ForbiddenResource);
     }
     if let Some(claimed) = &caller.repository_id {
-        if claimed != &app.source.id {
-            return Err(AuthError::ForbiddenResource);
+        match app.source.id.as_deref() {
+            Some(source_id) if claimed == source_id => {}
+            _ => return Err(AuthError::ForbiddenResource),
         }
     }
     Ok(app)

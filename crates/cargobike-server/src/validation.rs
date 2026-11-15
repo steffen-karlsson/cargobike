@@ -47,7 +47,7 @@ pub fn load_templates(config: &Arc<Config>) -> Result<TemplateMap, ValidationErr
     let directory = &config.templates.directory;
     let mut map = BTreeMap::new();
     let Ok(entries) = std::fs::read_dir(directory) else {
-        if !config.applications.is_empty() || !config.application_groups.is_empty() {
+        if !config.raw_applications.is_empty() || !config.application_groups.is_empty() {
             return Err(ValidationError::Rule(format!(
                 "failed to read templates from `{directory}`: the registry declares applications"
             )));
@@ -88,7 +88,8 @@ mod tests {
         )
         .expect("the template");
         let yaml = "server: {}\ndatabase: { url: postgres://x }\ntemplates:\n  directory: TEMP\nauth:\n  api_keys:\n    - name: key\n      hash: \"$argon2id$v=19$m=32768,t=3,p=4$ZGVw\"\napplications:\n  - name: my-service\n    source: { provider: github, id: \"1\" }\n    template: service@1\n    releasers:\n      - api_key: key\n    environments:\n      production:\n        approval:\n          required: 1\n          approvers:\n            - api_key: key\n".replace("TEMP", directory.to_str().expect("temp path"));
-        let config: crate::config::Config = from_str(&yaml).expect("config");
+        let mut config: crate::config::Config = from_str(&yaml).expect("config");
+        cargobike_core::groups::resolve(&mut config).expect("the registry resolves");
         let failure = super::validate(&config);
         assert!(
             failure
@@ -108,7 +109,8 @@ mod tests {
         use serde_yaml_ng::from_str;
 
         let yaml = "server: {}\ndatabase: { url: postgres://x }\nauth:\n  api_keys:\n    - name: key\n      hash: \"$argon2id$v=19$m=99999999999999999999,t=3,p=4$c2FsdA$ZGlnZXN0\"\n";
-        let config: crate::config::Config = from_str(yaml).expect("config");
+        let mut config: crate::config::Config = from_str(yaml).expect("config");
+        cargobike_core::groups::resolve(&mut config).expect("the registry resolves");
         let failure = super::validate(&config);
         assert!(
             failure

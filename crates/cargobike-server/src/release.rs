@@ -733,7 +733,15 @@ async fn verify_version_provenance(
         return Ok(());
     };
     let tag = tag_of_format(tag_format, version);
-    let repo = cargobike_core::model::RepoRef::new(&app.source.provider, &app.source.id);
+    let Some(source_id) = app.source.id.as_deref() else {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            errors::STATE_CONFLICT,
+            "state-conflict",
+            "The application's source declares no repository id; a group-discovered application needs its environment's `repo` or a pinned `source.id`.".to_owned(),
+        ));
+    };
+    let repo = cargobike_core::model::RepoRef::new(&app.source.provider, source_id);
     let provider = parts.providers.resolve(&repo).map_err(|failure| {
         ApiError::new(
             StatusCode::NOT_FOUND,

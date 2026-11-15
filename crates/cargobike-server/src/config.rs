@@ -176,6 +176,13 @@ auth: {}
     apply_env_overrides(&mut config)?;
     apply_provider_overrides(&mut config)?;
 
+    // The registry resolution (§4.13a): the raw entries become the
+    // resolved registry every consumer reads. An `extends` override
+    // naming an unknown group, or an explicit app omitting
+    // `source`/`template`, refuses the load.
+    cargobike_core::groups::resolve(&mut config)
+        .map_err(|error| ConfigError::Parse(error.to_string()))?;
+
     Ok(config)
 }
 
@@ -398,7 +405,9 @@ mod tests {
     #[test]
     fn test_documented_server_config_loads_verbatim() {
         let documented = documented_config();
-        let config: Config = serde_yaml_ng::from_str(&documented).expect("13.1 config must parse");
+        let mut config: Config =
+            serde_yaml_ng::from_str(&documented).expect("13.1 config must parse");
+        cargobike_core::groups::resolve(&mut config).expect("13.1 config must resolve");
         assert_eq!(config.applications.len(), 1);
         assert_eq!(config.providers.len(), 2);
         assert!(config.application("my-service").is_some());
@@ -407,7 +416,6 @@ mod tests {
         // example points at /etc/cargobike/templates; the test points
         // the SAME registry entries at the workspace's canonical
         // template (the verbatim value).
-        let mut config = config;
         config.templates.directory = [env!("CARGO_MANIFEST_DIR"), "/../../templates"].concat();
         crate::validation::validate(&config).expect("13.1 config validates");
     }

@@ -127,10 +127,16 @@ async fn verify_application(
     let Some(declared) = app.source.path.as_deref() else {
         return Ok(());
     };
+    // An org-wide group source carries no repository id — there is no
+    // single repository to probe; the environment's `repo` entries
+    // carry their own targets.
+    let Some(source_id) = app.source.id.as_deref() else {
+        return Ok(());
+    };
     // The probe is path-less: the provider must answer from its own
     // truth, never echo the label (the GitHub provider short-circuits
     // a declared path).
-    let probe = cargobike_core::model::RepoRef::new(&app.source.provider, &app.source.id);
+    let probe = cargobike_core::model::RepoRef::new(&app.source.provider, source_id);
     let provider = providers.resolve(&probe).map_err(|failure| {
         format!(
             "the source provider `{}` is not registered: {failure}",
@@ -173,16 +179,26 @@ mod tests {
     /// A scratch-backed mock provider per case (the mock's truth is
     /// the state file, scripted through its seeding helpers).
     fn app_with_path(path: Option<&str>) -> ApplicationEntry {
-        let mut app: ApplicationEntry = serde_json::from_value(serde_json::json!({
-            "name": "svc",
-            "source": { "provider": "mock", "id": "1" },
-            "template": "service@1",
-            "environments": {}
-        }))
-        .expect("app parses");
+        let mut app: ApplicationEntry = {
+            let raw: crate::config::RawApplicationEntry =
+                serde_json::from_value(serde_json::json!({
+                    "name": "svc",
+                    "source": { "provider": "mock", "id": "1" },
+                    "template": "service@1",
+                    "environments": {}
+                }))
+                .expect("app parses");
+            let mut config: crate::config::Config = serde_yaml_ng::from_str(
+                "server: {}\ndatabase: { url: postgres://x }\nauth: {}\napplications: []\n",
+            )
+            .expect("the minimal config");
+            config.raw_applications = vec![raw];
+            cargobike_core::groups::resolve(&mut config).expect("resolves");
+            config.applications.pop().expect("the resolved entry")
+        };
         app.source = crate::config::HashMapEntrySource {
             provider: "mock".to_owned(),
-            id: "1".to_owned(),
+            id: Some("1".to_owned()),
             path: path.map(str::to_owned),
             owner_id: None,
         };

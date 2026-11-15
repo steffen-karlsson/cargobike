@@ -61,8 +61,17 @@ pub struct Config {
     /// Optional metrics port .
     #[serde(default)]
     pub metrics: MetricsSection,
-    /// The application registry (; the security core).
-    #[serde(default)]
+    /// The application registry AS WRITTEN (; the security
+    /// core). The entries may be `extends` overrides that omit
+    /// `source`/`template` — the resolution (see [`crate::registry`])
+    /// fills them from the group.
+    #[serde(rename = "applications", default)]
+    pub raw_applications: Vec<RawApplicationEntry>,
+    /// The RESOLVED registry (explicit apps + extends merges + the
+    /// discovery's virtual apps): every consumer reads this. The
+    /// loader's resolution fills it — an unresolved `Config` has an
+    /// empty list and must not be served.
+    #[serde(skip)]
     pub applications: Vec<ApplicationEntry>,
     /// Application groups for monorepo discovery .
     #[serde(default)]
@@ -607,11 +616,14 @@ pub struct MetricsSection {
     pub listen: Option<String>,
 }
 
-/// One registry application entry . The shapes follow the
-/// documented example verbatim (the test's promise).
+/// The registry application AS WRITTEN in the config file: an
+/// `extends: <group>` override may omit `source` and `template` (the
+/// group supplies them); an explicit app must declare both — the
+/// resolution (§4.13a's merge rules) enforces it and produces the
+/// resolved [`ApplicationEntry`].
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ApplicationEntry {
+pub struct RawApplicationEntry {
     /// Application name in the registry .
     pub name: String,
     /// Human description .
@@ -620,11 +632,14 @@ pub struct ApplicationEntry {
     /// Filter labels .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
-    /// Where the version comes from; `source` replaces as a whole on
-    /// `extends` .
-    pub source: HashMapEntrySource,
-    /// Registry-only template reference .
-    pub template: String,
+    /// Where the version comes from; omitted only by `extends`
+    /// overrides (the group's `source` — the org — supplies it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<HashMapEntrySource>,
+    /// Registry-only template reference; omitted only by `extends`
+    /// overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
     /// Version validation + tag policy .
     #[serde(default)]
     pub versioning: VersioningEntry,
@@ -644,6 +659,41 @@ pub struct ApplicationEntry {
     pub inputs: Option<BTreeMap<String, serde_json::Value>>,
     /// Application freeze .
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<PausedEntry>,
+    /// Per-environment registry config .
+    #[serde(default)]
+    pub environments: BTreeMap<String, EnvironmentEntry>,
+}
+
+/// One RESOLVED registry application (§4.13/§4.13a): the loader's
+/// resolution produces it — `source` and `template` are always set.
+/// The FILE shape is [`RawApplicationEntry`].
+#[derive(Clone, Debug)]
+pub struct ApplicationEntry {
+    /// Application name in the registry .
+    pub name: String,
+    /// Human description .
+    pub description: Option<String>,
+    /// Filter labels .
+    pub labels: Option<BTreeMap<String, String>>,
+    /// Where the version comes from; `source` replaces as a whole on
+    /// `extends` .
+    pub source: HashMapEntrySource,
+    /// Registry-only template reference .
+    pub template: String,
+    /// Version validation + tag policy .
+    pub versioning: VersioningEntry,
+    /// Tag-push triggers ; `event: tag` .
+    pub triggers: Vec<TriggerEntry>,
+    /// Who may release: principal selectors , single-direction.
+    pub releasers: Vec<PrincipalSelector>,
+    /// Group inheritance . An app of this name must have been
+    /// discovered by the group or validation fails.
+    pub extends: Option<String>,
+    /// Generic app-wide inputs supplied to templates as `${{ inputs.<name> }}`
+    /// .
+    pub inputs: Option<BTreeMap<String, serde_json::Value>>,
+    /// Application freeze .
     pub paused: Option<PausedEntry>,
     /// Per-environment config .
     pub environments: BTreeMap<String, EnvironmentEntry>,
@@ -665,8 +715,11 @@ pub enum PrincipalSelector {
 pub struct HashMapEntrySource {
     /// Provider name.
     pub provider: String,
-    /// Immutable provider ID .
-    pub id: String,
+    /// Immutable provider ID — REQUIRED on a resolved app's source
+    /// (the resolution enforces it); a GROUP's org-wide source omits
+    /// it and carries `owner_id` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// Verified label, checked at startup .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -680,7 +733,7 @@ pub struct HashMapEntrySource {
 pub type HashMapEntrySourceAlias = HashMapEntrySource;
 
 /// The versioning block of an application or group .
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct VersioningEntry {
     /// Scheme name: `semver`, `calver`, `opaque` .
@@ -762,6 +815,13 @@ pub struct EnvironmentEntry {
     /// Generic per-environment inputs .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<BTreeMap<String, serde_json::Value>>,
+    /// The environment's own discovery `match` (§4.13a: replaces the
+    /// group's global pattern for this environment — needed when the
+    /// file name differs from the environment name, e.g. `prod.yaml`
+    /// for `production`). Meaningful only inside an application
+    /// group's environments.
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub match_: Option<String>,
     /// Approval policy block .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalPolicy>,
@@ -873,6 +933,7 @@ pub struct DiscoveryEntry {
     /// The repository scanned.
     pub repo: HashMapEntrySource,
     /// Match pattern with `{application}` and `{environment}` captures.
+    #[serde(rename = "match")]
     pub match_: String,
     /// Branch scanned (the default: repository default branch); protect it .
     #[serde(default, skip_serializing_if = "Option::is_none")]

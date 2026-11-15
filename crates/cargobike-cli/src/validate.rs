@@ -83,6 +83,19 @@ pub fn run(config_path: &Path) -> Result<Validated, Vec<ValidationFailure>> {
         }
     };
 
+    // The registry resolution (§4.13a): the raw entries become the
+    // resolved registry the rules and the template compile read. An
+    // `extends` override naming an unknown group, or an explicit app
+    // omitting `source`/`template`, is a validation failure.
+    let mut config = config;
+    if let Err(error) = cargobike_core::groups::resolve(&mut config) {
+        failures.push(ValidationFailure {
+            source: config_path.to_path_buf(),
+            message: error.to_string(),
+            span: None,
+        });
+    }
+
     // The templates directory (the server loader's semantics: .yaml/.yml,
     // deduped by name@version; the SOURCE is kept for the offline compile).
     let mut templates: BTreeMap<(String, String), (PathBuf, String, PipelineTemplate)> =
@@ -129,7 +142,7 @@ pub fn run(config_path: &Path) -> Result<Validated, Vec<ValidationFailure>> {
             }
         }
         Err(error) => {
-            if !config.applications.is_empty() || !config.application_groups.is_empty() {
+            if !config.raw_applications.is_empty() || !config.application_groups.is_empty() {
                 failures.push(ValidationFailure {
                     source: PathBuf::from(directory),
                     message: format!(

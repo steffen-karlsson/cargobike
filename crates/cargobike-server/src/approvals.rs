@@ -193,7 +193,9 @@ mod tests {
     }
 
     fn app_with(approval: serde_json::Value) -> ApplicationEntry {
-        serde_json::from_value(serde_json::json!({
+        // The registry's resolved shape comes from the raw file entry —
+        // the same resolution the boot runs.
+        let raw: crate::config::RawApplicationEntry = serde_json::from_value(serde_json::json!({
             "name": "an-app",
             "source": { "provider": "github", "id": "1" },
             "template": "service@1",
@@ -202,7 +204,14 @@ mod tests {
                 "production": {},
             }
         }))
-        .expect("the application entry parses")
+        .expect("the raw application entry parses");
+        let mut config: crate::config::Config = serde_yaml_ng::from_str(
+            "server: {}\ndatabase: { url: postgres://x }\nauth: {}\napplications: []\n",
+        )
+        .expect("the minimal config");
+        config.raw_applications = vec![raw];
+        cargobike_core::groups::resolve(&mut config).expect("resolves");
+        config.applications.pop().expect("the resolved entry")
     }
 
     fn oidc_policy() -> ApprovalPolicy {

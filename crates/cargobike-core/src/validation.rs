@@ -544,7 +544,12 @@ mod tests {
     use serde_yaml_ng::from_str;
 
     fn config(yaml: &str) -> Config {
-        from_str(yaml).expect("config")
+        // The loaders resolve the registry before the rules run; the
+        // tests walk the same path (an unresolved config's rules would
+        // pass vacuously over an empty registry).
+        let mut config: Config = from_str(yaml).expect("config");
+        crate::groups::resolve(&mut config).expect("the registry resolves");
+        config
     }
 
     /// The documented canonical pair agrees; the F-99a(b) documented
